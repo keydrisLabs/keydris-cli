@@ -1,0 +1,20 @@
+[Unit]
+Description=Keydris node agent (transparent per-session agent identity)
+Documentation=https://github.com/nocaplabs/keydris
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# keydris up installs the iptables redirect and runs the transparent proxy.
+ExecStart=/usr/local/bin/keydris up
+# Environment is read from /etc/keydris/keydris.env (KEYDRIS_* vars).
+EnvironmentFile=-/etc/keydris/keydris.env
+Restart=on-failure
+RestartSec=2
+# Needs NET_ADMIN for iptables; runs as root in the POC.
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

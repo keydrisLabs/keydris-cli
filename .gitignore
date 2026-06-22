@@ -1,0 +1,18 @@
+# Build output
+/bin/
+
+# Local configuration (copy from .env.example)
+/.env
+
+# Local agent identity + evidence ledger
+/.keydris-data/
+
+# Generated eBPF artifacts (produced on the Linux VM via `make ebpf-gen`)
+internal/node/ebpf/vmlinux.h
+internal/node/ebpf/tracer_bpf*.go
+internal/node/ebpf/*.o
+
+# Local Go build cache (kept in-repo for sandboxed builds)
+/.gobuild/
+
+.DS_Store

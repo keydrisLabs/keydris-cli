@@ -1,0 +1,34 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "enableWeakerNetworkIsolation": true,
+    "network": {
+      "httpProxyPort": 15001
+    }
+  },
+  "env": {
+    "NODE_EXTRA_CA_CERTS": "/path/to/.keydris-data/ca.crt",
+    "SSL_CERT_FILE": "/path/to/.keydris-data/ca.crt",
+    "CURL_CA_BUNDLE": "/path/to/.keydris-data/ca.crt",
+    "GIT_SSL_CAINFO": "/path/to/.keydris-data/ca.crt",
+    "REQUESTS_CA_BUNDLE": "/path/to/.keydris-data/ca.crt"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "keydris hook session-start" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "keydris hook session-end" }
+        ]
+      }
+    ]
+  }
+}

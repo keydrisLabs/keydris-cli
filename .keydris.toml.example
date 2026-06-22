@@ -1,0 +1,12 @@
+# Keydris layered config (copy to .keydris.toml or ~/.keydris.toml).
+# Precedence: process env > .env > ./.keydris.toml > ~/.keydris.toml > defaults.
+# Each key maps to KEYDRIS_<UPPER(KEY)>.
+
+[keydris]
+trust_domain = "keydris.local"
+control_url  = "http://127.0.0.1:8081"
+dataplane    = "transparent"   # or "proxyenv" on macOS/Windows
+blueprint    = "repo-tools"
+proxy_port   = "15001"
+backend_port = "8080"
+svid_ttl_seconds = "900"
