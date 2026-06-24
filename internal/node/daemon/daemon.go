@@ -35,7 +35,7 @@ func preflight() error {
 		return fmt.Errorf("transparent data plane requires Linux (running on %s); run inside a Linux VM, or set KEYDRIS_DATAPLANE=proxyenv", runtime.GOOS)
 	}
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("keydris up (transparent) must run as root for iptables/CAP_NET_ADMIN; try: sudo keydris up")
+		return fmt.Errorf("keydris proxy up (transparent) must run as root for iptables/CAP_NET_ADMIN; try: sudo keydris proxy up")
 	}
 	if _, err := exec.LookPath("iptables"); err != nil {
 		return fmt.Errorf("iptables not found in PATH: %w", err)
@@ -99,7 +99,11 @@ func Run(cfg *config.Config) error {
 		_ = dp.Close()
 	}()
 
-	log.Printf("keydris daemon running (dataplane=%s, control=%s)", cfg.DataPlane, cfg.ControlMTLSURL)
+	policy := cfg.PolicyID
+	if policy == "" {
+		policy = "(none)"
+	}
+	log.Printf("keydris daemon running (dataplane=%s, policy=%s, control=%s)", cfg.DataPlane, policy, cfg.ControlMTLSURL)
 	for flow := range dp.Flows() {
 		go handleFlow(ctx, cfg, authClient, dp, flow)
 	}
@@ -140,6 +144,7 @@ func handleFlow(ctx context.Context, cfg *config.Config, client *http.Client, dp
 		DstAddr:   dst,
 		SessionID: flow.SessionID,
 		SVID:      flow.SVID,
+		PolicyID:  cfg.PolicyID,
 	})
 	if err != nil {
 		log.Printf("broker error for %s: %v", dst, err)

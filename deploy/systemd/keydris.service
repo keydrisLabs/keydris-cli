@@ -1,18 +1,21 @@
 [Unit]
 Description=Keydris node agent (transparent per-session agent identity)
-Documentation=https://github.com/nocaplabs/keydris
+Documentation=https://github.com/nocaplabs/keydris-cli
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# keydris up installs the iptables redirect and runs the transparent proxy.
-ExecStart=/usr/local/bin/keydris up
+# Run the proxy data plane in the foreground. KEYDRIS_PROXY_DAEMON=1 stops
+# `keydris proxy up` from backgrounding itself (its interactive behaviour), so
+# systemd supervises the daemon directly.
+Environment=KEYDRIS_PROXY_DAEMON=1
+ExecStart=/usr/local/bin/keydris proxy up
 # Environment is read from /etc/keydris/keydris.env (KEYDRIS_* vars).
 EnvironmentFile=-/etc/keydris/keydris.env
 Restart=on-failure
 RestartSec=2
-# Needs NET_ADMIN for iptables; runs as root in the POC.
+# Needs NET_ADMIN for iptables (transparent plane); runs as root in the POC.
 AmbientCapabilities=CAP_NET_ADMIN
 NoNewPrivileges=false
 

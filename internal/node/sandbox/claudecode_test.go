@@ -27,10 +27,12 @@ func TestConfigureMergesAndPreserves(t *testing.T) {
 	}
 
 	err := Configure(path, Options{
-		HTTPProxyPort:  15001,
-		AllowedDomains: []string{"api.example"},
-		CAPath:         "/tmp/ca.crt",
-		Strict:         true,
+		HTTPProxyPort:    15001,
+		AllowedDomains:   []string{"api.example"},
+		CAPath:           "/tmp/ca.crt",
+		Strict:           true,
+		SessionStartHook: "keydris __session-start",
+		SessionEndHook:   "keydris __session-end",
 	})
 	if err != nil {
 		t.Fatalf("Configure: %v", err)
@@ -78,7 +80,7 @@ func TestConfigureMergesAndPreserves(t *testing.T) {
 func TestVerifyReportsDrift(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
-	if err := Configure(path, Options{HTTPProxyPort: 15001, CAPath: "/tmp/ca.crt", Strict: true}); err != nil {
+	if err := Configure(path, Options{HTTPProxyPort: 15001, CAPath: "/tmp/ca.crt", Strict: true, SessionStartHook: "keydris __session-start", SessionEndHook: "keydris __session-end"}); err != nil {
 		t.Fatal(err)
 	}
 

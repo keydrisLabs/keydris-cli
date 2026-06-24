@@ -4,6 +4,11 @@ This document explains why per-session enforcement degrades on macOS/Windows
 today, and lays out a tiered plan to fix it — from a portable change we can ship
 immediately to the kernel-grade planes that are the long-term product answer.
 
+> **Status:** Tier 1 (per-session proxy tokens) is **implemented** for the
+> default `sandbox` plane, so concurrent Claude sessions are attributed
+> independently — see [§2](#2-tier-1--authenticated-proxy-sessions-implemented).
+> Tiers 2–3 remain future work.
+
 ## 1. The problem, precisely
 
 "Attribution" is two distinct sub-problems that are easy to conflate:
@@ -24,17 +29,17 @@ They fail independently and have different fixes. Today:
 ### How attribution works on Linux (the reference path)
 
 The transparent plane resolves every accepted connection before consulting the
-broker ([internal/dataplane/transparent_linux.go](../internal/dataplane/transparent_linux.go)):
+broker ([internal/node/dataplane/transparent_linux.go](../internal/node/dataplane/transparent_linux.go)):
 
 ```
 src IP:port -> /proc/net/tcp (socket inode) -> /proc/*/fd (pid)
             -> /proc/<pid>/cgroup -> session registry -> SVID
 ```
 
-The cgroup is the **binding point**: `keydris hook session-start` places the
+The cgroup is the **binding point**: `keydris run` places the
 agent process into a cgroup and registers `cgroup -> SVID` with the daemon over
-the session socket ([internal/sessionsock](../internal/sessionsock/sessionsock.go)).
-The eBPF tracer ([internal/ebpf](../internal/ebpf/doc.go)) is the race-free
+the session socket ([internal/node/sessionsock](../internal/node/sessionsock/sessionsock.go)).
+The eBPF tracer ([internal/node/ebpf](../internal/node/ebpf/doc.go)) is the race-free
 upgrade of the same join: it records `{4-tuple} -> {pid, cgroup_id}` in the
 kernel at `connect()` time.
 
@@ -42,9 +47,9 @@ kernel at `connect()` time.
 
 The `proxyenv` plane parses the destination out of the absolute-form proxy
 request — and that is *all* it knows. There is no kernel hook, no cgroup, and
-the resolver is a no-op ([internal/attest/attest_other.go](../internal/attest/attest_other.go)).
-`Flow.SVID` stays empty, so the broker takes the degraded branch in
-[internal/broker/policy.go](../internal/broker/policy.go):
+the resolver is a no-op ([internal/node/attest/attest_other.go](../internal/node/attest/attest_other.go)).
+`Flow.SVID` stays empty, so the broker takes its degraded, destination-only
+branch (the broker lives in the separate control-plane repo):
 
 ```go
 if blueprint != "" {
@@ -68,50 +73,69 @@ The root cause of the identity-binding failure is *not* the missing kernel — i
 is that the connection arrives carrying **no link back to the session** that the
 hook minted an SVID for. That observation drives Tier 1.
 
-## 2. Tier 1 — Authenticated proxy sessions (portable, ship first)
+## 2. Tier 1 — Authenticated proxy sessions (implemented)
 
-**Fixes identity binding on every OS. Does not fix bypassability.**
+**Fixes identity binding on every OS, including concurrent sessions. Does not fix
+bypassability.**
 
 HTTP proxies already have a standard channel for caller identity:
-`Proxy-Authorization`. Every mainstream HTTP client (curl, Python urllib /
-requests, Node, Go, Java) automatically sends it when the proxy URL carries
-userinfo:
+`Proxy-Authorization`. Every mainstream HTTP client (curl, Python requests, Node,
+Go, git) automatically sends it when the proxy URL carries userinfo:
 
 ```
-HTTP_PROXY=http://<session-token>@127.0.0.1:15001
+HTTPS_PROXY=http://keydris:<session-token>@127.0.0.1:15001
 ```
 
-Design:
+How Keydris wires it:
 
-1. **Token issuance.** `keydris hook session-start` (and `keydris run`) already
-   mint the SVID and register the session with the daemon. Add a random
-   per-session token to that registration (`sessionsock.Message` gains a
-   `proxy_token` field; the registry indexes sessions by token as well as by
-   cgroup handle).
-2. **Client wiring.** `keydris run` sets `HTTP_PROXY`/`HTTPS_PROXY` to the
-   token-bearing URL in the child's environment. Nothing about the agent
-   changes — the token rides in the standard env var.
-3. **Plane lookup.** The proxyenv flow builder parses `Proxy-Authorization`
-   (Basic, token as username), strips the header, looks the token up in the
-   session registry, and populates `Flow.SessionID`/`Flow.SVID` exactly as the
-   Linux plane does.
-4. **Broker unchanged.** With a real SVID present, the broker's existing
-   per-session path (verify against JWKS, derive blueprint, check grant)
-   applies on every OS. The degraded destination-only branch remains only for
-   genuinely anonymous flows.
+1. **Token issuance.** `hookSessionStart` mints the SVID and registers the
+   session under a random per-session token as its handle (`newProxyToken`,
+   [internal/cli/hook.go](../internal/cli/hook.go)); the registry indexes
+   sessions by that token
+   ([internal/node/attest/attest.go](../internal/node/attest/attest.go)).
+2. **Client wiring — two entry points:**
+   - `keydris run` sets `HTTP_PROXY`/`HTTPS_PROXY` to the token-bearing URL in the
+     wrapped command's environment
+     ([internal/cli/run.go](../internal/cli/run.go)).
+   - For a real Claude session the internal SessionStart hook
+     (`keydris __session-start`) appends the same export to Claude Code's
+     `$CLAUDE_ENV_FILE`
+     ([internal/cli/session_hook.go](../internal/cli/session_hook.go)), which
+     Claude Code sources for every Bash subprocess in that session. Each
+     concurrent session runs its own SessionStart hook and so receives a distinct
+     token.
+3. **Plane lookup.** The sandbox proxy reads `Proxy-Authorization` (Basic, token
+   as the password), looks the token up in the registry, and populates
+   `Flow.SVID`/`Flow.SessionID` (`resolveSession`,
+   [internal/node/dataplane/sandboxproxy.go](../internal/node/dataplane/sandboxproxy.go)).
+   A token that is *presented but unknown* resolves to **unattributed** rather
+   than guessing — it is never silently downgraded to "the sole session", which
+   is what keeps concurrent sessions isolated. Only a request with **no** token
+   falls back to the sole registered session (the single-session convenience
+   case).
+4. **Broker unchanged.** With a real SVID present, the broker's per-session path
+   (verify against JWKS, derive blueprint, check grant) applies on every OS.
 
 Properties:
 
-- **Per-session blueprint policy on macOS/Windows/Linux** with ~a day of work.
+- **Per-session policy + audit on macOS/Windows/Linux**, including multiple
+  concurrent sessions through a single proxy.
 - The token is a *bearer* credential confined to loopback; it never leaves the
-  machine and expires with the session (revoked at `session-end`).
-- Variant: **one loopback port per session** (the listen port itself identifies
-  the session). Simpler parsing, works for raw TCP, but consumes ports and
-  complicates the env wiring; `Proxy-Authorization` is the cleaner default.
+  machine and is unregistered at `session-end`.
 
-Limitations: the agent can still unset the env var (bypass), and a co-resident
-process that steals the token could impersonate the session. Tier 1 makes the
-fallback *honest* (fully attributed), not *mandatory*.
+Limitations and caveats:
+
+- **Bypassable.** The agent can still unset the env var, and a co-resident
+  process that steals the token could impersonate the session. Tier 1 makes the
+  fallback *honest* (fully attributed), not *mandatory*.
+- **Claude Code coupling.** The Claude path relies on `$CLAUDE_ENV_FILE` and on a
+  hook-set `HTTP_PROXY` composing with the sandbox's own `httpProxyPort`
+  routing. That composition is not documented and may vary by Claude Code
+  version — re-verify on upgrades. `keydris run` does not depend on it.
+- **Token in logs.** The session socket currently logs the handle (= token) at
+  registration; treat the daemon log as sensitive (see SECURITY.md).
+- Variant: **one loopback port per session** also works (the listen port itself
+  identifies the session) but consumes ports; the token is the cleaner default.
 
 ## 3. Tier 2 — Native userspace pid lookup on macOS (optional middle rung)
 
@@ -168,17 +192,17 @@ slots into.
 | | Identity binding | Kernel-asserted | Non-bypassable | Works on | Effort |
 | --- | --- | --- | --- | --- | --- |
 | Today: proxyenv | none | — | no | all | — |
-| Tier 1: proxy session tokens | yes (claimed) | no | no | all | ~1 day |
+| Tier 1: proxy session tokens (**built**) | yes (claimed) | no | no | all | done |
 | Tier 2: libproc + pgid (macOS) | yes | yes | no | macOS | ~2-3 days |
 | Tier 3: NE / WFP planes | yes | yes | yes | macOS / Windows | weeks (mostly signing/packaging) |
 | Reference: transparent + eBPF | yes | yes | yes | Linux | built |
 
 ## 6. Recommendation
 
-1. **Implement Tier 1 now.** Small, portable, and it eliminates the
-   destination-only degradation everywhere — including for Linux users who
-   prefer the proxyenv plane. After it lands, the broker's degraded branch only
-   triggers for flows outside any keydris session.
+1. **Tier 1 is implemented** for the sandbox plane: per-session tokens eliminate
+   the destination-only degradation, and concurrent sessions are attributed
+   independently. The broker's degraded branch now only triggers for flows
+   outside any keydris session.
 2. **Tier 2 only if the macOS demo must show kernel-asserted attribution.**
 3. **Keep Tier 3 as the post-POC roadmap item** it already is in
    [plan.md section 7](../plan.md): it is a packaging/signing project more than

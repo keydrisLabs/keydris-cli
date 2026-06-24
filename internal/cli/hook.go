@@ -2,8 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,44 +17,33 @@ import (
 	"github.com/nocaplabs/keydris-cli/internal/node/sessionsock"
 )
 
-// runHook implements `keydris hook session-start|session-end`, the Claude Code
-// integration: it binds the session to a cgroup, mints a per-session SPIFFE
-// SVID from the control plane, and registers the handle<->SVID with the daemon
-// (SessionEnd revokes and unregisters).
-func runHook(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: keydris hook session-start|session-end [--blueprint B] [--session S]")
-		return 1
-	}
-	sub := args[0]
-	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
-	blueprint := fs.String("blueprint", "", "blueprint to bind (overrides config/env)")
-	session := fs.String("session", "", "session id (default: $KEYDRIS_SESSION/$CLAUDE_SESSION_ID or generated)")
-	if err := fs.Parse(args[1:]); err != nil {
-		return 1
-	}
+// The session lifecycle below (mint SVID + bind + register, and the reverse) is
+// used internally by `keydris run`. It was previously also exposed as
+// `keydris hook session-start|session-end` for Claude Code; that command has
+// been removed.
 
-	cfg := config.Load()
-	switch sub {
-	case "session-start":
-		return hookSessionStart(cfg, *blueprint, sessionID(*session, true))
-	case "session-end":
-		return hookSessionEnd(cfg, sessionID(*session, false))
-	default:
-		fmt.Fprintf(os.Stderr, "keydris hook: unknown subcommand %q\n", sub)
-		return 1
-	}
-}
-
-// bindSessionForMode chooses the session handle for the active data plane. Only
-// the transparent (Linux) plane needs a cgroup; the sandbox and proxy-env planes
-// attribute by the registered handle alone, so they use an opaque token and skip
-// the privileged cgroup write.
+// bindSessionForMode chooses the session handle for the active data plane. The
+// transparent (Linux) plane needs a cgroup; the sandbox plane uses a random
+// per-session token as the handle, which the agent's requests carry via
+// Proxy-Authorization so the proxy attributes each concurrent session
+// (sandboxproxy.resolveSession -> registry.Lookup).
 func bindSessionForMode(cfg *config.Config, sid string) (string, error) {
 	if usesCgroupBinding(cfg) {
 		return bindSession(sid)
 	}
-	return "/keydris/" + sid, nil
+	return newProxyToken(), nil
+}
+
+// newProxyToken returns an unguessable per-session token. It is a bearer
+// credential: presenting it to the proxy (via Proxy-Authorization) attributes a
+// connection to this session's SVID, so it must be random and kept off the wire
+// to anyone but the session.
+func newProxyToken() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "t" + time.Now().UTC().Format("20060102T150405.000000000")
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func unbindSessionForMode(cfg *config.Config, handle string) {
@@ -64,56 +54,11 @@ func unbindSessionForMode(cfg *config.Config, handle string) {
 
 func usesCgroupBinding(cfg *config.Config) bool {
 	switch cfg.DataPlane {
-	case "", "transparent", "linux":
+	case "transparent", "linux":
 		return true
-	default: // sandbox, claude-code, proxyenv
+	default: // sandbox (default), claude-code, proxyenv
 		return false
 	}
-}
-
-// sessionID resolves the session identifier so SessionStart and SessionEnd
-// agree on the same per-session identity. Precedence: explicit flag, then
-// $KEYDRIS_SESSION/$CLAUDE_SESSION_ID, then Claude Code's hook payload
-// (session_id on stdin). Only when none of those exist do we fall back to a
-// generated handle (start) or "default" (end).
-func sessionID(flagVal string, generate bool) string {
-	for _, v := range []string{flagVal, os.Getenv("KEYDRIS_SESSION"), os.Getenv("CLAUDE_SESSION_ID")} {
-		if v != "" {
-			return v
-		}
-	}
-	if sid := stdinSessionID(); sid != "" {
-		return sid
-	}
-	if generate {
-		return time.Now().UTC().Format("20060102T150405")
-	}
-	return "default"
-}
-
-// stdinSessionID reads Claude Code's hook payload from stdin and returns its
-// session_id. Claude Code invokes hooks with a JSON object on stdin
-// (`{"session_id","hook_event_name","cwd",...}`); using session_id is what lets
-// SessionStart and SessionEnd correlate to the same minted SVID. It returns ""
-// when stdin is an interactive terminal or carries no usable payload (e.g. a
-// manual `keydris hook ...` invocation), so the flag/env/generated fallbacks
-// still apply and we never block on a TTY.
-func stdinSessionID() string {
-	fi, err := os.Stdin.Stat()
-	if err != nil || fi.Mode()&os.ModeCharDevice != 0 {
-		return ""
-	}
-	b, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
-	if err != nil || len(b) == 0 {
-		return ""
-	}
-	var payload struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(b, &payload); err != nil {
-		return ""
-	}
-	return payload.SessionID
 }
 
 type sessionState struct {
@@ -129,13 +74,13 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 
 	handle, err := bindSessionForMode(cfg, sid)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "keydris hook: bind session: %v\n", err)
+		fmt.Fprintf(os.Stderr, "keydris session: bind session: %v\n", err)
 		return 1
 	}
 
 	inst, err := mintInstance(cfg, blueprint, handle)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "keydris hook: mint: %v\n", err)
+		fmt.Fprintf(os.Stderr, "keydris session: mint: %v\n", err)
 		return 1
 	}
 
@@ -147,14 +92,14 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 		Blueprint: blueprint,
 		ULID:      inst.ULID,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris hook: register with daemon: %v\n", err)
+		fmt.Fprintf(os.Stderr, "keydris session: register with daemon: %v\n", err)
 		// Identity was minted; continue so the session still has an SVID.
 	}
 
 	if err := saveState(cfg, sessionState{
 		SessionID: sid, Handle: handle, ULID: inst.ULID, SPIFFEID: inst.SPIFFEID, Blueprint: blueprint,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris hook: save state: %v\n", err)
+		fmt.Fprintf(os.Stderr, "keydris session: save state: %v\n", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "keydris: session %s bound to %s\n", sid, inst.SPIFFEID)
@@ -164,17 +109,17 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 func hookSessionEnd(cfg *config.Config, sid string) int {
 	st, err := loadState(cfg, sid)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "keydris hook: no state for session %q: %v\n", sid, err)
+		fmt.Fprintf(os.Stderr, "keydris session: no state for session %q: %v\n", sid, err)
 		return 1
 	}
 
 	if err := revokeInstance(cfg, st.ULID); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris hook: revoke: %v\n", err)
+		fmt.Fprintf(os.Stderr, "keydris session: revoke: %v\n", err)
 	}
 	if err := sessionsock.Send(cfg.SessionSocket, sessionsock.Message{
 		Action: sessionsock.ActionUnregister, Handle: st.Handle,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris hook: unregister: %v\n", err)
+		fmt.Fprintf(os.Stderr, "keydris session: unregister: %v\n", err)
 	}
 	unbindSessionForMode(cfg, st.Handle)
 	_ = removeState(cfg, sid)

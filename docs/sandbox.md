@@ -42,7 +42,8 @@ Claude session  ── Bash subprocess egress (curl/git/npm) ──►  Keydris 
   - `sandbox.enableWeakerNetworkIsolation: true` on macOS (required for MITM with
     a custom CA under Seatbelt);
   - merges any `allowedDomains`;
-- merges the `SessionStart`/`SessionEnd` hooks;
+- merges the `SessionStart`/`SessionEnd` hooks (the internal
+  `keydris __session-start` / `keydris __session-end` entrypoints);
 - points the agent's subprocess tools at the CA via the settings `env` block
   (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`,
   `REQUESTS_CA_BUNDLE`). `--trust-store` additionally installs the CA into the OS
@@ -54,16 +55,25 @@ sandbox is still enabled and routed to Keydris (enforcement drift).
 
 ## Per-session attribution
 
-The proxy attributes a connection to a session by:
+Each session is bound to a random per-session **token** at SessionStart. The
+internal `keydris __session-start` hook mints the SVID, registers the session
+under its token, and appends a token-bearing proxy URL
+(`HTTPS_PROXY=http://keydris:<token>@127.0.0.1:<port>`) to Claude Code's
+`$CLAUDE_ENV_FILE`, which Claude Code applies to every Bash subprocess in the
+session. The proxy attributes a connection by:
 
-1. a `Proxy-Authorization: Basic base64(user:<handle>)` header on the CONNECT
-   request, if present (the handle is looked up in the session registry); else
-2. the sole registered session, for the common case of one Claude session per
-   proxy instance.
+1. the `Proxy-Authorization` token on the request — looked up in the session
+   registry; a present-but-unknown token is treated as **unattributed**, never
+   downgraded to "the sole session"; else
+2. (no token) the sole registered session — the single-session convenience case.
 
-For concurrent sessions that must be separated, run one proxy listener per
-session and write that session's `sandbox.network.httpProxyPort` into its
-project's `.claude/settings.local.json`. The registry/SVID model is unchanged.
+Because each concurrent session runs its own SessionStart hook and gets its own
+token, **concurrent sessions through one proxy are attributed independently** —
+no per-session port required. Caveat: the Claude path depends on
+`$CLAUDE_ENV_FILE` and on a hook-set `HTTP_PROXY` composing with the sandbox's
+`httpProxyPort` routing, which is undocumented and may vary by Claude Code
+version; re-verify on upgrades. `keydris run` does not depend on it. See
+[attribution.md](attribution.md).
 
 ## Coverage and trust model
 
@@ -87,6 +97,12 @@ project's `.claude/settings.local.json`. The registry/SVID model is unchanged.
 
 ## Try it
 
+Needs a running control plane and a prior `keydris login` (the per-session SVID
+is minted over mTLS). Then:
+
 ```bash
-make e2e-sandbox    # asserted: 200 (inject) / 403 (deny) / revocation / ledger
+keydris login
+keydris init claude-code <policy-id>
+keydris proxy up
+claude   # each session's Bash egress is brokered, secretless, and per-session attributed
 ```

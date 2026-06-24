@@ -42,10 +42,15 @@ type Options struct {
 	// sandbox is unavailable and forbid the unsandboxed escape hatch. This is
 	// what makes enforcement non-bypassable (plan_v1.md section 7).
 	Strict bool
+	// SessionStartHook / SessionEndHook, when both set, are wired into the
+	// Claude Code SessionStart/SessionEnd hooks so each session binds a fresh
+	// per-session SVID (and revokes it on end). Empty disables hook wiring.
+	SessionStartHook string
+	SessionEndHook   string
 }
 
-// Configure merges the Keydris sandbox block, session hooks, and CA env into the
-// Claude Code settings file at path, preserving unrelated settings.
+// Configure merges the Keydris sandbox block, per-session hooks, and CA env into
+// the Claude Code settings file at path, preserving unrelated settings.
 func Configure(path string, opt Options) error {
 	settings, err := readSettings(path)
 	if err != nil {
@@ -53,12 +58,29 @@ func Configure(path string, opt Options) error {
 	}
 
 	mergeSandbox(settings, opt)
-	mergeHooks(settings)
+	if opt.SessionStartHook != "" && opt.SessionEndHook != "" {
+		mergeHooks(settings, opt.SessionStartHook, opt.SessionEndHook)
+	}
 	if opt.CAPath != "" {
 		mergeCAEnv(settings, opt.CAPath)
 	}
 
 	return writeSettings(path, settings)
+}
+
+// mergeHooks wires the per-session SessionStart/SessionEnd hook commands into the
+// settings, preserving any unrelated user hooks (other events stay untouched).
+func mergeHooks(settings map[string]any, startCmd, endCmd string) {
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	entry := func(c string) []any {
+		return []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": c}}}}
+	}
+	hooks["SessionStart"] = entry(startCmd)
+	hooks["SessionEnd"] = entry(endCmd)
+	settings["hooks"] = hooks
 }
 
 func mergeSandbox(settings map[string]any, opt Options) {
@@ -89,28 +111,6 @@ func mergeSandbox(settings map[string]any, opt Options) {
 	}
 
 	settings["sandbox"] = sb
-}
-
-// keydrisHooks is the hook block Keydris owns inside Claude Code settings.
-func keydrisHooks() map[string]any {
-	cmd := func(c string) map[string]any {
-		return map[string]any{"hooks": []any{map[string]any{"type": "command", "command": c}}}
-	}
-	return map[string]any{
-		"SessionStart": []any{cmd("keydris hook session-start")},
-		"SessionEnd":   []any{cmd("keydris hook session-end")},
-	}
-}
-
-func mergeHooks(settings map[string]any) {
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = map[string]any{}
-	}
-	for event, val := range keydrisHooks() {
-		hooks[event] = val
-	}
-	settings["hooks"] = hooks
 }
 
 // mergeCAEnv points the agent's subprocess tools at the Keydris CA so they trust

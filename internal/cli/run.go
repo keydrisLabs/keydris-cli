@@ -34,6 +34,12 @@ func runRun(args []string) int {
 	}
 	defer hookSessionEnd(cfg, sid)
 
+	// The per-session token registered by hookSessionStart is the session handle;
+	// carry it in the proxy URL userinfo so this command's egress is attributed
+	// to this session (and isolated from any concurrent session).
+	st, _ := loadState(cfg, sid)
+	token := st.Handle
+
 	child := exec.Command(cmd[0], cmd[1:]...)
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
 	child.Env = append(os.Environ(), "KEYDRIS_SESSION="+sid)
@@ -45,7 +51,7 @@ func runRun(args []string) int {
 		// Outside the real Claude Code sandbox, point the command at the Keydris
 		// proxy explicitly and trust the CA so the MITM path verifies. Inside a
 		// real session the sandbox does this routing itself.
-		p := fmt.Sprintf("http://127.0.0.1:%d", cfg.HTTPProxyPort)
+		p := proxyAuthURL(cfg.HTTPProxyPort, token)
 		child.Env = append(child.Env,
 			"HTTP_PROXY="+p, "HTTPS_PROXY="+p, "http_proxy="+p, "https_proxy="+p,
 			"CURL_CA_BUNDLE="+cfg.CAPath, "SSL_CERT_FILE="+cfg.CAPath,

@@ -209,8 +209,11 @@ func (p *sandboxPlane) leafFor(host string) (*tls.Certificate, error) {
 	return &leaf, nil
 }
 
-// resolveSession reads the per-session handle from Proxy-Authorization and looks
-// it up; falling back to the sole registered session when there is exactly one.
+// resolveSession attributes a connection to its session. A per-session token in
+// Proxy-Authorization is honored exactly: a present-but-unknown token resolves
+// to nil (unattributed) rather than guessing — this is what keeps concurrent
+// sessions isolated. Only when no token is presented do we fall back to the sole
+// registered session (the single-session convenience case).
 func (p *sandboxPlane) resolveSession(req *http.Request) *attest.Session {
 	if p.reg == nil {
 		return nil
@@ -219,6 +222,7 @@ func (p *sandboxPlane) resolveSession(req *http.Request) *attest.Session {
 		if s, ok := p.reg.Lookup(handle); ok {
 			return &s
 		}
+		return nil // token presented but unknown: do not fall back to Sole()
 	}
 	if s, ok := p.reg.Sole(); ok {
 		return &s

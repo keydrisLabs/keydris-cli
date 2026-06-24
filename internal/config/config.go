@@ -78,6 +78,11 @@ type Config struct {
 	Blueprint string
 	// SessionSocket is the daemon's local registration socket (cgroup<->SVID).
 	SessionSocket string
+	// PolicyID is the governance policy this node enforces, set by
+	// `keydris init claude-code <policy-id>` and persisted under DataDir. The
+	// daemon sends it to the broker on every authorize so the decision resolves
+	// against the right policy.
+	PolicyID string
 
 	// --- Sandbox proxy (v2: Claude Code custom-proxy integration) ---
 
@@ -87,7 +92,7 @@ type Config struct {
 	CAPath    string
 	CAKeyPath string
 	// ClaudeSettingsPath is the Claude Code settings file `keydris init` writes
-	// the sandbox block + hooks into (default ~/.claude/settings.json).
+	// the sandbox block + CA env into (default ~/.claude/settings.json).
 	ClaudeSettingsPath string
 	// HTTPProxyPort is the port the Claude Code sandbox routes egress to
 	// (sandbox.network.httpProxyPort). Defaults to ProxyPort.
@@ -156,9 +161,10 @@ func Load() *Config {
 		ControlMTLSAddr: env("KEYDRIS_CONTROL_MTLS_ADDR", "127.0.0.1:8443"),
 		ControlMTLSURL:  env("KEYDRIS_CONTROL_MTLS_URL", "https://127.0.0.1:8443"),
 		ProxyPort:       envInt("KEYDRIS_PROXY_PORT", 15001),
-		DataPlane:       env("KEYDRIS_DATAPLANE", "transparent"),
-		// v2 onboarding (`keydris init claude-code`) selects the sandbox plane;
-		// the default stays transparent so existing Linux flows are unchanged.
+		// Sandbox (the Claude Code custom proxy) is the default plane, so users
+		// never need to set KEYDRIS_DATAPLANE. Override to "transparent"
+		// (Linux/root) or "proxyenv" only for those paths.
+		DataPlane:        env("KEYDRIS_DATAPLANE", "sandbox"),
 		BackendAddr:      env("KEYDRIS_BACKEND_ADDR", "127.0.0.1:8080"),
 		BackendPort:      envInt("KEYDRIS_BACKEND_PORT", 8080),
 		BackendTLS:       env("KEYDRIS_BACKEND_TLS", "") != "",
@@ -176,6 +182,7 @@ func Load() *Config {
 
 		Blueprint:     env("KEYDRIS_BLUEPRINT", ""),
 		SessionSocket: env("KEYDRIS_SESSION_SOCKET", "/tmp/keydris-registry.sock"),
+		PolicyID:      env("KEYDRIS_POLICY_ID", readPolicyID(dataDir)),
 
 		CAPath:             env("KEYDRIS_CA_PATH", dataDir+"/ca.crt"),
 		CAKeyPath:          env("KEYDRIS_CA_KEY_PATH", dataDir+"/ca.key"),
@@ -265,6 +272,36 @@ func (c *Config) ResolveBlueprint(flag string) string {
 	default:
 		return "repo-tools"
 	}
+}
+
+// policyIDPath is where `keydris init` persists the active policy id.
+func policyIDPath(dataDir string) string { return dataDir + "/policy-id" }
+
+// readPolicyID returns the persisted policy id, or "" if none is set yet.
+func readPolicyID(dataDir string) string {
+	b, err := os.ReadFile(policyIDPath(dataDir))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// SavePolicyID persists the policy id under the data dir so later `keydris proxy
+// up` / `keydris status` pick it up without re-passing it.
+func SavePolicyID(dataDir, id string) error {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(policyIDPath(dataDir), []byte(strings.TrimSpace(id)+"\n"), 0o644)
+}
+
+// RemovePolicyID clears the persisted policy id (used by `keydris deinit`). A
+// missing file is not an error.
+func RemovePolicyID(dataDir string) error {
+	if err := os.Remove(policyIDPath(dataDir)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func env(key, def string) string {

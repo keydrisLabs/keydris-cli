@@ -15,6 +15,11 @@ func runStatus() int {
 
 	fmt.Printf("trust domain: %s\n", cfg.TrustDomain)
 	fmt.Printf("dataplane:    %s\n", cfg.DataPlane)
+	policy := cfg.PolicyID
+	if policy == "" {
+		policy = "(none — run `keydris init claude-code <policy-id>`)"
+	}
+	fmt.Printf("policy id:    %s\n", policy)
 	fmt.Printf("blueprint:    %s\n", cfg.ResolveBlueprint(""))
 	fmt.Printf("proxy port:   %d\n", cfg.ProxyPort)
 	fmt.Printf("backend:      %s (dport %d)\n", cfg.BackendAddr, cfg.BackendPort)

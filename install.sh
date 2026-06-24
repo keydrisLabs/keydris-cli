@@ -32,7 +32,7 @@ $SUDO install -d "$BINDIR"
 $SUDO install -m 0755 "$REPO_DIR/bin/keydris" "$BINDIR/keydris"
 
 # Optional: install the node systemd unit on a systemd Linux host (for the
-# transparent data plane, which runs `keydris up` as a long-lived service).
+# transparent data plane, which runs `keydris proxy up` as a long-lived service).
 if [ "$(uname -s)" = "Linux" ] && [ -d /run/systemd/system ]; then
   echo "==> installing systemd unit (keydris.service)"
   $SUDO install -d /etc/keydris

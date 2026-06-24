@@ -13,7 +13,7 @@ type Status struct {
 	Enabled        bool
 	ProxyPort      int  // sandbox.network.httpProxyPort found in settings (0 if unset)
 	PortMatches    bool // ProxyPort == expected
-	HooksWired     bool
+	HooksWired     bool // SessionStart + SessionEnd hooks present
 	Warnings       []string
 }
 
@@ -64,7 +64,7 @@ func Verify(path string, expectedPort int) (Status, error) {
 		st.HooksWired = hasStart && hasEnd
 	}
 	if !st.HooksWired {
-		st.Warnings = append(st.Warnings, "SessionStart/SessionEnd hooks not wired: sessions get no per-session SVID")
+		st.Warnings = append(st.Warnings, "SessionStart/SessionEnd hooks not wired: sessions get no per-session SVID (re-run `keydris init claude-code <policy-id>`)")
 	}
 
 	return st, nil

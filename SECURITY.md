@@ -48,6 +48,20 @@ The proxy injects a Bearer token on the wire. Wrap it in a type whose
 payload or a future debug log. (Current code already avoids logging it — this
 makes the guarantee structural rather than a discipline.)
 
+### P5 — Per-session proxy token is a logged bearer credential  (medium)
+
+The per-session token (`newProxyToken`) is a bearer credential: presenting it to
+the proxy via `Proxy-Authorization` attributes a connection to that session's
+SVID. Two issues:
+- **Logged in cleartext.** `internal/node/sessionsock` logs the handle (= token)
+  at registration (`session registered: handle=%q`). Redact or hash it in logs,
+  and treat the daemon log as sensitive.
+- **Theft = impersonation.** A co-resident process that reads the token (from the
+  env, `$CLAUDE_ENV_FILE`, or logs) can impersonate the session until
+  `session-end`. Mitigations: short token lifetime, tighten `$CLAUDE_ENV_FILE`
+  and daemon-log permissions, and (Tier 2/3 in [docs/attribution.md](docs/attribution.md))
+  move to kernel-asserted attribution so identity is observed, not claimed.
+
 ### Verifiable audit on the client
 
 `internal/evidence` is the hash-chained ledger lib used by `keydris logs`. The

@@ -17,16 +17,27 @@ import (
 // and the CA env into ~/.claude/settings.json without clobbering existing
 // settings. A reference copy lives at examples/claude-code/settings.json.
 func runInit(args []string) int {
-	target := "claude-code"
-	rest := args
-	if len(args) > 0 && args[0] != "" && args[0][0] != '-' {
-		target = args[0]
-		rest = args[1:]
+	const usage = "usage: keydris init claude-code <policy-id> [--strict] [--trust-store]"
+
+	if len(args) == 0 || args[0] == "" || args[0][0] == '-' {
+		fmt.Fprintln(os.Stderr, usage)
+		return 1
 	}
+	target := args[0]
 	if target != "claude-code" {
 		fmt.Fprintf(os.Stderr, "keydris init: unknown target %q (want claude-code)\n", target)
 		return 1
 	}
+
+	// policy-id is a required positional argument.
+	rest := args[1:]
+	if len(rest) == 0 || rest[0] == "" || rest[0][0] == '-' {
+		fmt.Fprintln(os.Stderr, "keydris init claude-code: missing required <policy-id>")
+		fmt.Fprintln(os.Stderr, usage)
+		return 1
+	}
+	policyID := rest[0]
+	rest = rest[1:]
 
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	strict := fs.Bool("strict", true, "lock the sandbox as a hard gate (failIfUnavailable + no unsandboxed escape)")
@@ -37,6 +48,14 @@ func runInit(args []string) int {
 
 	cfg := config.Load()
 
+	// Persist the policy id so `keydris proxy up` enforces it and the broker
+	// resolves the right policy for this node's egress.
+	if err := config.SavePolicyID(cfg.DataDir, policyID); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris init: save policy id: %v\n", err)
+		return 1
+	}
+	cfg.PolicyID = policyID
+
 	// Generate-and-persist the CA so the daemon loads the same root that the
 	// sandbox is told to trust below.
 	if _, err := proxy.LoadOrCreateCA(cfg.CAPath, cfg.CAKeyPath, "Keydris CA", 825*24*time.Hour); err != nil {
@@ -45,17 +64,20 @@ func runInit(args []string) int {
 	}
 
 	if err := sandbox.Configure(cfg.ClaudeSettingsPath, sandbox.Options{
-		HTTPProxyPort:  cfg.HTTPProxyPort,
-		AllowedDomains: cfg.AllowedDomains,
-		CAPath:         cfg.CAPath,
-		Strict:         *strict,
+		HTTPProxyPort:    cfg.HTTPProxyPort,
+		AllowedDomains:   cfg.AllowedDomains,
+		CAPath:           cfg.CAPath,
+		Strict:           *strict,
+		SessionStartHook: internalSessionStartCmd,
+		SessionEndHook:   internalSessionEndCmd,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris init: configure sandbox: %v\n", err)
 		return 1
 	}
 
 	fmt.Printf("keydris: configured Claude Code sandbox in %s\n", cfg.ClaudeSettingsPath)
-	fmt.Printf("  sandbox.enabled=true, network.httpProxyPort=%d, hooks wired\n", cfg.HTTPProxyPort)
+	fmt.Printf("  policy id: %s\n", policyID)
+	fmt.Printf("  sandbox.enabled=true, network.httpProxyPort=%d, per-session SVID hooks wired\n", cfg.HTTPProxyPort)
 	fmt.Printf("  CA: %s (trusted by sandboxed tools via NODE_EXTRA_CA_CERTS/CURL_CA_BUNDLE/...)\n", cfg.CAPath)
 	if *strict {
 		fmt.Printf("  strict: failIfUnavailable=true, allowUnsandboxedCommands=false\n")
@@ -69,6 +91,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	fmt.Printf("\nNext: start the proxy with `KEYDRIS_DATAPLANE=sandbox keydris up`, then run `claude`.\n")
+	fmt.Printf("\nNext: start the proxy with `keydris proxy up`, then run `claude`.\n")
 	return 0
 }

@@ -33,6 +33,9 @@ type AuthorizeRequest struct {
 	DstHost   string `json:"dst_host,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
 	SVID      string `json:"svid,omitempty"`
+	// PolicyID names the governance policy the broker should evaluate this
+	// request against (set by `keydris init claude-code <policy-id>`).
+	PolicyID string `json:"policy_id,omitempty"`
 }
 
 // Inject describes a credential the proxy should add to the request on the wire.

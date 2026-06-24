@@ -34,9 +34,16 @@ through a local proxy, and lets the control-plane **broker** inject the real
 upstream credential on the wire on allow. The agent never holds the secret; an
 unmodified client gets a `200` only because the proxy injected it.
 
-Two data planes ship in this binary:
+**Concurrent sessions are isolated.** Each Claude session gets a distinct
+per-session token (carried in `Proxy-Authorization` via Claude Code's
+`$CLAUDE_ENV_FILE`), so the proxy attributes every connection to the right
+session — multiple sessions can share one proxy without cross-attribution. See
+[docs/attribution.md](docs/attribution.md).
 
-- **`sandbox`** (recommended, cross-platform): the TLS-terminating forward proxy
+Three data planes ship in this binary; `sandbox` is the default, so no
+configuration is needed. Override with `KEYDRIS_DATAPLANE` only for the others:
+
+- **`sandbox`** (default, cross-platform): the TLS-terminating forward proxy
   Claude Code's sandbox routes all Bash-subprocess egress to. No root, no
   iptables. See [docs/sandbox.md](docs/sandbox.md).
 - **`transparent`** (Linux + root): iptables `REDIRECT` + `SO_ORIGINAL_DST`,
@@ -50,45 +57,48 @@ Two data planes ship in this binary:
 With a control plane reachable (see below):
 
 ```bash
-export KEYDRIS_DATAPLANE=sandbox
+# 1. Sign in. The per-session SVID is minted over mTLS with this identity, so
+#    this must happen before any session starts.
+keydris login
 
-# 1. Configure Claude Code's sandbox: generate the Keydris CA and write the
-#    sandbox block + session hooks + CA env into ~/.claude/settings.json.
-keydris init claude-code            # add --trust-store to install the CA system-wide
+# 2. Configure Claude Code's sandbox for a governance policy: generate the
+#    Keydris CA and write the sandbox block + CA env + per-session SVID hooks
+#    into ~/.claude/settings.json.
+keydris init claude-code <policy-id>   # add --trust-store to install the CA system-wide
 
-# 2. Run the proxy data plane.
-keydris up &
+# 3. Start the brokered egress proxy in the background (no `&` needed).
+keydris proxy up
 
-# 3. Confirm enforcement state (warns if the sandbox is disabled / not routed).
+# 4. Confirm enforcement state (warns if the sandbox is disabled / not routed).
 keydris status
 
-# 4. Run a real session — its Bash-subprocess egress is now brokered & secretless.
+# 5. Run a real session. Claude Code fires the wired SessionStart hook, which
+#    mints a per-session SPIFFE SVID and registers it; the proxy attributes the
+#    session's egress to that identity, brokered and secretless.
 claude
 ```
 
-Without Claude Code, `keydris run` plays the sandbox's role, exercising the same
-proxy/broker path:
+The sandbox data plane is the default, so you never need to set
+`KEYDRIS_DATAPLANE`. Without Claude Code, `keydris run` plays the sandbox's role,
+exercising the same proxy/broker path:
 
 ```bash
-KEYDRIS_DATAPLANE=sandbox keydris run -- curl -s https://your-api/
+keydris run -- curl -s https://your-api/
 ```
 
 ## Commands
 
 ```
-keydris login                 Browser sign-in; stores a local client certificate
-keydris whoami                Show the locally stored identity
-keydris logout                Remove the locally stored identity
-keydris up                    Run the proxy daemon (sandbox, or transparent on Linux/root)
-keydris run -- <cmd...>       Run a command inside a keydris session
-keydris status                Show config + sandbox enforcement state
-keydris logs                  Print and verify the hash-chained evidence ledger
-keydris hook session-start    Bind a session: mint SVID + register (Claude hook)
-keydris hook session-end      End a session: revoke SVID + unregister
-keydris init claude-code      Configure the Claude Code sandbox + CA + hooks
-                                [--strict] [--trust-store]
-keydris iptables-up|down      Install/remove the transparent redirect rules (root)
-keydris enroll                Exchange a token for a node credential (legacy, root)
+keydris login                      Browser sign-in; stores a local client certificate
+keydris whoami                     Show the locally stored identity
+keydris logout                     Remove the locally stored identity
+keydris init claude-code <policy>  Configure the Claude Code sandbox + CA for a policy id
+                                     [--strict] [--trust-store]
+keydris deinit claude-code         Undo init: remove the Keydris sandbox config + policy id
+keydris proxy up                   Start the brokered egress proxy in the background
+keydris run -- <cmd...>            Run a command inside a keydris session
+keydris status                     Show config + sandbox enforcement state
+keydris logs                       Print and verify the hash-chained evidence ledger
 ```
 
 ## Pointing at a control plane
