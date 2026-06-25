@@ -5,7 +5,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/nocaplabs/keydris-cli/internal/node/proxy"
+	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
 )
 
 // These thin wrappers keep the data planes decoupled from the shared L7 package

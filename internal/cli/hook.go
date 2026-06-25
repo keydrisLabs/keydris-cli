@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
-	"github.com/nocaplabs/keydris-cli/internal/node/login"
-	"github.com/nocaplabs/keydris-cli/internal/node/sessionsock"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/login"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
 )
 
 // The session lifecycle below (mint SVID + bind + register, and the reverse) is
@@ -67,6 +67,28 @@ type sessionState struct {
 	ULID      string `json:"ulid"`
 	SPIFFEID  string `json:"spiffe_id"`
 	Blueprint string `json:"blueprint"`
+	OwnerPID  int    `json:"owner_pid,omitempty"`
+}
+
+// updateSessionOwner records the session's root process and re-registers it with
+// the daemon so the sandbox proxy can verify that connecting processes belong to
+// this session (peer verification). Best-effort: on failure the session stays
+// token-only (no peer check). A non-positive pid is ignored.
+func updateSessionOwner(cfg *config.Config, sid string, pid int) {
+	if pid <= 0 {
+		return
+	}
+	st, err := loadState(cfg, sid)
+	if err != nil {
+		return
+	}
+	st.OwnerPID = pid
+	_ = saveState(cfg, st)
+	_ = sessionsock.Send(cfg.SessionSocket, sessionsock.Message{
+		Action:   sessionsock.ActionUpdateOwner,
+		Handle:   st.Handle,
+		OwnerPID: pid,
+	})
 }
 
 func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {

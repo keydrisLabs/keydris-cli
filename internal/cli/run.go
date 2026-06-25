@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
 )
 
 // runRun implements `keydris run [--blueprint B] -- <command...>`: it opens a
@@ -59,7 +59,14 @@ func runRun(args []string) int {
 			"REQUESTS_CA_BUNDLE="+cfg.CAPath)
 	}
 
-	if err := child.Run(); err != nil {
+	if err := child.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris run: %v\n", err)
+		return 1
+	}
+	// Bind peer verification to the wrapped process tree: the registered session
+	// is only honored for connections from this command and its descendants.
+	updateSessionOwner(cfg, sid, child.Process.Pid)
+	if err := child.Wait(); err != nil {
 		if exit, ok := err.(*exec.ExitError); ok {
 			return exit.ExitCode()
 		}

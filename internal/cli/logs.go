@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
-	"github.com/nocaplabs/keydris-cli/internal/evidence"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/evidence"
 )
 
 // runLogs implements `keydris logs`: print the hash-chained evidence ledger

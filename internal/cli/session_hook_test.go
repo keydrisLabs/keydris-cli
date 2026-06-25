@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
 )
 
 func TestProxyAuthURL(t *testing.T) {

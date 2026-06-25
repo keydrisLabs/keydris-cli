@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/nocaplabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 )
 
 // Linux netfilter constants for recovering the pre-REDIRECT destination.

@@ -100,6 +100,17 @@ type Config struct {
 	// AllowedDomains seeds sandbox.allowedDomains so the agent's egress (and the
 	// model endpoint) is permitted through the sandbox to the Keydris proxy.
 	AllowedDomains []string
+	// AllowSoleFallback lets the sandbox proxy attribute a request that carries
+	// no per-session token to the sole registered session. Off by default: a
+	// request must present its token, else it is unattributed (fail-closed). This
+	// closes the "any local process reaching the proxy borrows the lone session"
+	// gap; flip it on only to restore the single-session convenience.
+	AllowSoleFallback bool
+	// PeerVerify controls connecting-process verification in the sandbox proxy:
+	// "off", "warn" (default — log mismatches), or "enforce" (reject a connection
+	// whose process is not in the session's tree). Effective on Linux; a no-op on
+	// platforms that cannot resolve the peer (see docs/attribution.md, Tier 3).
+	PeerVerify string
 
 	// --- Browser login (`keydris login`) ---
 
@@ -189,6 +200,8 @@ func Load() *Config {
 		ClaudeSettingsPath: env("KEYDRIS_CLAUDE_SETTINGS", defaultClaudeSettings()),
 		HTTPProxyPort:      envInt("KEYDRIS_HTTP_PROXY_PORT", envInt("KEYDRIS_PROXY_PORT", 15001)),
 		AllowedDomains:     envList("KEYDRIS_ALLOWED_DOMAINS"),
+		AllowSoleFallback:  env("KEYDRIS_ALLOW_SOLE_FALLBACK", "") != "",
+		PeerVerify:         env("KEYDRIS_PEER_VERIFY", "warn"),
 
 		ClientCAPath:       env("KEYDRIS_CLIENT_CA_PATH", dataDir+"/client-ca.crt"),
 		ClientCAKeyPath:    env("KEYDRIS_CLIENT_CA_KEY_PATH", dataDir+"/client-ca.key"),

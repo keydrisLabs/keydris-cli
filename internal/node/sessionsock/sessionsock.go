@@ -17,13 +17,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/nocaplabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 )
 
 // Actions.
 const (
-	ActionRegister   = "register"
-	ActionUnregister = "unregister"
+	ActionRegister    = "register"
+	ActionUnregister  = "unregister"
+	ActionUpdateOwner = "update-owner" // set OwnerPID on an existing session
 )
 
 // Message is one line-delimited JSON request on the socket.
@@ -34,6 +35,7 @@ type Message struct {
 	SVID      string `json:"svid,omitempty"`
 	Blueprint string `json:"blueprint,omitempty"`
 	ULID      string `json:"ulid,omitempty"`
+	OwnerPID  int    `json:"owner_pid,omitempty"` // session root pid, for peer verification
 }
 
 // Server accepts registration messages and applies them to a SessionRegistry.
@@ -82,17 +84,32 @@ func (s *Server) handle(conn net.Conn) {
 		}
 		switch m.Action {
 		case ActionRegister:
-			s.reg.Register(attest.Session{Handle: m.Handle, SPIFFEID: m.SPIFFEID, SVID: m.SVID, Blueprint: m.Blueprint})
-			s.logf("session registered: handle=%q spiffe=%s", m.Handle, m.SPIFFEID)
+			s.reg.Register(attest.Session{Handle: m.Handle, SPIFFEID: m.SPIFFEID, SVID: m.SVID, Blueprint: m.Blueprint, OwnerPID: m.OwnerPID})
+			// The handle is a per-session bearer token; log only a short prefix.
+			s.logf("session registered: handle=%s spiffe=%s owner_pid=%d", handlePrefix(m.Handle), m.SPIFFEID, m.OwnerPID)
+		case ActionUpdateOwner:
+			if s.reg.SetOwnerPID(m.Handle, m.OwnerPID) {
+				s.logf("session owner set: handle=%s owner_pid=%d", handlePrefix(m.Handle), m.OwnerPID)
+			}
 		case ActionUnregister:
 			s.reg.Unregister(m.Handle)
-			s.logf("session unregistered: handle=%q", m.Handle)
+			s.logf("session unregistered: handle=%s", handlePrefix(m.Handle))
 		default:
 			fmt.Fprintln(conn, `{"ok":false,"error":"unknown action"}`)
 			continue
 		}
 		fmt.Fprintln(conn, `{"ok":true}`)
 	}
+}
+
+// handlePrefix returns a short, non-secret prefix of a session handle for logs.
+// In the sandbox plane the handle is a per-session bearer token, so the full
+// value is never written to logs.
+func handlePrefix(h string) string {
+	if len(h) <= 12 {
+		return h
+	}
+	return h[:12] + "…"
 }
 
 // Close stops the server and removes the socket.

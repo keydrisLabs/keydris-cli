@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # keydris-cli installer: builds and installs the `keydris` CLI from source.
 #
-#   curl -fsSL https://raw.githubusercontent.com/nocaplabs/keydris-cli/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/keydrisLabs/keydris-cli/main/install.sh | bash
 #   # or, from a checkout:
 #   ./install.sh
 #

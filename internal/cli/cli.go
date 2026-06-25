@@ -62,6 +62,7 @@ Usage:
                                        given policy id  [--strict] [--trust-store]
   keydris deinit claude-code         Undo init: remove the Keydris sandbox config
   keydris proxy up                   Start the brokered egress proxy in the background
+  keydris proxy down                 Stop the background proxy
   keydris run -- <cmd...>            Run a command inside a keydris session
   keydris status                     Show config + sandbox enforcement state
   keydris logs                       Print and verify the hash-chained evidence ledger

@@ -16,14 +16,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nocaplabs/keydris-cli/internal/authz"
-	"github.com/nocaplabs/keydris-cli/internal/config"
-	"github.com/nocaplabs/keydris-cli/internal/node/attest"
-	"github.com/nocaplabs/keydris-cli/internal/node/dataplane"
-	"github.com/nocaplabs/keydris-cli/internal/node/login"
-	"github.com/nocaplabs/keydris-cli/internal/node/netfilter"
-	"github.com/nocaplabs/keydris-cli/internal/node/proxy"
-	"github.com/nocaplabs/keydris-cli/internal/node/sessionsock"
+	"github.com/keydrisLabs/keydris-cli/internal/authz"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/node/dataplane"
+	"github.com/keydrisLabs/keydris-cli/internal/node/login"
+	"github.com/keydrisLabs/keydris-cli/internal/node/netfilter"
+	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
 )
 
 // preflight fails fast with an actionable message rather than starting a broken
@@ -119,7 +119,12 @@ func buildDataPlane(cfg *config.Config, sessions *attest.SessionRegistry) (datap
 		if err != nil {
 			return nil, false, fmt.Errorf("load Keydris CA: %w", err)
 		}
-		dp, err := dataplane.NewSandboxProxy(fmt.Sprintf("127.0.0.1:%d", cfg.HTTPProxyPort), ca, sessions)
+		dp, err := dataplane.NewSandboxProxy(
+			fmt.Sprintf("127.0.0.1:%d", cfg.HTTPProxyPort), ca, sessions,
+			dataplane.SandboxOptions{
+				AllowSoleFallback: cfg.AllowSoleFallback,
+				PeerVerify:        dataplane.ParsePeerVerify(cfg.PeerVerify),
+			})
 		return dp, false, err
 	case "", "transparent", "linux":
 		if err := preflight(); err != nil {

@@ -1,6 +1,6 @@
 [Unit]
 Description=Keydris node agent (transparent per-session agent identity)
-Documentation=https://github.com/nocaplabs/keydris-cli
+Documentation=https://github.com/keydrisLabs/keydris-cli
 After=network-online.target
 Wants=network-online.target
 

@@ -5,7 +5,7 @@ package dataplane
 import (
 	"errors"
 
-	"github.com/nocaplabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 )
 
 // NewTransparent is only implementable on Linux (iptables REDIRECT +

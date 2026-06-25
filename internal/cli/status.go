@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
-	"github.com/nocaplabs/keydris-cli/internal/node/login"
-	"github.com/nocaplabs/keydris-cli/internal/node/sandbox"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/login"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 )
 
 func runStatus() int {

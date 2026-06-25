@@ -7,11 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
-	"github.com/nocaplabs/keydris-cli/internal/node/daemon"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/daemon"
 )
 
 // daemonEnv marks the re-exec'd child that actually runs the proxy in the
@@ -21,16 +22,63 @@ const daemonEnv = "KEYDRIS_PROXY_DAEMON"
 // runProxy dispatches `keydris proxy <subcommand>`.
 func runProxy(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: keydris proxy up")
+		fmt.Fprintln(os.Stderr, "usage: keydris proxy up|down")
 		return 1
 	}
 	switch args[0] {
 	case "up":
 		return runProxyUp()
+	case "down":
+		return runProxyDown()
 	default:
-		fmt.Fprintf(os.Stderr, "keydris proxy: unknown subcommand %q (want up)\n", args[0])
+		fmt.Fprintf(os.Stderr, "keydris proxy: unknown subcommand %q (want up|down)\n", args[0])
 		return 1
 	}
+}
+
+// runProxyDown stops the backgrounded proxy started by `keydris proxy up`. It
+// reads the pidfile under the data dir, sends SIGTERM (the daemon shuts down
+// cleanly on it), waits briefly for exit, and removes the pidfile.
+func runProxyDown() int {
+	cfg := config.Load()
+	pidPath := filepath.Join(cfg.DataDir, "proxy.pid")
+
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("keydris: no proxy pidfile; nothing to stop")
+			return 0
+		}
+		fmt.Fprintf(os.Stderr, "keydris proxy down: %v\n", err)
+		return 1
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		fmt.Fprintf(os.Stderr, "keydris proxy down: invalid pidfile %s\n", pidPath)
+		return 1
+	}
+
+	proc, _ := os.FindProcess(pid) // always succeeds on Unix
+	if proc.Signal(syscall.Signal(0)) != nil {
+		_ = os.Remove(pidPath)
+		fmt.Printf("keydris: proxy not running (removed stale pidfile, pid=%d)\n", pid)
+		return 0
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris proxy down: signal pid %d: %v\n", pid, err)
+		return 1
+	}
+
+	// Wait up to ~3s for a clean exit before removing the pidfile.
+	for i := 0; i < 30; i++ {
+		if proc.Signal(syscall.Signal(0)) != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = os.Remove(pidPath)
+	fmt.Printf("keydris: proxy stopped (pid=%d)\n", pid)
+	return 0
 }
 
 // runProxyUp starts the brokered egress proxy. It backgrounds itself — no
@@ -105,7 +153,7 @@ func runProxyUp() int {
 		if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
 			_ = c.Close()
 			fmt.Printf("keydris: proxy up (dataplane=%s, pid=%d, port=%d)\n", cfg.DataPlane, pid, proxyListenPort(cfg))
-			fmt.Printf("  logs: %s    stop: kill %d\n", logPath, pid)
+			fmt.Printf("  logs: %s    stop: keydris proxy down\n", logPath)
 			return 0
 		}
 		time.Sleep(100 * time.Millisecond)

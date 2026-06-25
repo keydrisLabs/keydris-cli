@@ -6,9 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
-	"github.com/nocaplabs/keydris-cli/internal/node/proxy"
-	"github.com/nocaplabs/keydris-cli/internal/node/sandbox"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 )
 
 // runInit implements `keydris init claude-code`: the one-command onboarding for

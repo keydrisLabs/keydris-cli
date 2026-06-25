@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
-	"github.com/nocaplabs/keydris-cli/internal/node/sandbox"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 )
 
 // runDeinit implements `keydris deinit claude-code`, the inverse of

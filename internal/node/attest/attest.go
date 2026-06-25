@@ -21,6 +21,10 @@ type Session struct {
 	SPIFFEID  string
 	SVID      string
 	Blueprint string
+	// OwnerPID is the session's root process. When non-zero, the sandbox proxy
+	// verifies a connecting process is a descendant of it before honoring the
+	// session's token (peer verification). Zero means "unknown — skip the check".
+	OwnerPID int
 }
 
 // Attribution is the resolved origin of a connection.
@@ -54,6 +58,20 @@ func (r *SessionRegistry) Unregister(handle string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.m, handle)
+}
+
+// SetOwnerPID updates the owner pid of an already-registered session (used for
+// peer verification). It returns false if no session is registered for handle.
+func (r *SessionRegistry) SetOwnerPID(handle string, pid int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.m[handle]
+	if !ok {
+		return false
+	}
+	s.OwnerPID = pid
+	r.m[handle] = s
+	return true
 }
 
 // Lookup returns the session registered for a handle.

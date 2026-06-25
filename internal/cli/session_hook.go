@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
 )
 
 // Internal Claude Code hook entrypoints. `keydris init claude-code` wires these
@@ -49,6 +49,10 @@ func runInternalSessionHook(phase string, args []string) int {
 		if code := hookSessionStart(cfg, *blueprint, sid); code != 0 {
 			return code
 		}
+		// Best-effort peer-verification anchor: the process that spawned this hook
+		// (the Claude session's process). Reliable on Linux when Claude is the
+		// direct parent; see the caveat in docs/attribution.md.
+		updateSessionOwner(cfg, sid, os.Getppid())
 		// Hand the session its per-session proxy token via $CLAUDE_ENV_FILE so
 		// every Bash subprocess routes egress through Keydris carrying the token
 		// in Proxy-Authorization. This is what isolates concurrent sessions.

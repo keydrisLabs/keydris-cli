@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/nocaplabs/keydris-cli/internal/config"
-	"github.com/nocaplabs/keydris-cli/internal/node/login"
+	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 )
 
 // runLogin implements `keydris login`: a browser-based OAuth (PKCE) sign-in

@@ -13,7 +13,7 @@ mTLS — see [Pointing at a control plane](#pointing-at-a-control-plane).
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nocaplabs/keydris-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/keydrisLabs/keydris-cli/main/install.sh | bash
 ```
 
 This builds and installs `keydris` to `/usr/local/bin` (override with `PREFIX`).
@@ -96,6 +96,7 @@ keydris init claude-code <policy>  Configure the Claude Code sandbox + CA for a 
                                      [--strict] [--trust-store]
 keydris deinit claude-code         Undo init: remove the Keydris sandbox config + policy id
 keydris proxy up                   Start the brokered egress proxy in the background
+keydris proxy down                 Stop the background proxy
 keydris run -- <cmd...>            Run a command inside a keydris session
 keydris status                     Show config + sandbox enforcement state
 keydris logs                       Print and verify the hash-chained evidence ledger

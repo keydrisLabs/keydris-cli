@@ -10,11 +10,12 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/nocaplabs/keydris-cli/internal/node/attest"
-	"github.com/nocaplabs/keydris-cli/internal/node/proxy"
+	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
 )
 
 // sandboxPlane is the v2 data plane: a TLS-terminating forward proxy that Claude
@@ -37,20 +38,64 @@ import (
 // when exactly one session is registered, that session is used (the common POC
 // case of one Claude session per proxy instance). See docs for the per-session
 // port option when multiple concurrent sessions must be separated.
+// PeerVerifyMode controls connecting-process verification in the sandbox plane.
+type PeerVerifyMode int
+
+const (
+	PeerVerifyOff PeerVerifyMode = iota
+	PeerVerifyWarn
+	PeerVerifyEnforce
+)
+
+func (m PeerVerifyMode) String() string {
+	switch m {
+	case PeerVerifyOff:
+		return "off"
+	case PeerVerifyEnforce:
+		return "enforce"
+	default:
+		return "warn"
+	}
+}
+
+// ParsePeerVerify maps a config string to a PeerVerifyMode (default warn).
+func ParsePeerVerify(s string) PeerVerifyMode {
+	switch s {
+	case "off":
+		return PeerVerifyOff
+	case "enforce":
+		return PeerVerifyEnforce
+	default:
+		return PeerVerifyWarn
+	}
+}
+
+// SandboxOptions tunes the sandbox plane's attribution hardening.
+type SandboxOptions struct {
+	// AllowSoleFallback attributes a tokenless request to the sole registered
+	// session. Off by default (tokenless -> unattributed).
+	AllowSoleFallback bool
+	// PeerVerify checks that a connecting process belongs to the session's tree.
+	PeerVerify PeerVerifyMode
+}
+
 type sandboxPlane struct {
-	ln    net.Listener
-	flows chan Flow
-	logf  func(string, ...any)
-	ca    *proxy.CA
-	reg   *attest.SessionRegistry
+	ln         net.Listener
+	flows      chan Flow
+	logf       func(string, ...any)
+	ca         *proxy.CA
+	reg        *attest.SessionRegistry
+	allowSole  bool
+	peerVerify PeerVerifyMode
 
 	leafMu sync.Mutex
 	leaves map[string]*tls.Certificate
 }
 
 // NewSandboxProxy starts the sandbox custom-proxy plane on addr. ca terminates
-// TLS for intercepted HTTPS; reg resolves the per-session handle to its SVID.
-func NewSandboxProxy(addr string, ca *proxy.CA, reg *attest.SessionRegistry) (DataPlane, error) {
+// TLS for intercepted HTTPS; reg resolves the per-session token to its SVID;
+// opts tunes the attribution hardening.
+func NewSandboxProxy(addr string, ca *proxy.CA, reg *attest.SessionRegistry, opts SandboxOptions) (DataPlane, error) {
 	if ca == nil {
 		return nil, fmt.Errorf("sandbox proxy requires a CA for TLS termination")
 	}
@@ -59,12 +104,14 @@ func NewSandboxProxy(addr string, ca *proxy.CA, reg *attest.SessionRegistry) (Da
 		return nil, err
 	}
 	p := &sandboxPlane{
-		ln:     ln,
-		flows:  make(chan Flow),
-		logf:   log.Printf,
-		ca:     ca,
-		reg:    reg,
-		leaves: map[string]*tls.Certificate{},
+		ln:         ln,
+		flows:      make(chan Flow),
+		logf:       log.Printf,
+		ca:         ca,
+		reg:        reg,
+		allowSole:  opts.AllowSoleFallback,
+		peerVerify: opts.PeerVerify,
+		leaves:     map[string]*tls.Certificate{},
 	}
 	p.logf("dataplane(sandbox): listening on %s (set Claude Code sandbox.network.httpProxyPort=%s)", addr, portOf(addr))
 	go p.serve()
@@ -122,7 +169,7 @@ func (p *sandboxPlane) buildConnect(conn net.Conn, connectReq *http.Request) (Fl
 		host = h
 	}
 
-	sess := p.resolveSession(connectReq)
+	sess := p.resolveSession(conn, connectReq)
 
 	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		_ = conn.Close()
@@ -189,7 +236,7 @@ func (p *sandboxPlane) buildPlain(conn net.Conn, req *http.Request, br *bufio.Re
 	if ap, err := netip.ParseAddrPort(host); err == nil {
 		f.OrigDst = ap
 	}
-	applySession(&f, p.resolveSession(req))
+	applySession(&f, p.resolveSession(conn, req))
 	return f, true
 }
 
@@ -209,12 +256,22 @@ func (p *sandboxPlane) leafFor(host string) (*tls.Certificate, error) {
 	return &leaf, nil
 }
 
-// resolveSession attributes a connection to its session. A per-session token in
-// Proxy-Authorization is honored exactly: a present-but-unknown token resolves
-// to nil (unattributed) rather than guessing — this is what keeps concurrent
-// sessions isolated. Only when no token is presented do we fall back to the sole
-// registered session (the single-session convenience case).
-func (p *sandboxPlane) resolveSession(req *http.Request) *attest.Session {
+// resolveSession attributes a connection to its session: match by token, then
+// verify the connecting process belongs to that session. Either step failing
+// yields nil (unattributed), which the broker treats as deny/destination-only.
+func (p *sandboxPlane) resolveSession(conn net.Conn, req *http.Request) *attest.Session {
+	sess := p.matchSession(req)
+	if sess == nil || !p.verifyPeer(conn, sess) {
+		return nil
+	}
+	return sess
+}
+
+// matchSession attributes by per-session token. A token presented but unknown
+// resolves to nil (never downgraded to the sole session) — this keeps concurrent
+// sessions isolated. A request with no token falls back to the sole registered
+// session only when AllowSoleFallback is set; otherwise tokenless is anonymous.
+func (p *sandboxPlane) matchSession(req *http.Request) *attest.Session {
 	if p.reg == nil {
 		return nil
 	}
@@ -222,12 +279,58 @@ func (p *sandboxPlane) resolveSession(req *http.Request) *attest.Session {
 		if s, ok := p.reg.Lookup(handle); ok {
 			return &s
 		}
-		return nil // token presented but unknown: do not fall back to Sole()
+		return nil // token presented but unknown
 	}
-	if s, ok := p.reg.Sole(); ok {
-		return &s
+	if p.allowSole {
+		if s, ok := p.reg.Sole(); ok {
+			return &s
+		}
 	}
 	return nil
+}
+
+// verifyPeer checks the connecting process is a descendant of the session's
+// owner pid. No-op when disabled, when the owner pid is unknown, or on platforms
+// that cannot resolve the peer (macOS/Windows — see docs/attribution.md). In
+// "warn" it logs a mismatch and allows; in "enforce" it rejects.
+func (p *sandboxPlane) verifyPeer(conn net.Conn, sess *attest.Session) bool {
+	if p.peerVerify == PeerVerifyOff || sess.OwnerPID == 0 || !attest.PeerCheckSupported() {
+		return true
+	}
+	ip, port, ok := remoteIPPort(conn)
+	if !ok {
+		return true
+	}
+	pid, ok := attest.ConnPID(ip, port)
+	if !ok {
+		if p.peerVerify == PeerVerifyEnforce {
+			p.logf("dataplane(sandbox): peer pid unresolved for %s; rejecting (enforce)", sess.SPIFFEID)
+			return false
+		}
+		return true
+	}
+	if attest.IsDescendant(pid, sess.OwnerPID, attest.ParentPID) {
+		return true
+	}
+	p.logf("dataplane(sandbox): peer pid %d not in session %s tree (owner %d) [%s]",
+		pid, sess.SPIFFEID, sess.OwnerPID, p.peerVerify)
+	return p.peerVerify != PeerVerifyEnforce
+}
+
+// remoteIPPort splits a connection's remote address into IP and port.
+func remoteIPPort(conn net.Conn) (string, int, bool) {
+	if conn == nil {
+		return "", 0, false
+	}
+	host, portStr, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return "", 0, false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "", 0, false
+	}
+	return host, port, true
 }
 
 func applySession(f *Flow, s *attest.Session) {
