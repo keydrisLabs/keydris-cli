@@ -12,19 +12,35 @@ mTLS — see [Pointing at a control plane](#pointing-at-a-control-plane).
 
 ## Install
 
+`install.sh` builds `keydris` from source (requires **Go 1.22+**; no third-party
+Go modules — stdlib only) and installs it to `/usr/local/bin`, plus the
+`keydris.service` unit on a systemd Linux host.
+
+**From a checkout (recommended — and required while the repo is private,** since
+the `git clone` uses your own GitHub auth):
+
+```bash
+gh repo clone keydrisLabs/keydris-cli      # or: git clone git@github.com:keydrisLabs/keydris-cli.git
+cd keydris-cli
+./install.sh                               # -> /usr/local/bin/keydris  (PREFIX=$HOME/.local ./install.sh)
+```
+
+Equivalently: `make install` (or `make build && ./bin/keydris status` to just build locally).
+
+**One-line install** — once the repo is **public** (piping with no local
+checkout makes `install.sh` clone the repo itself, so it can't auth a private
+clone):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/keydrisLabs/keydris-cli/main/install.sh | bash
 ```
 
-This builds and installs `keydris` to `/usr/local/bin` (override with `PREFIX`).
-Requires **Go 1.22+**. No third-party Go modules — stdlib only.
-
-From a checkout instead:
+Override what gets installed via env: `PREFIX` (install dir), `KEYDRIS_REPO`
+(owner/repo to clone), `KEYDRIS_REF` (branch/tag). `go install` works too once
+the module is reachable:
 
 ```bash
-make install            # -> /usr/local/bin/keydris  (or: PREFIX=$HOME/.local make install)
-# or just build locally:
-make build && ./bin/keydris status
+go install github.com/keydrisLabs/keydris-cli/cmd/keydris@latest
 ```
 
 ## What it does

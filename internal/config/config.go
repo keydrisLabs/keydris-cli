@@ -273,15 +273,19 @@ func envList(key string) []string {
 }
 
 // ResolveBlueprint applies blueprint precedence: an explicit run/hook flag wins,
-// then KEYDRIS_BLUEPRINT (env/.env/.keydris.toml in Phase 5), then the derived
-// default. This is the single source of truth for which blueprint a session
-// binds to.
+// then KEYDRIS_BLUEPRINT, then the policy id set by `keydris init claude-code
+// <policy-id>`, then the built-in default. This is the single source of truth
+// for which blueprint a session binds to — i.e. the agent segment of the SVID's
+// SPIFFE ID (spiffe://<td>/agent/<blueprint>/<ulid>), which the broker authorizes
+// against grants for that blueprint.
 func (c *Config) ResolveBlueprint(flag string) string {
 	switch {
 	case flag != "":
 		return flag
 	case c.Blueprint != "":
 		return c.Blueprint
+	case c.PolicyID != "":
+		return c.PolicyID
 	default:
 		return "repo-tools"
 	}
