@@ -50,12 +50,12 @@ jobs:
           CHANNEL: ${{ steps.meta.outputs.channel }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          aws s3 sync dist/ "s3://$BUCKET/$CHANNEL/$VERSION/"
-          aws s3 sync dist/ "s3://$BUCKET/$CHANNEL/latest/" --cache-control max-age=60
-          aws s3 cp install.sh "s3://$BUCKET/install.sh" --cache-control max-age=60
+          aws s3 sync dist/ "s3://$BUCKET/keydris-cli/$CHANNEL/$VERSION/"
+          aws s3 sync dist/ "s3://$BUCKET/keydris-cli/$CHANNEL/latest/" --cache-control max-age=60
+          aws s3 cp install.sh "s3://$BUCKET/keydris-cli/install.sh" --cache-control max-age=60
           if [ "$CHANNEL" = dev ]; then
-            aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/dev/$VERSION/keydris.toml" --cache-control max-age=60
-            aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/dev/latest/keydris.toml" --cache-control max-age=60
+            aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/keydris-cli/dev/$VERSION/keydris.toml" --cache-control max-age=60
+            aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/keydris-cli/dev/latest/keydris.toml" --cache-control max-age=60
           fi
 
       - name: Invalidate CloudFront
@@ -63,4 +63,4 @@ jobs:
         env:
           DIST_ID: ${{ vars.KEYDRIS_CLOUDFRONT_DISTRIBUTION_ID }}
           CHANNEL: ${{ steps.meta.outputs.channel }}
-        run: aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/install.sh" "/$CHANNEL/latest/*"
+        run: aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/keydris-cli/install.sh" "/keydris-cli/$CHANNEL/latest/*"

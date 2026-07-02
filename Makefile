@@ -40,15 +40,15 @@ dist:
 # Publish $(DIST) + install.sh (+ dev config) to S3. Needs S3_BUCKET and AWS creds.
 release: dist
 	@test -n "$(S3_BUCKET)" || { echo "set S3_BUCKET=<your-bucket>"; exit 1; }
-	aws s3 sync $(DIST)/ s3://$(S3_BUCKET)/$(CHANNEL)/$(VERSION)/
-	aws s3 sync $(DIST)/ s3://$(S3_BUCKET)/$(CHANNEL)/latest/ --cache-control max-age=60
-	aws s3 cp install.sh s3://$(S3_BUCKET)/install.sh --cache-control max-age=60
+	aws s3 sync $(DIST)/ s3://$(S3_BUCKET)/keydris-cli/$(CHANNEL)/$(VERSION)/
+	aws s3 sync $(DIST)/ s3://$(S3_BUCKET)/keydris-cli/$(CHANNEL)/latest/ --cache-control max-age=60
+	aws s3 cp install.sh s3://$(S3_BUCKET)/keydris-cli/install.sh --cache-control max-age=60
 	@if [ "$(CHANNEL)" = dev ]; then \
-	  aws s3 cp deploy/dev/keydris.toml s3://$(S3_BUCKET)/dev/$(VERSION)/keydris.toml --cache-control max-age=60; \
-	  aws s3 cp deploy/dev/keydris.toml s3://$(S3_BUCKET)/dev/latest/keydris.toml --cache-control max-age=60; \
+	  aws s3 cp deploy/dev/keydris.toml s3://$(S3_BUCKET)/keydris-cli/dev/$(VERSION)/keydris.toml --cache-control max-age=60; \
+	  aws s3 cp deploy/dev/keydris.toml s3://$(S3_BUCKET)/keydris-cli/dev/latest/keydris.toml --cache-control max-age=60; \
 	fi
 	@if [ -n "$(DISTRIBUTION_ID)" ]; then \
-	  aws cloudfront create-invalidation --distribution-id $(DISTRIBUTION_ID) --paths "/install.sh" "/$(CHANNEL)/latest/*"; \
+	  aws cloudfront create-invalidation --distribution-id $(DISTRIBUTION_ID) --paths "/keydris-cli/install.sh" "/keydris-cli/$(CHANNEL)/latest/*"; \
 	fi
 
 vet:

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # keydris installer — downloads a prebuilt `keydris` binary. No Go, no checkout.
 #
-#   curl -fsSL https://dev.get.keydris.com/install.sh | bash                     # stable
-#   curl -fsSL https://dev.get.keydris.com/install.sh | KEYDRIS_CHANNEL=dev bash # dev (zero-config)
+#   curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | bash                     # stable
+#   curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | KEYDRIS_CHANNEL=dev bash # dev (zero-config)
 #
 # Env:
 #   PREFIX           install prefix (default /usr/local)  -> $PREFIX/bin/keydris
@@ -14,7 +14,7 @@ set -euo pipefail
 PREFIX="${PREFIX:-/usr/local}"
 CHANNEL="${KEYDRIS_CHANNEL:-stable}"
 VERSION="${KEYDRIS_VERSION:-latest}"
-BASE="${KEYDRIS_BASE_URL:-https://dev.get.keydris.com}"
+BASE="${KEYDRIS_BASE_URL:-https://dev.get.keydris.com/keydris-cli}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "error: missing dependency: $1" >&2; exit 1; }; }
 need curl

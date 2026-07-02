@@ -16,8 +16,8 @@ mTLS — see [Pointing at a control plane](#pointing-at-a-control-plane).
 installs it to `/usr/local/bin`:
 
 ```bash
-curl -fsSL https://dev.get.keydris.com/install.sh | bash                     # stable
-curl -fsSL https://dev.get.keydris.com/install.sh | KEYDRIS_CHANNEL=dev bash # dev (zero-config)
+curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | bash                     # stable
+curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | KEYDRIS_CHANNEL=dev bash # dev (zero-config)
 ```
 
 - The **dev** channel also drops a `~/.keydris.toml` pointing at the dev control

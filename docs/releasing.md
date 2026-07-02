@@ -5,7 +5,7 @@ installed with a `curl … | bash` one-liner. No Go or checkout required by user
 
 ## Distribution at a glance
 
-- **Base URL:** `https://dev.get.keydris.com` (CloudFront → S3 bucket
+- **Base URL:** `https://dev.get.keydris.com/keydris-cli` (CloudFront → S3 bucket
   `keydris-cli-artifacts-dev`, distribution `E24CJKXKFGBX5Z`).
 - **Channels:** `stable` and `dev` — they are path prefixes in the same bucket.
 - **Platforms:** `darwin`/`linux` × `amd64`/`arm64`, built `CGO_ENABLED=0`
@@ -13,18 +13,21 @@ installed with a `curl … | bash` one-liner. No Go or checkout required by user
 
 ### Object layout (S3 key → URL)
 
+All artifacts live under the `keydris-cli/` bucket prefix, served at the same
+path on CloudFront:
+
 ```
-install.sh                                  https://dev.get.keydris.com/install.sh
-<channel>/<version>/keydris-<os>-<arch>      …/<channel>/<version>/keydris-<os>-<arch>
-<channel>/<version>/SHA256SUMS               …/<channel>/<version>/SHA256SUMS
-<channel>/latest/…                           …/<channel>/latest/…        (mutable pointer)
-dev/<version>/keydris.toml                   …/dev/<version>/keydris.toml (dev channel only)
-dev/latest/keydris.toml                      …/dev/latest/keydris.toml
+keydris-cli/install.sh                                https://dev.get.keydris.com/keydris-cli/install.sh
+keydris-cli/<channel>/<version>/keydris-<os>-<arch>    …/keydris-cli/<channel>/<version>/keydris-<os>-<arch>
+keydris-cli/<channel>/<version>/SHA256SUMS             …/keydris-cli/<channel>/<version>/SHA256SUMS
+keydris-cli/<channel>/latest/…                         …/keydris-cli/<channel>/latest/…   (mutable pointer)
+keydris-cli/dev/<version>/keydris.toml                 …/keydris-cli/dev/<version>/keydris.toml (dev only)
+keydris-cli/dev/latest/keydris.toml                    …/keydris-cli/dev/latest/keydris.toml
 ```
 
 `latest/` and `install.sh` are published with `Cache-Control: max-age=60`;
-versioned paths are immutable. Each publish invalidates `/install.sh` and
-`/<channel>/latest/*` on CloudFront.
+versioned paths are immutable. Each publish invalidates `/keydris-cli/install.sh`
+and `/keydris-cli/<channel>/latest/*` on CloudFront.
 
 ## Automated releases (CI)
 
@@ -72,10 +75,10 @@ make release \
 
 ```bash
 # stable
-curl -fsSL https://dev.get.keydris.com/install.sh | bash
+curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | bash
 
 # dev — also drops a zero-config ~/.keydris.toml (dev control plane + IdP)
-curl -fsSL https://dev.get.keydris.com/install.sh | KEYDRIS_CHANNEL=dev bash
+curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | KEYDRIS_CHANNEL=dev bash
 ```
 
 Installer env: `PREFIX`, `KEYDRIS_CHANNEL` (`stable`|`dev`), `KEYDRIS_VERSION`
@@ -95,9 +98,11 @@ The version is stamped at link time:
   `keydris-cli-artifacts-dev` under `/stable/`. When a prod artifacts bucket
   exists, set `KEYDRIS_RELEASE_BUCKET` per environment (or split the workflow) so
   stable isn't served from a dev bucket.
-- **Root layout.** Artifacts live at the bucket/domain root (no `/keydris-cli/`
-  prefix), matching the CloudFront base URL. If the origin path ever changes,
-  update `KEYDRIS_BASE_URL` in `install.sh` and the S3 keys together.
+- **Path prefix.** Artifacts live under `keydris-cli/` in the bucket, matching the
+  publish role's `s3:prefix` scope and the CloudFront path — so the install URL is
+  `…/keydris-cli/install.sh`. To switch to a clean root layout (`…/install.sh`),
+  widen the IAM `ListBucket`/`PutObject` scope in Terraform and drop the prefix
+  from `install.sh` + the workflow + `Makefile` together.
 - **macOS Gatekeeper.** `curl`-downloaded binaries aren't quarantined and run
   fine; a *browser* download would be blocked as "unidentified developer." The
   fix is Apple Developer ID signing + notarization — deferred until past dev.
