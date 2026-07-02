@@ -8,6 +8,10 @@ import (
 	"os"
 )
 
+// Version is the build version, stamped at link time via
+// -ldflags "-X github.com/keydrisLabs/keydris-cli/internal/cli.Version=<v>".
+var Version = "dev"
+
 // Execute dispatches the command line and returns a process exit code.
 func Execute() int {
 	args := os.Args[1:]
@@ -40,6 +44,9 @@ func Execute() int {
 		return runInternalSessionHook("end", args[1:])
 	case "logs":
 		return runLogs()
+	case "version", "--version":
+		fmt.Printf("keydris %s\n", Version)
+		return 0
 	case "help", "-h", "--help":
 		usage()
 		return 0
@@ -66,6 +73,7 @@ Usage:
   keydris run -- <cmd...>            Run a command inside a keydris session
   keydris status                     Show config + sandbox enforcement state
   keydris logs                       Print and verify the hash-chained evidence ledger
+  keydris version                    Print the version
   keydris help                       Show this help
 `)
 }

@@ -1,5 +1,6 @@
 # Build output
 /bin/
+/dist/
 
 # Local configuration (copy from .env.example)
 /.env

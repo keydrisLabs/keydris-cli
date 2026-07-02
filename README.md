@@ -12,36 +12,32 @@ mTLS — see [Pointing at a control plane](#pointing-at-a-control-plane).
 
 ## Install
 
-`install.sh` builds `keydris` from source (requires **Go 1.22+**; no third-party
-Go modules — stdlib only) and installs it to `/usr/local/bin`, plus the
-`keydris.service` unit on a systemd Linux host.
-
-**From a checkout (recommended — and required while the repo is private,** since
-the `git clone` uses your own GitHub auth):
+`install.sh` downloads a **prebuilt, static binary** (no Go, no checkout) and
+installs it to `/usr/local/bin`:
 
 ```bash
-gh repo clone keydrisLabs/keydris-cli      # or: git clone git@github.com:keydrisLabs/keydris-cli.git
-cd keydris-cli
-./install.sh                               # -> /usr/local/bin/keydris  (PREFIX=$HOME/.local ./install.sh)
+curl -fsSL https://dev.get.keydris.com/install.sh | bash                     # stable
+curl -fsSL https://dev.get.keydris.com/install.sh | KEYDRIS_CHANNEL=dev bash # dev (zero-config)
 ```
 
-Equivalently: `make install` (or `make build && ./bin/keydris status` to just build locally).
+- The **dev** channel also drops a `~/.keydris.toml` pointing at the dev control
+  plane + IdP, so it works with **no env vars set**.
+- Override via env: `PREFIX` (install dir), `KEYDRIS_CHANNEL` (`stable`|`dev`),
+  `KEYDRIS_VERSION` (default `latest`), `KEYDRIS_BASE_URL` (download host).
+- `keydris version` reports the installed build.
 
-**One-line install** — once the repo is **public** (piping with no local
-checkout makes `install.sh` clone the repo itself, so it can't auth a private
-clone):
+**From source** (developers):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/keydrisLabs/keydris-cli/main/install.sh | bash
+make install                 # build + install to /usr/local/bin  (PREFIX=$HOME/.local make install)
+make build && ./bin/keydris status
+go install github.com/keydrisLabs/keydris-cli/cmd/keydris@latest   # once the module is reachable
 ```
 
-Override what gets installed via env: `PREFIX` (install dir), `KEYDRIS_REPO`
-(owner/repo to clone), `KEYDRIS_REF` (branch/tag). `go install` works too once
-the module is reachable:
-
-```bash
-go install github.com/keydrisLabs/keydris-cli/cmd/keydris@latest
-```
+**Cutting a release** (`make dist` cross-compiles darwin/linux × amd64/arm64 with
+checksums; `make release` publishes to S3). CI does this automatically —
+tag push `v*` → `stable`, push to `main` → `dev`. Full runbook (channels, repo
+vars, manual publish) in [docs/releasing.md](docs/releasing.md).
 
 ## What it does
 

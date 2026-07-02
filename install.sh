@@ -1,69 +1,68 @@
 #!/usr/bin/env bash
-# keydris-cli installer: installs the `keydris` CLI (built from source).
+# keydris installer — downloads a prebuilt `keydris` binary. No Go, no checkout.
 #
-#   # from a checkout (works for a private repo via your git auth):
-#   git clone https://github.com/keydrisLabs/keydris-cli.git && cd keydris-cli && ./install.sh
-#
-#   # or piped (the repo must be public, or your git must be authed for the clone):
-#   curl -fsSL https://raw.githubusercontent.com/keydrisLabs/keydris-cli/main/install.sh | bash
+#   curl -fsSL https://dev.get.keydris.com/install.sh | bash                     # stable
+#   curl -fsSL https://dev.get.keydris.com/install.sh | KEYDRIS_CHANNEL=dev bash # dev (zero-config)
 #
 # Env:
-#   PREFIX        install prefix (default: /usr/local) -> $PREFIX/bin/keydris
-#   KEYDRIS_REPO  GitHub owner/repo to clone when not run from a checkout
-#                 (default: keydrisLabs/keydris-cli)
-#   KEYDRIS_REF   branch or tag to clone (default: main)
-#
-# Installs only the client/agent-side `keydris` CLI. It talks to a separately-run
-# keydris control plane (issuer + broker); point it at one with
-# KEYDRIS_CONTROL_ADDR / KEYDRIS_CONTROL_MTLS_ADDR (see .env.example).
+#   PREFIX           install prefix (default /usr/local)  -> $PREFIX/bin/keydris
+#   KEYDRIS_CHANNEL  stable (default) | dev
+#   KEYDRIS_VERSION  version to install (default: latest)
+#   KEYDRIS_BASE_URL base download URL (default: https://get.keydris.dev/keydris-cli)
 set -euo pipefail
 
 PREFIX="${PREFIX:-/usr/local}"
-BINDIR="$PREFIX/bin"
-REPO="${KEYDRIS_REPO:-keydrisLabs/keydris-cli}"
-REF="${KEYDRIS_REF:-main}"
+CHANNEL="${KEYDRIS_CHANNEL:-stable}"
+VERSION="${KEYDRIS_VERSION:-latest}"
+BASE="${KEYDRIS_BASE_URL:-https://dev.get.keydris.com}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "error: missing dependency: $1" >&2; exit 1; }; }
-need go
+need curl
+need uname
 
-# Resolve the source tree. Run from a checkout -> build it in place. Run via a
-# pipe (curl | bash, no local source, no usable $BASH_SOURCE) -> clone the repo.
-SELF_DIR=""
-if [ "${BASH_SOURCE:+set}" = "set" ]; then
-  SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$os" in darwin|linux) ;; *) echo "unsupported OS: $os" >&2; exit 1 ;; esac
+arch=$(uname -m)
+case "$arch" in
+  x86_64|amd64)  arch=amd64 ;;
+  arm64|aarch64) arch=arm64 ;;
+  *) echo "unsupported arch: $arch" >&2; exit 1 ;;
+esac
+
+name="keydris-$os-$arch"
+verdir="$BASE/$CHANNEL/$VERSION"
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+
+echo "==> downloading $name ($CHANNEL/$VERSION)"
+curl -fSL --proto '=https' "$verdir/$name"       -o "$tmp/$name"
+curl -fSL --proto '=https' "$verdir/SHA256SUMS"  -o "$tmp/SHA256SUMS"
+
+echo "==> verifying checksum"
+expected=$(grep " $name\$" "$tmp/SHA256SUMS" | awk '{print $1}')
+if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$tmp/$name" | awk '{print $1}');
+else actual=$(shasum -a 256 "$tmp/$name" | awk '{print $1}'); fi
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "error: checksum mismatch for $name (expected '$expected', got '$actual')" >&2
+  exit 1
 fi
 
-CLEANUP=""
-if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/go.mod" ]; then
-  SRC_DIR="$SELF_DIR"
-  echo "==> building from checkout: $SRC_DIR"
-else
-  need git
-  SRC_DIR="$(mktemp -d)"
-  CLEANUP="$SRC_DIR"
-  echo "==> cloning https://github.com/$REPO (ref: $REF)"
-  git clone --depth 1 --branch "$REF" "https://github.com/$REPO.git" "$SRC_DIR"
-fi
-trap '[ -n "$CLEANUP" ] && rm -rf "$CLEANUP"' EXIT
-
-echo "==> building keydris"
-( cd "$SRC_DIR" && go build -o bin/keydris ./cmd/keydris )
-
+BINDIR="$PREFIX/bin"
 SUDO=""
 if [ ! -w "$BINDIR" ] && [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; fi
-
-echo "==> installing keydris to $BINDIR"
+echo "==> installing to $BINDIR/keydris"
 $SUDO install -d "$BINDIR"
-$SUDO install -m 0755 "$SRC_DIR/bin/keydris" "$BINDIR/keydris"
+$SUDO install -m 0755 "$tmp/$name" "$BINDIR/keydris"
 
-# Optional: install the node systemd unit on a systemd Linux host (for the
-# transparent data plane, which runs `keydris proxy up` as a long-lived service).
-if [ "$(uname -s)" = "Linux" ] && [ -d /run/systemd/system ]; then
-  echo "==> installing systemd unit (keydris.service)"
-  $SUDO install -d /etc/keydris
-  $SUDO install -m 0644 "$SRC_DIR/deploy/systemd/keydris.service" /etc/systemd/system/keydris.service
-  $SUDO systemctl daemon-reload
-  echo "    enable with: sudo systemctl enable --now keydris"
+# Dev channel: drop a zero-config ~/.keydris.toml (points the CLI at the dev
+# control plane + IdP) so it works without setting any env vars. Never clobber an
+# existing file.
+if [ "$CHANNEL" = dev ]; then
+  dst="$HOME/.keydris.toml"
+  if [ -e "$dst" ]; then
+    echo "==> $dst already exists; leaving it (delete it to pick up dev defaults)"
+  elif curl -fSL --proto '=https' "$BASE/dev/$VERSION/keydris.toml" -o "$dst" 2>/dev/null; then
+    echo "==> wrote dev config to $dst"
+  fi
 fi
 
-echo "==> done. Try: keydris status"
+echo "==> done: $("$BINDIR/keydris" version 2>/dev/null || echo 'keydris installed')"

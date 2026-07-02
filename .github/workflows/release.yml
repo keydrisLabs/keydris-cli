@@ -1,0 +1,66 @@
+name: release
+
+# Tag push (v*) -> stable channel; push to main -> dev channel.
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write   # OIDC federation to AWS (no long-lived keys)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs tags/history
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Compute channel + version
+        id: meta
+        run: |
+          if [ "${{ github.ref_type }}" = tag ]; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=dev" >> "$GITHUB_OUTPUT"
+            echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release matrix
+        run: make dist VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Verify checksums
+        run: cd dist && (command -v sha256sum >/dev/null && sha256sum -c SHA256SUMS || shasum -a 256 -c SHA256SUMS)
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Publish to S3
+        env:
+          BUCKET: ${{ vars.KEYDRIS_RELEASE_BUCKET }}
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          aws s3 sync dist/ "s3://$BUCKET/$CHANNEL/$VERSION/"
+          aws s3 sync dist/ "s3://$BUCKET/$CHANNEL/latest/" --cache-control max-age=60
+          aws s3 cp install.sh "s3://$BUCKET/install.sh" --cache-control max-age=60
+          if [ "$CHANNEL" = dev ]; then
+            aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/dev/$VERSION/keydris.toml" --cache-control max-age=60
+            aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/dev/latest/keydris.toml" --cache-control max-age=60
+          fi
+
+      - name: Invalidate CloudFront
+        if: ${{ vars.KEYDRIS_CLOUDFRONT_DISTRIBUTION_ID != '' }}
+        env:
+          DIST_ID: ${{ vars.KEYDRIS_CLOUDFRONT_DISTRIBUTION_ID }}
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+        run: aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/install.sh" "/$CHANNEL/latest/*"

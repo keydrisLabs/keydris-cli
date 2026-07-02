@@ -1,0 +1,22 @@
+# Keydris dev-channel defaults. The dev installer writes this to ~/.keydris.toml:
+#   curl -fsSL https://dev.get.keydris.com/install.sh | KEYDRIS_CHANNEL=dev bash
+#
+# Lowest-precedence config: override any value with an env var, ./.env, or a
+# project-local ./.keydris.toml. Each key maps to KEYDRIS_<UPPER(KEY)>.
+#
+# Fill in the <...> placeholders with your deployed dev endpoints before publishing.
+
+[keydris]
+# Dev control plane (issuer + broker), running locally for now. control_url is the
+# public HTTP side (health / JWKS / login / sign); control_mtls_url is the mTLS
+# /authorize* listener. Swap these for the deployed ALB/NLB endpoints later.
+control_url      = "http://127.0.0.1:8081"
+control_mtls_url = "https://127.0.0.1:8443"
+trust_domain     = "keydris.local"
+
+# Sign-in via Cognito, so `keydris login` opens the hosted UI with no env vars.
+oidc_issuer        = "https://issuer-cognito-idp.us-east-1.amazonaws.com/us-east-1_Hjh0EehFH"
+cognito_domain     = "keydris-dev.auth.us-east-1.amazoncognito.com"
+oauth_client_id    = "64b67mr0ngu53p6rv87epeepvu"
+oauth_scopes       = "openid email"
+oauth_redirect_url = "http://localhost:3000/callback"
