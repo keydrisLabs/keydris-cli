@@ -122,8 +122,8 @@ environment, a local `.env` (see [.env.example](.env.example)), or a layered
 process env > `.env` > `./.keydris.toml` > `~/.keydris.toml` > defaults.
 
 ```bash
-export KEYDRIS_CONTROL_ADDR=https://control.example.com:8080        # JWKS, login, health
-export KEYDRIS_CONTROL_MTLS_ADDR=control.example.com:8443           # /authorize (mTLS)
+export KEYDRIS_CONTROL_URL=https://api.keydris.com                  # /identity/sign, /agent/jwks (:443)
+export KEYDRIS_CONTROL_MTLS_URL=https://api.keydris.com:8443        # /agent/authorize* (mTLS)
 ```
 
 `keydris login` signs in through the browser (OAuth 2.0 Authorization Code +

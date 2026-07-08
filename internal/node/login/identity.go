@@ -84,34 +84,48 @@ func Load(dir string) (*Identity, error) {
 	return &id, nil
 }
 
-// ClientTLSConfig loads the stored key/cert/CA into a tls.Config the daemon uses
-// to authenticate to the control plane over mTLS. This is the "later used by the
+// ClientTLSConfig loads the stored key/cert into a tls.Config the daemon uses to
+// authenticate to the control plane over mTLS. This is the "later used by the
 // agent" half of the design: the daemon presents this identity on every call.
-func ClientTLSConfig(dir string) (*tls.Config, error) {
+//
+// Server (control-plane) verification uses the system trust store by default:
+// in production an AWS ALB terminates mTLS on :8443 and presents a normal public
+// TLS certificate. The client CA (ca.crt) from /identity/sign signs *client*
+// certs, not the server's, so it must NOT be used to verify the server.
+// serverCAPath, when non-empty, adds an extra trusted CA for the server on top
+// of the system roots — use it only for a local/self-signed control plane.
+func ClientTLSConfig(dir, serverCAPath string) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(filepath.Join(dir, CertFile), filepath.Join(dir, KeyFile))
 	if err != nil {
 		return nil, fmt.Errorf("load client keypair (run `keydris login`): %w", err)
 	}
-	caPEM, err := os.ReadFile(filepath.Join(dir, CAFile))
-	if err != nil {
-		return nil, err
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("no usable CA certs in %s", filepath.Join(dir, CAFile))
-	}
-	return &tls.Config{
+	conf := &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		RootCAs:      roots,
 		MinVersion:   tls.VersionTLS12,
-	}, nil
+	}
+	if serverCAPath != "" {
+		roots, err := x509.SystemCertPool()
+		if err != nil || roots == nil {
+			roots = x509.NewCertPool()
+		}
+		caPEM, err := os.ReadFile(serverCAPath)
+		if err != nil {
+			return nil, fmt.Errorf("read server CA %s: %w", serverCAPath, err)
+		}
+		if !roots.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("no usable CA certs in %s", serverCAPath)
+		}
+		conf.RootCAs = roots
+	}
+	return conf, nil
 }
 
 // HTTPClient builds an http.Client that authenticates to the control plane over
 // mTLS using the stored login identity. It returns the actionable "run `keydris
-// login`" error from ClientTLSConfig when no identity is present.
-func HTTPClient(dir string, timeout time.Duration) (*http.Client, error) {
-	tlsConf, err := ClientTLSConfig(dir)
+// login`" error from ClientTLSConfig when no identity is present. serverCAPath
+// is an optional extra CA to trust for the server (empty => system roots only).
+func HTTPClient(dir, serverCAPath string, timeout time.Duration) (*http.Client, error) {
+	tlsConf, err := ClientTLSConfig(dir, serverCAPath)
 	if err != nil {
 		return nil, err
 	}

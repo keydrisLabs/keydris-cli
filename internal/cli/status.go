@@ -39,7 +39,7 @@ func runStatus() int {
 	defer resp.Body.Close()
 	fmt.Printf("control:      UP (%s)\n", resp.Status)
 
-	jresp, err := client.Get(cfg.ControlURL + "/jwks")
+	jresp, err := client.Get(cfg.ControlURL + "/agent/jwks")
 	if err == nil {
 		defer jresp.Body.Close()
 		fmt.Printf("jwks:         %s\n", jresp.Status)

@@ -148,11 +148,13 @@ func Run(opt Options) (*Identity, error) {
 		return nil, fmt.Errorf("build CSR: %w", err)
 	}
 
-	// Present the ID token to the control plane when available (Cognito), else
-	// the access token (mock IdP). The control plane verifies it before signing.
-	bearer := tokens.idToken
+	// Present the access token to the control plane: /identity/sign requires the
+	// Cognito access token whose `client_id` claim equals the CLI app-client id
+	// (an ID token carries `aud`, not `client_id`, and is rejected). Fall back to
+	// the ID token only when no access token was returned (mock IdP).
+	bearer := tokens.accessToken
 	if bearer == "" {
-		bearer = tokens.accessToken
+		bearer = tokens.idToken
 	}
 	signed, err := signCSR(opt.ControlURL, bearer, csrPEM)
 	if err != nil {

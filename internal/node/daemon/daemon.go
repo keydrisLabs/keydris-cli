@@ -59,7 +59,7 @@ func Run(cfg *config.Config) error {
 	// The daemon authenticates to the control plane over mTLS with the identity
 	// `keydris login` stored. Build it up front so we fail fast (rather than per
 	// flow) when the node has not been logged in.
-	authClient, err := login.HTTPClient(cfg.IdentityDir, 5*time.Second)
+	authClient, err := login.HTTPClient(cfg.IdentityDir, cfg.MTLSServerCA, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("control-plane mTLS identity (run `keydris login`): %w", err)
 	}

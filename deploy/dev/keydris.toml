@@ -7,16 +7,19 @@
 # Fill in the <...> placeholders with your deployed dev endpoints before publishing.
 
 [keydris]
-# Dev control plane (issuer + broker), running locally for now. control_url is the
-# public HTTP side (health / JWKS / login / sign); control_mtls_url is the mTLS
-# /authorize* listener. Swap these for the deployed ALB/NLB endpoints later.
-control_url      = "http://127.0.0.1:8081"
-control_mtls_url = "https://127.0.0.1:8443"
+# Deployed dev control plane behind the AWS ALB. control_url is the standard-HTTPS
+# side on :443 (/identity/sign, /agent/jwks); control_mtls_url is the mTLS
+# /agent/authorize* listener on :8443. Both present a public TLS server cert, so
+# no server-CA pin is needed (leave KEYDRIS_MTLS_SERVER_CA unset).
+control_url      = "https://dev.api.keydris.com"
+control_mtls_url = "https://dev.api.keydris.com:8443"
 trust_domain     = "keydris.local"
 
 # Sign-in via Cognito, so `keydris login` opens the hosted UI with no env vars.
+# oauth_client_id is the dev CLI app client; its access token's client_id must
+# match for /identity/sign to accept it.
 oidc_issuer        = "https://issuer-cognito-idp.us-east-1.amazonaws.com/us-east-1_Hjh0EehFH"
 cognito_domain     = "keydris-dev.auth.us-east-1.amazoncognito.com"
-oauth_client_id    = "64b67mr0ngu53p6rv87epeepvu"
+oauth_client_id    = "791bq13e9aijdu8cspi851mv5u"
 oauth_scopes       = "openid email"
 oauth_redirect_url = "http://localhost:3000/callback"

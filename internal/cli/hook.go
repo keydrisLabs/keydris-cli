@@ -162,26 +162,31 @@ type mintedInstance struct {
 // mTLSClient builds the control-plane client that presents the login identity,
 // returning an actionable error when the node has not run `keydris login`.
 func mTLSClient(cfg *config.Config) (*http.Client, error) {
-	client, err := login.HTTPClient(cfg.IdentityDir, 10*time.Second)
+	client, err := login.HTTPClient(cfg.IdentityDir, cfg.MTLSServerCA, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("control-plane mTLS identity (run `keydris login`): %w", err)
 	}
 	return client, nil
 }
 
-func mintInstance(cfg *config.Config, blueprint, handle string) (*mintedInstance, error) {
+func mintInstance(cfg *config.Config, policyName, handle string) (*mintedInstance, error) {
 	client, err := mTLSClient(cfg)
 	if err != nil {
 		return nil, err
 	}
-	body, _ := json.Marshal(map[string]any{"blueprint": blueprint, "session_handle": handle})
-	resp, err := client.Post(cfg.ControlMTLSURL+"/authorize/issue", "application/json", bytes.NewReader(body))
+	// policy_name is resolved server-side to a policy the caller owns; the
+	// SVID is bound to it. session_handle is an optional correlation label.
+	body, _ := json.Marshal(map[string]any{"policy_name": policyName, "session_handle": handle})
+	resp, err := client.Post(cfg.ControlMTLSURL+"/agent/authorize/issue", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("policy %q not found or not owned by this user: %s", policyName, bytes.TrimSpace(b))
+		}
 		return nil, fmt.Errorf("control returned %s: %s", resp.Status, bytes.TrimSpace(b))
 	}
 	var out mintedInstance
@@ -196,7 +201,7 @@ func revokeInstance(cfg *config.Config, ulid string) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, cfg.ControlMTLSURL+"/authorize/"+ulid+"/revoke", nil)
+	req, err := http.NewRequest(http.MethodPost, cfg.ControlMTLSURL+"/agent/authorize/"+ulid+"/revoke", nil)
 	if err != nil {
 		return err
 	}

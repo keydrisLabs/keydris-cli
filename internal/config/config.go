@@ -22,12 +22,20 @@ type Config struct {
 	// ControlURL is the base URL the proxy uses to reach the control plane.
 	ControlURL string
 	// ControlMTLSAddr is the listen address for the mTLS-only data-plane
-	// endpoints (/authorize, /authorize/issue, /authorize/{ulid}/revoke). The
-	// login/bootstrap endpoints stay on the plain-HTTP ControlAddr.
+	// endpoints (/agent/authorize, /agent/authorize/issue,
+	// /agent/authorize/{ulid}/revoke). The login/bootstrap endpoints stay on the
+	// plain-HTTP ControlAddr.
 	ControlMTLSAddr string
 	// ControlMTLSURL is the base URL the daemon/hooks use to reach those mTLS
 	// endpoints, presenting the client certificate `keydris login` stored.
 	ControlMTLSURL string
+	// MTLSServerCA optionally pins an extra CA to trust when verifying the mTLS
+	// control-plane server certificate. In production the mTLS endpoint sits
+	// behind an ALB presenting a public TLS cert (verified against the system
+	// roots), so this is empty. Set it only for a local/self-signed control
+	// plane. NOTE: this is the *server* CA — not the client `ca.crt` from
+	// /identity/sign, which signs client certs and must not verify the server.
+	MTLSServerCA string
 	// ProxyPort is the transparent proxy listen port (iptables REDIRECT target),
 	// or the proxy-env listen port in the fallback mode.
 	ProxyPort int
@@ -171,6 +179,7 @@ func Load() *Config {
 		ControlURL:      env("KEYDRIS_CONTROL_URL", "http://127.0.0.1:8081"),
 		ControlMTLSAddr: env("KEYDRIS_CONTROL_MTLS_ADDR", "127.0.0.1:8443"),
 		ControlMTLSURL:  env("KEYDRIS_CONTROL_MTLS_URL", "https://127.0.0.1:8443"),
+		MTLSServerCA:    env("KEYDRIS_MTLS_SERVER_CA", ""),
 		ProxyPort:       envInt("KEYDRIS_PROXY_PORT", 15001),
 		// Sandbox (the Claude Code custom proxy) is the default plane, so users
 		// never need to set KEYDRIS_DATAPLANE. Override to "transparent"

@@ -1,4 +1,4 @@
-// Package authz defines the /authorize wire contract shared by the node proxy
+// Package authz defines the /agent/authorize wire contract shared by the node proxy
 // and the control plane: the request/response shapes and the client the proxy
 // uses to consult the broker.
 //
@@ -61,7 +61,7 @@ func Authorize(ctx context.Context, client *http.Client, baseURL string, req Aut
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/authorize", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/agent/authorize", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

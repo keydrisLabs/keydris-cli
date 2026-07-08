@@ -44,6 +44,8 @@ func Execute() int {
 		return runInternalSessionHook("end", args[1:])
 	case "logs":
 		return runLogs()
+	case "upgrade":
+		return runUpgrade(args[1:])
 	case "version", "--version":
 		fmt.Printf("keydris %s\n", Version)
 		return 0
@@ -73,6 +75,8 @@ Usage:
   keydris run -- <cmd...>            Run a command inside a keydris session
   keydris status                     Show config + sandbox enforcement state
   keydris logs                       Print and verify the hash-chained evidence ledger
+  keydris upgrade                    Download & replace the binary with the latest release
+                                       [--channel stable|dev] [--version <v>] [--no-config]
   keydris version                    Print the version
   keydris help                       Show this help
 `)
