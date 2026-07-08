@@ -182,7 +182,8 @@ func mintInstance(cfg *config.Config, policyName, handle string) (*mintedInstanc
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	// Issue returns 200 or 201 (Created); accept any 2xx.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		if resp.StatusCode == http.StatusNotFound {
 			return nil, fmt.Errorf("policy %q not found or not owned by this user: %s", policyName, bytes.TrimSpace(b))
@@ -210,7 +211,8 @@ func revokeInstance(cfg *config.Config, ulid string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
+	// Revoke is 204 (No Content); accept any 2xx (idempotent).
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("revoke returned %s", resp.Status)
 	}
 	return nil

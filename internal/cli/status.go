@@ -30,20 +30,20 @@ func runStatus() int {
 	reportIdentity(cfg)
 	reportSandbox(cfg)
 
+	// Use the public /agent/jwks endpoint as the reachability/health signal: the
+	// new control-plane API does not expose /healthz.
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(cfg.ControlURL + "/healthz")
+	jresp, err := client.Get(cfg.ControlURL + "/agent/jwks")
 	if err != nil {
 		fmt.Printf("control:      DOWN (%v)\n", err)
 		return 1
 	}
-	defer resp.Body.Close()
-	fmt.Printf("control:      UP (%s)\n", resp.Status)
-
-	jresp, err := client.Get(cfg.ControlURL + "/agent/jwks")
-	if err == nil {
-		defer jresp.Body.Close()
-		fmt.Printf("jwks:         %s\n", jresp.Status)
+	defer jresp.Body.Close()
+	if jresp.StatusCode < 200 || jresp.StatusCode >= 300 {
+		fmt.Printf("control:      UNHEALTHY (jwks %s)\n", jresp.Status)
+		return 1
 	}
+	fmt.Printf("control:      UP (jwks %s)\n", jresp.Status)
 	return 0
 }
 

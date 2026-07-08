@@ -76,7 +76,7 @@ func Authorize(ctx context.Context, client *http.Client, baseURL string, req Aut
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("broker returned %s: %s", resp.Status, bytes.TrimSpace(b))
 	}

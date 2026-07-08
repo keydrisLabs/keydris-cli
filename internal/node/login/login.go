@@ -355,7 +355,9 @@ func signCSR(controlURL, token string, csrPEM []byte) (*signResponse, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	// The control plane returns 200 or 201 (Created) on a successful sign;
+	// accept any 2xx and treat only non-2xx as an error.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("sign endpoint %s: %s", resp.Status, bytes.TrimSpace(b))
 	}
