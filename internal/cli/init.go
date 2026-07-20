@@ -62,11 +62,15 @@ func runInit(args []string) int {
 		fmt.Fprintf(os.Stderr, "keydris init: CA: %v\n", err)
 		return 1
 	}
+	if err := sandbox.BuildCABundle(cfg.CAPath, cfg.CABundlePath); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris init: CA bundle: %v\n", err)
+		return 1
+	}
 
 	if err := sandbox.Configure(cfg.ClaudeSettingsPath, sandbox.Options{
 		HTTPProxyPort:    cfg.HTTPProxyPort,
 		AllowedDomains:   cfg.AllowedDomains,
-		CAPath:           cfg.CAPath,
+		CAPath:           cfg.CABundlePath,
 		Strict:           *strict,
 		SessionStartHook: internalSessionStartCmd,
 		SessionEndHook:   internalSessionEndCmd,
@@ -78,7 +82,7 @@ func runInit(args []string) int {
 	fmt.Printf("keydris: configured Claude Code sandbox in %s\n", cfg.ClaudeSettingsPath)
 	fmt.Printf("  policy id: %s\n", policyID)
 	fmt.Printf("  sandbox.enabled=true, network.httpProxyPort=%d, per-session SVID hooks wired\n", cfg.HTTPProxyPort)
-	fmt.Printf("  CA: %s (trusted by sandboxed tools via NODE_EXTRA_CA_CERTS/CURL_CA_BUNDLE/...)\n", cfg.CAPath)
+	fmt.Printf("  CA bundle: %s (system roots + Keydris CA)\n", cfg.CABundlePath)
 	if *strict {
 		fmt.Printf("  strict: failIfUnavailable=true, allowUnsandboxedCommands=false\n")
 	}

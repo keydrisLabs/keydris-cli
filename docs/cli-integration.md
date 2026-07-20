@@ -195,7 +195,8 @@ still cryptographically valid until its `exp`.
 
 ### 5.4 `POST /agent/authorize` (mTLS :8443)
 
-Per-connection decision. Call this for each intercepted destination.
+Per-request decision for managed destinations. Selected-scope destinations that
+do not match are forwarded unchanged without calling this endpoint.
 
 **Request**
 ```
@@ -206,12 +207,19 @@ Content-Type: application/json
 {
   "dst_addr": "example.com:443",
   "dst_host": "example.com",
-  "svid": "<JWT-SVID from issue>"
+  "svid": "<JWT-SVID from issue>",
+  "tool_call": "POST /v1/deploy",
+  "tool_params": { "repository": "keydris-cli" }
 }
 ```
 - `dst_addr` (**required**): full `host:port` of the connection.
 - `dst_host` (optional): hostname only.
 - `svid` (**required in practice**): the session SVID.
+- `tool_call` (optional): MCP tool name for a JSON-RPC `tools/call` request;
+  otherwise the intercepted HTTP operation as `METHOD /path`.
+- `tool_params` (optional): MCP `params.arguments` for a `tools/call` request;
+  otherwise the intercepted JSON request body. The proxy omits non-JSON bodies
+  and rejects JSON bodies larger than 1 MiB.
 - `session_id`, `policy_id` are accepted but ignored (policy id is derived from
   the SVID) — do not rely on them.
 
@@ -232,7 +240,8 @@ Decision logic the CLI should assume:
   matching active policy, or the policy's decision ≠ `allow`.
 - `allow` only when the bound policy evaluates to `allow` for the destination.
 - The CLI proxy must **fail closed**: treat any non-`allow` (including network
-  errors / non-200) as deny.
+  errors / non-200) as deny for managed destinations. Unmanaged destinations
+  are explicit pass-through and never reach the broker.
 
 ### 5.5 `GET /agent/jwks` (public :443)
 
@@ -268,7 +277,8 @@ Implement (names illustrative — match existing CLI conventions):
 | `keydris enroll` | generate P-256 key+CSR, `POST /identity/sign`, store `client.key`/`client.crt`/`ca.crt`; auto re-enroll when `not_after` is near |
 | `keydris session start --policy <name> [--handle <label>]` | `POST /agent/authorize/issue`; cache `svid`+`ulid`+`expires_at` |
 | `keydris session revoke [--ulid <ulid>]` | `POST /agent/authorize/{ulid}/revoke` |
-| `keydris proxy` (or connection hook) | for each connection call `POST /agent/authorize`, allow/deny; auto re-issue SVID when expired |
+| `keydris proxy` (or connection hook) | for each managed request call `POST /agent/authorize`, allow/deny; auto re-issue SVID when expired |
+| `keydris proxy scope add/remove/list/all` | configure exact governed `host:port` origins; unlisted origins pass through unchanged |
 
 State to persist (per profile, `0600`):
 - Cognito tokens (access + refresh)
@@ -291,6 +301,13 @@ State to persist (per profile, `0600`):
 - **Policy ownership**: `policy_name` must resolve to a policy the user owns.
   Surface `404` as a clear "policy not found / not owned" message. Policies are
   created/managed elsewhere (dashboard/API); the CLI only references by name.
+- **Local authorization audit**: every managed authorize call is appended to
+  the hash-chained evidence ledger and printed by `keydris logs`. Records include
+  full `tool_params` by configuration, so `.keydris-data` is `0700` and its
+  files are `0600`. Never record SVIDs, proxy tokens, or injected values.
+- **Broker errors vs denies**: policy deny is HTTP 200 with `decision: deny`.
+  Non-2xx responses are ingress/control-plane failures, logged by status and
+  content type without copying raw HTML into logs.
 - **Fail closed** on all authorize errors.
 - **Token client_id** must equal the CLI client id or `/identity/sign` returns
   `401` — do not reuse a browser/console token.

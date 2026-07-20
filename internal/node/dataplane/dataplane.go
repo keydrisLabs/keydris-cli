@@ -9,11 +9,13 @@ package dataplane
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
+	"sync"
 )
 
 // Credential is what the broker tells the data plane to inject. Phase 1 only
@@ -24,15 +26,18 @@ type Credential struct {
 	Value string
 }
 
-// Flow is one intercepted outbound connection. OrigDst/SrcPID/SessionID are the
+// Flow is one intercepted outbound request. OrigDst/SrcPID/SessionID are the
 // portable, platform-independent view; the unexported fields hold the live
 // connection state the inline proxies need to inject and splice.
 type Flow struct {
-	OrigDst   netip.AddrPort // recovered original destination (best-effort for hostnames)
-	SrcPID    int            // originating process (0 if unknown)
-	Cgroup    string         // originating cgroup path (Linux; "" if unknown)
-	SessionID string         // SPIFFE ID resolved by attest from the platform handle ("" if none)
-	SVID      string         // the session's JWT-SVID, presented to the broker ("" if none)
+	OrigDst       netip.AddrPort  // recovered original destination (best-effort for hostnames)
+	SrcPID        int             // originating process (0 if unknown)
+	Cgroup        string          // originating cgroup path (Linux; "" if unknown)
+	SessionID     string          // SPIFFE ID resolved by attest from the platform handle ("" if none)
+	SVID          string          // the session's JWT-SVID, presented to the broker ("" if none)
+	ToolCall      string          // intercepted HTTP operation, formatted as "METHOD /path"
+	ToolParams    json.RawMessage // intercepted JSON request body (nil when absent/non-JSON)
+	MetadataError string          // local request-metadata validation failure; reject before broker
 
 	conn net.Conn
 	req  *http.Request
@@ -51,6 +56,18 @@ func (f Flow) DstString() string {
 	return f.OrigDst.String()
 }
 
+// DstHost returns the hostname used for authorization and upstream TLS.
+func (f Flow) DstHost() string {
+	if f.dstHost != "" {
+		return f.dstHost
+	}
+	host, _, err := net.SplitHostPort(f.DstString())
+	if err == nil {
+		return host
+	}
+	return f.DstString()
+}
+
 // DataPlane abstracts per-OS interception + attribution.
 //
 // Inject and Reject consume the flow's connection (allow vs deny). Reject is a
@@ -59,11 +76,15 @@ func (f Flow) DstString() string {
 type DataPlane interface {
 	Flows() <-chan Flow
 	Inject(f Flow, c Credential) error
+	PassThrough(f Flow) error
 	Reject(f Flow, reason string) error
 	Close() error
 }
 
-var errNoRequest = errors.New("flow has no buffered request")
+var (
+	errNoRequest   = errors.New("flow has no buffered request")
+	errFlowHandled = errors.New("flow already handled")
+)
 
 // inlinePlane is the shared base for inline (proxying) data planes. Concrete
 // planes differ only in how they build a Flow from an accepted connection.
@@ -84,19 +105,29 @@ func newInlinePlane(ln net.Listener) *inlinePlane {
 // serve accepts connections, builds a Flow via build, and emits it. The flows
 // channel is closed when the listener closes so consumers can range over it.
 func (p *inlinePlane) serve(build func(net.Conn) (Flow, error)) {
-	defer close(p.flows)
+	var workers sync.WaitGroup
+	defer func() {
+		workers.Wait()
+		close(p.flows)
+	}()
 	for {
 		conn, err := p.ln.Accept()
 		if err != nil {
 			return
 		}
-		f, err := build(conn)
-		if err != nil {
-			p.logf("dataplane: flow build error: %v", err)
-			_ = conn.Close()
-			continue
-		}
-		p.flows <- f
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			f, err := build(conn)
+			if err != nil {
+				if !errors.Is(err, errFlowHandled) {
+					p.logf("dataplane: flow build error: %v", err)
+				}
+				_ = conn.Close()
+				return
+			}
+			p.flows <- f
+		}()
 	}
 }
 
@@ -108,6 +139,14 @@ func (p *inlinePlane) Inject(f Flow, c Credential) error {
 		return errNoRequest
 	}
 	return injectAndForward(f.conn, f.br, f.req, f.DstString(), c)
+}
+
+func (p *inlinePlane) PassThrough(f Flow) error {
+	defer f.conn.Close()
+	if f.req == nil || f.br == nil {
+		return errNoRequest
+	}
+	return forwardUnchanged(f.conn, f.br, f.req, f.DstString())
 }
 
 func (p *inlinePlane) Reject(f Flow, reason string) error {

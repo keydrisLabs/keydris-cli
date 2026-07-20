@@ -111,15 +111,17 @@ workspace mounted) — the same trick Docker Desktop and OrbStack use.
 When an agent must run on the laptop host OS directly (no VM/WSL2), kernel-level
 transparent interception is impossible, but egress can still be brokered via the
 proxy-env plane ([internal/dataplane/proxyenv.go](../internal/dataplane/proxyenv.go),
-selected with `KEYDRIS_DATAPLANE=proxyenv`). The cross-platform Claude Code
-SessionStart hook mints the identity and sets `HTTP_PROXY`/`HTTPS_PROXY` to the
-local keydris proxy, which injects the credential.
+selected with `KEYDRIS_DATAPLANE=proxyenv`). `keydris run` and the
+cross-platform Claude Code hooks mint the identity and set
+`HTTP_PROXY`/`HTTPS_PROXY` to the local Keydris proxy. Managed HTTPS origins use
+the Keydris CA and per-request authorization; unmanaged origins use opaque
+CONNECT tunnels.
 
 Tradeoffs (a deliberate downgrade):
 
 - Not transparent — an agent could unset the proxy env var.
-- No per-connection PID attribution.
-- Plaintext HTTP only in the POC; HTTPS CONNECT/MITM is a stretch item.
+- Session attribution uses the proxy bearer token rather than a kernel-observed
+  PID, so a process that steals the token can impersonate that session.
 
 ## Native macOS / Windows planes (post-POC)
 

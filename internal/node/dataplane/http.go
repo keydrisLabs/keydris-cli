@@ -17,11 +17,27 @@ func readRequest(conn net.Conn) (*http.Request, *bufio.Reader, error) {
 }
 
 func injectAndForward(client net.Conn, br *bufio.Reader, req *http.Request, dst string, c Credential) error {
-	return proxy.InjectAndForward(client, br, req, dst, proxy.Credential(c))
+	return proxy.InjectAndForwardOne(client, req, dst, proxy.Credential(c))
 }
 
 func injectAndForwardTLS(client net.Conn, br *bufio.Reader, req *http.Request, dst, sni string, c Credential) error {
-	return proxy.InjectAndForwardTLS(client, br, req, dst, sni, proxy.Credential(c))
+	return proxy.InjectAndForwardTLSOne(client, req, dst, sni, proxy.Credential(c))
+}
+
+func forwardUnchanged(client net.Conn, br *bufio.Reader, req *http.Request, dst string) error {
+	return proxy.InjectAndForwardOne(client, req, dst, proxy.Credential{})
+}
+
+func forwardUnchangedTLS(client net.Conn, br *bufio.Reader, req *http.Request, dst, sni string) error {
+	return proxy.InjectAndForwardTLSOne(client, req, dst, sni, proxy.Credential{})
+}
+
+func tunnelCONNECT(client net.Conn, br *bufio.Reader, target string) error {
+	return proxy.TunnelCONNECT(client, br, target)
+}
+
+func tunnelRaw(client net.Conn, target string) error {
+	return proxy.TunnelRaw(client, client, target)
 }
 
 func writeReject(client net.Conn, reason string) {

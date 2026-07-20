@@ -22,6 +22,7 @@ verification**. Any local process can bind its own cgroup to a privileged
 identity, or unregister another session.
 
 Fix:
+
 - `0o600` perms (or daemon-owned dir), not `0o666`.
 - Authenticate the caller with `SO_PEERCRED` (uid/gid/pid).
 - Derive the cgroup `Handle` from the verified peer PID — do not trust the
@@ -31,10 +32,11 @@ Fix:
 ### P3 — Proxy egress hardening  (medium)
 
 `internal/node/proxy` dials upstreams on the allow path with no SSRF / infra
-guard, and destination matching is exact-string. Add:
-- Host canonicalization (lowercase, strip trailing dot/brackets, normalize port)
-  before any destination comparison, to close match-bypass via `Host.`, case, or
-  IP-vs-hostname forms.
+guard. Managed-scope matching canonicalizes case, trailing dots, IP literals,
+and ports, but remains exact-origin matching. Add:
+
+- DNS resolution/rebinding defenses if policy should treat aliases and resolved
+  IP addresses as the same destination.
 - An SSRF / control-plane-port denylist for the daemon's outbound dial
   (loopback, RFC1918, link-local `169.254/16`, multicast; Docker `2375/2376`,
   k8s `6443`, kubelet `10250`) — with an explicit allowlist exception for
@@ -48,18 +50,17 @@ The proxy injects a Bearer token on the wire. Wrap it in a type whose
 payload or a future debug log. (Current code already avoids logging it — this
 makes the guarantee structural rather than a discipline.)
 
-### P5 — Per-session proxy token is a logged bearer credential  (medium)
+### P5 — Per-session proxy token is a bearer credential  (medium)
 
 The per-session token (`newProxyToken`) is a bearer credential: presenting it to
 the proxy via `Proxy-Authorization` attributes a connection to that session's
-SVID. Two issues:
-- **Logged in cleartext.** `internal/node/sessionsock` logs the handle (= token)
-  at registration (`session registered: handle=%q`). Redact or hash it in logs,
-  and treat the daemon log as sensitive.
+SVID. The daemon logs only a short handle prefix and stores proxy logs, PIDs,
+session state, and evidence under owner-only paths. One issue remains:
+
 - **Theft = impersonation.** A co-resident process that reads the token (from the
-  env, `$CLAUDE_ENV_FILE`, or logs) can impersonate the session until
-  `session-end`. Mitigations: short token lifetime, tighten `$CLAUDE_ENV_FILE`
-  and daemon-log permissions, and (Tier 2/3 in [docs/attribution.md](docs/attribution.md))
+  env or `$CLAUDE_ENV_FILE`) can impersonate the session until `session-end`.
+  Mitigations: short token lifetime, tighten `$CLAUDE_ENV_FILE`, and (Tier 2/3
+  in [docs/attribution.md](docs/attribution.md))
   move to kernel-asserted attribution so identity is observed, not claimed.
 
 ### Verifiable audit on the client
@@ -69,6 +70,12 @@ chain is only tamper-*evident* to a verifier that knows the true tip. Have the
 control plane **sign** each record (or the rolling tip) with its Ed25519 key, and
 have `keydris logs` verify the signature — so forging the local ledger requires
 the signing key, not just filesystem write access.
+
+Authorization records intentionally include full MCP arguments and JSON request
+bodies. These may contain application secrets even though Keydris excludes the
+SVID, proxy token, request headers, and injected credential value. Treat
+`.keydris-data/evidence.jsonl` and `proxy.log` as sensitive; they are created
+with `0600` permissions under a `0700` data directory.
 
 ## Control plane (separate repo — listed for completeness)
 

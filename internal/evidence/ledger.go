@@ -40,9 +40,13 @@ func Open(path string) (*Ledger, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
+	_ = os.Chmod(filepath.Dir(path), 0o700)
 	l := &Ledger{path: path}
 	records, err := Read(path)
 	if err != nil {
+		return nil, err
+	}
+	if err := verifyRecords(records); err != nil {
 		return nil, err
 	}
 	if n := len(records); n > 0 {
@@ -62,9 +66,8 @@ func (l *Ledger) Append(typ string, payload any) (Record, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.seq++
 	r := Record{
-		Seq:      l.seq,
+		Seq:      l.seq + 1,
 		Time:     time.Now().UTC().Format(time.RFC3339Nano),
 		Type:     typ,
 		Payload:  pb,
@@ -77,6 +80,7 @@ func (l *Ledger) Append(typ string, payload any) (Record, error) {
 		return Record{}, err
 	}
 	defer f.Close()
+	_ = f.Chmod(0o600)
 
 	line, err := json.Marshal(r)
 	if err != nil {
@@ -85,7 +89,11 @@ func (l *Ledger) Append(typ string, payload any) (Record, error) {
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		return Record{}, err
 	}
+	if err := f.Sync(); err != nil {
+		return Record{}, err
+	}
 	l.lastHash = r.Hash
+	l.seq = r.Seq
 	return r, nil
 }
 
@@ -108,7 +116,7 @@ func Read(path string) ([]Record, error) {
 
 	var out []Record
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -129,8 +137,15 @@ func Verify(path string) error {
 	if err != nil {
 		return err
 	}
+	return verifyRecords(records)
+}
+
+func verifyRecords(records []Record) error {
 	prev := ""
-	for _, r := range records {
+	for i, r := range records {
+		if r.Seq != i+1 {
+			return fmt.Errorf("record %d: sequence mismatch (got %d)", i+1, r.Seq)
+		}
 		if r.PrevHash != prev {
 			return fmt.Errorf("record %d: prev_hash mismatch", r.Seq)
 		}

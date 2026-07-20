@@ -97,8 +97,9 @@ type Config struct {
 	// CAPath / CAKeyPath persist the Keydris CA used to terminate TLS in the
 	// sandbox proxy. The CA must be stable across restarts once installed in the
 	// sandbox/OS trust store.
-	CAPath    string
-	CAKeyPath string
+	CAPath       string
+	CAKeyPath    string
+	CABundlePath string
 	// ClaudeSettingsPath is the Claude Code settings file `keydris init` writes
 	// the sandbox block + CA env into (default ~/.claude/settings.json).
 	ClaudeSettingsPath string
@@ -108,6 +109,12 @@ type Config struct {
 	// AllowedDomains seeds sandbox.allowedDomains so the agent's egress (and the
 	// model endpoint) is permitted through the sandbox to the Keydris proxy.
 	AllowedDomains []string
+	// ManagedMode and ManagedDestinations control which exact origins are
+	// authorized and credential-injected. Mode "all" preserves the historical
+	// behavior; "selected" passes every unlisted destination through unchanged.
+	ManagedMode         string
+	ManagedDestinations []string
+	ManagedScopeError   error
 	// AllowSoleFallback lets the sandbox proxy attribute a request that carries
 	// no per-session token to the sole registered session. Off by default: a
 	// request must present its token, else it is unattributed (fail-closed). This
@@ -174,6 +181,13 @@ func Load() *Config {
 	loadLayeredFiles()
 	dataDir := env("KEYDRIS_DATA_DIR", ".keydris-data")
 	authorizeURL, tokenURL := cognitoEndpoints()
+	managed, managedErr := loadManagedScope(dataDir)
+	if value, ok := os.LookupEnv("KEYDRIS_MANAGED_MODE"); ok {
+		managed.Mode = strings.TrimSpace(value)
+	}
+	if _, ok := os.LookupEnv("KEYDRIS_MANAGED_DESTINATIONS"); ok {
+		managed.Destinations = envList("KEYDRIS_MANAGED_DESTINATIONS")
+	}
 	return &Config{
 		ControlAddr:     env("KEYDRIS_CONTROL_ADDR", "127.0.0.1:8081"),
 		ControlURL:      env("KEYDRIS_CONTROL_URL", "http://127.0.0.1:8081"),
@@ -204,13 +218,17 @@ func Load() *Config {
 		SessionSocket: env("KEYDRIS_SESSION_SOCKET", "/tmp/keydris-registry.sock"),
 		PolicyID:      env("KEYDRIS_POLICY_ID", readPolicyID(dataDir)),
 
-		CAPath:             env("KEYDRIS_CA_PATH", dataDir+"/ca.crt"),
-		CAKeyPath:          env("KEYDRIS_CA_KEY_PATH", dataDir+"/ca.key"),
-		ClaudeSettingsPath: env("KEYDRIS_CLAUDE_SETTINGS", defaultClaudeSettings()),
-		HTTPProxyPort:      envInt("KEYDRIS_HTTP_PROXY_PORT", envInt("KEYDRIS_PROXY_PORT", 15001)),
-		AllowedDomains:     envList("KEYDRIS_ALLOWED_DOMAINS"),
-		AllowSoleFallback:  env("KEYDRIS_ALLOW_SOLE_FALLBACK", "") != "",
-		PeerVerify:         env("KEYDRIS_PEER_VERIFY", "warn"),
+		CAPath:              env("KEYDRIS_CA_PATH", dataDir+"/ca.crt"),
+		CAKeyPath:           env("KEYDRIS_CA_KEY_PATH", dataDir+"/ca.key"),
+		CABundlePath:        env("KEYDRIS_CA_BUNDLE_PATH", dataDir+"/ca-bundle.crt"),
+		ClaudeSettingsPath:  env("KEYDRIS_CLAUDE_SETTINGS", defaultClaudeSettings()),
+		HTTPProxyPort:       envInt("KEYDRIS_HTTP_PROXY_PORT", envInt("KEYDRIS_PROXY_PORT", 15001)),
+		AllowedDomains:      envList("KEYDRIS_ALLOWED_DOMAINS"),
+		ManagedMode:         managed.Mode,
+		ManagedDestinations: managed.Destinations,
+		ManagedScopeError:   managedErr,
+		AllowSoleFallback:   env("KEYDRIS_ALLOW_SOLE_FALLBACK", "") != "",
+		PeerVerify:          env("KEYDRIS_PEER_VERIFY", "warn"),
 
 		ClientCAPath:       env("KEYDRIS_CLIENT_CA_PATH", dataDir+"/client-ca.crt"),
 		ClientCAKeyPath:    env("KEYDRIS_CLIENT_CA_KEY_PATH", dataDir+"/client-ca.key"),
@@ -315,10 +333,15 @@ func readPolicyID(dataDir string) string {
 // SavePolicyID persists the policy id under the data dir so later `keydris proxy
 // up` / `keydris status` pick it up without re-passing it.
 func SavePolicyID(dataDir, id string) error {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(policyIDPath(dataDir), []byte(strings.TrimSpace(id)+"\n"), 0o644)
+	_ = os.Chmod(dataDir, 0o700)
+	path := policyIDPath(dataDir)
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(id)+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 // RemovePolicyID clears the persisted policy id (used by `keydris deinit`). A

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 )
 
 // Internal Claude Code hook entrypoints. `keydris init claude-code` wires these
@@ -21,6 +21,8 @@ import (
 const (
 	internalSessionStartCmd = "keydris __session-start"
 	internalSessionEndCmd   = "keydris __session-end"
+	sessionOwnerEnv         = "KEYDRIS_SESSION_OWNER"
+	sessionOwnerRun         = "keydris-run"
 )
 
 // proxyAuthURL builds the local proxy URL a session points its HTTP(S)_PROXY at.
@@ -46,6 +48,15 @@ func runInternalSessionHook(phase string, args []string) int {
 	switch phase {
 	case "start":
 		sid := sessionID(*session, true)
+		if os.Getenv(sessionOwnerEnv) == sessionOwnerRun {
+			if _, err := loadState(cfg, sid); err != nil {
+				fmt.Fprintf(os.Stderr, "keydris session: wrapper-owned state %q: %v\n", sid, err)
+				return 1
+			}
+			updateSessionOwner(cfg, sid, os.Getppid())
+			writeClaudeProxyEnv(cfg, sid)
+			return 0
+		}
 		if code := hookSessionStart(cfg, *blueprint, sid); code != 0 {
 			return code
 		}
@@ -59,6 +70,9 @@ func runInternalSessionHook(phase string, args []string) int {
 		writeClaudeProxyEnv(cfg, sid)
 		return 0
 	case "end":
+		if os.Getenv(sessionOwnerEnv) == sessionOwnerRun {
+			return 0
+		}
 		return hookSessionEnd(cfg, sessionID(*session, false))
 	default:
 		fmt.Fprintf(os.Stderr, "keydris: unknown internal hook %q\n", phase)
@@ -87,7 +101,18 @@ func writeClaudeProxyEnv(cfg *config.Config, sid string) {
 	if err != nil || st.Handle == "" {
 		return
 	}
-	p := proxyAuthURL(cfg.HTTPProxyPort, st.Handle)
+	port := cfg.HTTPProxyPort
+	if cfg.DataPlane == "proxyenv" {
+		port = cfg.ProxyPort
+	}
+	p := proxyAuthURL(port, st.Handle)
+	caBundle := cfg.CABundlePath
+	if caBundle == "" {
+		caBundle = cfg.CAPath
+	} else if err := sandbox.BuildCABundle(cfg.CAPath, caBundle); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris session: build CA bundle: %v\n", err)
+		return
+	}
 	f, err := os.OpenFile(envFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris session: write proxy env: %v\n", err)
@@ -95,6 +120,7 @@ func writeClaudeProxyEnv(cfg *config.Config, sid string) {
 	}
 	defer f.Close()
 	fmt.Fprintf(f, "export HTTP_PROXY=%s\nexport HTTPS_PROXY=%s\nexport http_proxy=%s\nexport https_proxy=%s\n", p, p, p, p)
+	fmt.Fprintf(f, "export CURL_CA_BUNDLE=%s\nexport SSL_CERT_FILE=%s\nexport NODE_EXTRA_CA_CERTS=%s\nexport GIT_SSL_CAINFO=%s\nexport REQUESTS_CA_BUNDLE=%s\n", caBundle, caBundle, caBundle, caBundle, caBundle)
 }
 
 // sessionID resolves the session identifier so SessionStart and SessionEnd agree
@@ -111,7 +137,7 @@ func sessionID(flagVal string, generate bool) string {
 		return sid
 	}
 	if generate {
-		return time.Now().UTC().Format("20060102T150405")
+		return "hook-" + newProxyToken()
 	}
 	return "default"
 }

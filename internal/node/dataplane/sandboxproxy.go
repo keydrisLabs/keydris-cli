@@ -16,6 +16,7 @@ import (
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
+	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
 )
 
 // sandboxPlane is the v2 data plane: a TLS-terminating forward proxy that Claude
@@ -77,6 +78,8 @@ type SandboxOptions struct {
 	AllowSoleFallback bool
 	// PeerVerify checks that a connecting process belongs to the session's tree.
 	PeerVerify PeerVerifyMode
+	// Scope selects destinations that Keydris should MITM and authorize.
+	Scope *proxyscope.Scope
 }
 
 type sandboxPlane struct {
@@ -87,6 +90,7 @@ type sandboxPlane struct {
 	reg        *attest.SessionRegistry
 	allowSole  bool
 	peerVerify PeerVerifyMode
+	scope      *proxyscope.Scope
 
 	leafMu sync.Mutex
 	leaves map[string]*tls.Certificate
@@ -111,6 +115,7 @@ func NewSandboxProxy(addr string, ca *proxy.CA, reg *attest.SessionRegistry, opt
 		reg:        reg,
 		allowSole:  opts.AllowSoleFallback,
 		peerVerify: opts.PeerVerify,
+		scope:      opts.Scope,
 		leaves:     map[string]*tls.Certificate{},
 	}
 	p.logf("dataplane(sandbox): listening on %s (set Claude Code sandbox.network.httpProxyPort=%s)", addr, portOf(addr))
@@ -157,16 +162,28 @@ func (p *sandboxPlane) build(conn net.Conn) (Flow, bool) {
 	}
 
 	if req.Method == http.MethodConnect {
-		return p.buildConnect(conn, req)
+		return p.buildConnect(conn, req, br)
 	}
 	return p.buildPlain(conn, req, br)
 }
 
-func (p *sandboxPlane) buildConnect(conn net.Conn, connectReq *http.Request) (Flow, bool) {
-	target := connectReq.Host // host:port
+func (p *sandboxPlane) buildConnect(conn net.Conn, connectReq *http.Request, br *bufio.Reader) (Flow, bool) {
+	target, err := proxyscope.Normalize(connectReq.Host)
+	if err != nil {
+		writeReject(conn, "invalid CONNECT destination")
+		p.logf("dataplane(sandbox): %v", err)
+		return Flow{}, false
+	}
 	host := target
-	if h, _, err := net.SplitHostPort(target); err == nil {
+	if h, _, splitErr := net.SplitHostPort(target); splitErr == nil {
 		host = h
+	}
+
+	if p.scope != nil && !p.scope.Managed(target) {
+		p.logf("PASSTHROUGH %s (opaque CONNECT)", target)
+		_ = tunnelCONNECT(conn, br, target)
+		_ = conn.Close()
+		return Flow{}, false
 	}
 
 	sess := p.resolveSession(conn, connectReq)
@@ -182,14 +199,16 @@ func (p *sandboxPlane) buildConnect(conn net.Conn, connectReq *http.Request) (Fl
 	tlsConf := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			name := hello.ServerName
-			if name == "" {
-				name = host
+			if hello.ServerName != "" {
+				sni, err := proxyscope.Normalize(hello.ServerName)
+				if err != nil || hostOnly(sni) != host {
+					return nil, fmt.Errorf("TLS SNI %q does not match CONNECT target %q", hello.ServerName, host)
+				}
 			}
-			return p.leafFor(name)
+			return p.leafFor(host)
 		},
 	}
-	tconn := tls.Server(conn, tlsConf)
+	tconn := tls.Server(&bufferedConn{Conn: conn, reader: br}, tlsConf)
 	if err := tconn.Handshake(); err != nil {
 		p.logf("dataplane(sandbox): TLS handshake for %s: %v", target, err)
 		_ = tconn.Close()
@@ -198,6 +217,13 @@ func (p *sandboxPlane) buildConnect(conn net.Conn, connectReq *http.Request) (Fl
 
 	req, br, err := readRequest(tconn)
 	if err != nil {
+		_ = tconn.Close()
+		return Flow{}, false
+	}
+	requestTarget, err := requestDestination(req, "https")
+	if err != nil || requestTarget != target {
+		writeReject(tconn, "request authority does not match CONNECT target")
+		p.logf("dataplane(sandbox): request authority %q does not match CONNECT target %q", requestTarget, target)
 		_ = tconn.Close()
 		return Flow{}, false
 	}
@@ -210,6 +236,10 @@ func (p *sandboxPlane) buildConnect(conn net.Conn, connectReq *http.Request) (Fl
 		req:         req,
 		br:          br,
 	}
+	if err := applyRequestMetadata(&f, req); err != nil {
+		p.logf("dataplane(sandbox): request metadata for %s: %v", target, err)
+		f.MetadataError = err.Error()
+	}
 	if ap, err := netip.ParseAddrPort(target); err == nil {
 		f.OrigDst = ap
 	}
@@ -220,24 +250,60 @@ func (p *sandboxPlane) buildConnect(conn net.Conn, connectReq *http.Request) (Fl
 // buildPlain handles absolute-form proxy requests for http:// upstreams, the
 // same shape the proxy-env plane reads.
 func (p *sandboxPlane) buildPlain(conn net.Conn, req *http.Request, br *bufio.Reader) (Flow, bool) {
-	host := req.URL.Host
-	if host == "" {
-		host = req.Host
-	}
-	if host == "" {
-		_ = conn.Close()
+	host, err := requestDestination(req, "http")
+	if err != nil {
+		writeReject(conn, "invalid upstream host")
+		p.logf("dataplane(sandbox): %v", err)
 		return Flow{}, false
 	}
-	if _, _, err := net.SplitHostPort(host); err != nil {
-		host = net.JoinHostPort(host, "80")
-	}
 
-	f := Flow{dst: host, conn: conn, req: req, br: br}
+	f := Flow{dst: host, dstHost: hostOnly(host), conn: conn, req: req, br: br}
+	if p.scope == nil || p.scope.Managed(host) {
+		if err := applyRequestMetadata(&f, req); err != nil {
+			p.logf("dataplane(sandbox): request metadata for %s: %v", host, err)
+			f.MetadataError = err.Error()
+		}
+	}
 	if ap, err := netip.ParseAddrPort(host); err == nil {
 		f.OrigDst = ap
 	}
 	applySession(&f, p.resolveSession(conn, req))
 	return f, true
+}
+
+func hostOnly(dst string) string {
+	host, _, err := net.SplitHostPort(dst)
+	if err != nil {
+		return dst
+	}
+	return host
+}
+
+func requestDestination(req *http.Request, scheme string) (string, error) {
+	if req == nil {
+		return "", fmt.Errorf("request is nil")
+	}
+	authority := req.Host
+	if req.URL != nil && req.URL.Host != "" {
+		urlTarget, err := proxyscope.Normalize(scheme + "://" + req.URL.Host)
+		if err != nil {
+			return "", err
+		}
+		if authority != "" {
+			hostTarget, err := proxyscope.Normalize(scheme + "://" + authority)
+			if err != nil {
+				return "", err
+			}
+			if hostTarget != urlTarget {
+				return "", fmt.Errorf("URL authority %q does not match Host %q", req.URL.Host, authority)
+			}
+		}
+		return urlTarget, nil
+	}
+	if authority == "" {
+		return "", fmt.Errorf("request has no authority")
+	}
+	return proxyscope.Normalize(scheme + "://" + authority)
 }
 
 // leafFor returns a cached leaf certificate for host, minting one via the CA on
@@ -371,6 +437,17 @@ func (p *sandboxPlane) Inject(f Flow, c Credential) error {
 	return injectAndForward(f.conn, f.br, f.req, f.DstString(), c)
 }
 
+func (p *sandboxPlane) PassThrough(f Flow) error {
+	defer f.conn.Close()
+	if f.req == nil || f.br == nil {
+		return errNoRequest
+	}
+	if f.upstreamTLS {
+		return forwardUnchangedTLS(f.conn, f.br, f.req, f.DstString(), f.dstHost)
+	}
+	return forwardUnchanged(f.conn, f.br, f.req, f.DstString())
+}
+
 func (p *sandboxPlane) Reject(f Flow, reason string) error {
 	defer f.conn.Close()
 	writeReject(f.conn, reason)
@@ -382,4 +459,13 @@ func portOf(addr string) string {
 		return port
 	}
 	return addr
+}
+
+type bufferedConn struct {
+	net.Conn
+	reader io.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
 }

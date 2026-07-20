@@ -72,6 +72,9 @@ Usage:
   keydris deinit claude-code         Undo init: remove the Keydris sandbox config
   keydris proxy up                   Start the brokered egress proxy in the background
   keydris proxy down                 Stop the background proxy
+  keydris proxy scope add <origin>   Manage only selected host:port origins
+  keydris proxy scope remove <origin>
+  keydris proxy scope list|all
   keydris run -- <cmd...>            Run a command inside a keydris session
   keydris status                     Show config + sandbox enforcement state
   keydris logs                       Print and verify the hash-chained evidence ledger

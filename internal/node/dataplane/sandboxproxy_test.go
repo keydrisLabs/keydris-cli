@@ -3,6 +3,7 @@ package dataplane
 import (
 	"encoding/base64"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
@@ -55,5 +56,27 @@ func TestVerifyPeerNoopWhenOwnerUnknown(t *testing.T) {
 	p := &sandboxPlane{peerVerify: PeerVerifyEnforce, logf: func(string, ...any) {}}
 	if !p.verifyPeer(nil, &attest.Session{SPIFFEID: "x"}) {
 		t.Errorf("verifyPeer should allow when OwnerPID is unknown")
+	}
+}
+
+func TestRequestDestinationRejectsAuthorityMismatch(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "http://managed.example/path", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "unmanaged.example"
+	if _, err := requestDestination(req, "http"); err == nil {
+		t.Fatal("expected URL/Host authority mismatch")
+	}
+}
+
+func TestRequestDestinationCanonicalizesOriginForm(t *testing.T) {
+	req := &http.Request{Host: "Managed.Example.", URL: &url.URL{Path: "/mcp"}}
+	got, err := requestDestination(req, "https")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "managed.example:443" {
+		t.Fatalf("destination = %q", got)
 	}
 }

@@ -16,7 +16,7 @@ and becomes that proxy.
 
 ## Flow
 
-```
+```text
 Claude session  ── Bash subprocess egress (curl/git/npm) ──►  Keydris proxy
    (sandboxed)         (forced through proxy by the sandbox)     :15001
                                                                    │
@@ -44,10 +44,14 @@ Claude session  ── Bash subprocess egress (curl/git/npm) ──►  Keydris 
   - merges any `allowedDomains`;
 - merges the `SessionStart`/`SessionEnd` hooks (the internal
   `keydris __session-start` / `keydris __session-end` entrypoints);
-- points the agent's subprocess tools at the CA via the settings `env` block
+- builds an owner-only bundle containing the platform roots plus the Keydris CA,
+  then points the agent's subprocess tools at that bundle via the settings `env` block
   (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`,
-  `REQUESTS_CA_BUNDLE`). `--trust-store` additionally installs the CA into the OS
-  trust store (best-effort, may need privileges).
+  `REQUESTS_CA_BUNDLE`). Keeping the platform roots is required for opaque
+  unmanaged CONNECT traffic. `--trust-store` additionally installs the CA into
+  the OS trust store (best-effort, may need privileges). Platforms without a
+  discoverable PEM root bundle must set `SSL_CERT_FILE` to one before init;
+  Keydris fails setup rather than replacing public roots with its private CA.
 
 `SessionStart` mints a per-session SPIFFE JWT-SVID and registers its handle with
 the daemon; `SessionEnd` revokes it. `keydris status` reports whether the
@@ -75,12 +79,37 @@ no per-session port required. Caveat: the Claude path depends on
 version; re-verify on upgrades. `keydris run` does not depend on it. See
 [attribution.md](attribution.md).
 
+## Managed destination scope
+
+By default every destination is managed, matching the original proxy behavior.
+For a narrower boundary, configure exact origins:
+
+```bash
+keydris proxy scope add docs.mcp.cloudflare.com:443
+keydris proxy scope list
+keydris proxy down && keydris proxy up
+```
+
+The first `scope add` switches to selected mode. Managed HTTPS origins are
+terminated with the Keydris CA, sent to `POST /agent/authorize`, and optionally
+credential-injected. Unlisted HTTPS origins use an opaque CONNECT tunnel: the
+proxy does not terminate TLS, inspect bodies, call the broker, or mutate
+headers. `keydris proxy scope all` restores the backward-compatible all-managed
+mode.
+
+This scope is separate from Claude's `sandbox.allowedDomains`: the sandbox list
+controls where Claude may connect, while proxy scope controls where Keydris
+governs and injects.
+
 ## Coverage and trust model
 
-- **Coverage is Bash-subprocess egress.** The sandbox isolates Bash and its
+- **Default coverage is Bash-subprocess egress.** The sandbox isolates Bash and its
   children (`curl`, `git`, `npm`, `gh`, build scripts). Claude Code's own MCP,
   WebFetch, and model-API calls run under different boundaries and are not routed
-  to the proxy.
+  to the sandbox proxy. `keydris run -- claude` explicitly supplies the proxy
+  environment before Claude starts, so its native remote-HTTP MCP client is
+  covered too; wrapper-owned hooks reuse that session instead of minting a
+  second identity.
 - **Un-bypassability comes from the sandbox**, not from Keydris. It holds only
   while the sandbox is enabled; `keydris init` locks it and `keydris status`
   surfaces drift. A user who disables the sandbox loses enforcement.

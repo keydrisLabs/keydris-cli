@@ -1,7 +1,6 @@
-// Package proxy holds the OS-agnostic L7 path shared by every data plane
-// (plan.md section 3): read the buffered HTTP request, inject the credential,
-// forward to the upstream, and splice bytes both ways. The OS-specific planes
-// in internal/node/dataplane build a connection + destination and then delegate here.
+// Package proxy holds the OS-agnostic forwarding path shared by every data
+// plane. Managed and plain-HTTP pass-through requests are forwarded one at a
+// time; only opaque CONNECT tunnels splice bytes bidirectionally.
 package proxy
 
 import (
@@ -32,13 +31,11 @@ func ReadRequest(conn net.Conn) (*http.Request, *bufio.Reader, error) {
 	return req, br, nil
 }
 
-// InjectAndForward injects the credential, writes the request to a freshly
-// dialed upstream, and splices the remainder of the connection both ways.
-//
-// http.Request.Write emits origin-form (path from URL.RequestURI() + Host
-// header) for both transparently intercepted and absolute-form proxy requests,
-// so this works for the transparent and proxy-env planes alike.
-func InjectAndForward(client net.Conn, br *bufio.Reader, req *http.Request, dst string, c Credential) error {
+// InjectAndForwardOne forwards exactly one managed HTTP request. It deliberately
+// closes the upstream connection after the response so a second client request
+// cannot bypass authorization through the old byte-splice path.
+func InjectAndForwardOne(client net.Conn, req *http.Request, dst string, c Credential) error {
+	prepareOriginRequest(req)
 	if c.Type == "header" && c.Name != "" {
 		req.Header.Set(c.Name, c.Value)
 	}
@@ -50,32 +47,29 @@ func InjectAndForward(client net.Conn, br *bufio.Reader, req *http.Request, dst 
 	}
 	defer upstream.Close()
 
-	req.RequestURI = "" // required empty for the client-side Write path
+	req.RequestURI = ""
+	req.Close = true
+	req.Header.Set("Connection", "close")
 	if err := req.Write(upstream); err != nil {
 		return fmt.Errorf("write upstream request: %w", err)
 	}
-
-	splice(client, upstream, br)
+	if _, err := io.Copy(client, upstream); err != nil {
+		return fmt.Errorf("copy upstream response: %w", err)
+	}
 	return nil
 }
 
-// InjectAndForwardTLS is the HTTPS-upstream variant used by the sandbox proxy
-// after it has terminated the agent's TLS with a leaf from the Keydris CA. It
-// re-originates a fresh TLS connection to the real upstream (sni names it),
-// injects the credential, writes the request, and splices.
-//
-// The POC dials the upstream with InsecureSkipVerify because the demo backend
-// uses a self-signed certificate; a real build would verify against the system
-// roots (or pin the upstream).
-func InjectAndForwardTLS(client net.Conn, br *bufio.Reader, req *http.Request, dst, sni string, c Credential) error {
+// InjectAndForwardTLSOne is the managed HTTPS equivalent of
+// InjectAndForwardOne: authorize/inject once, then force connection close.
+func InjectAndForwardTLSOne(client net.Conn, req *http.Request, dst, sni string, c Credential) error {
+	prepareOriginRequest(req)
 	if c.Type == "header" && c.Name != "" {
 		req.Header.Set(c.Name, c.Value)
 	}
 
 	upstream, err := tls.Dial("tcp", dst, &tls.Config{
-		ServerName:         sni,
-		InsecureSkipVerify: true, // POC: demo upstream is self-signed
-		MinVersion:         tls.VersionTLS12,
+		ServerName: sni,
+		MinVersion: tls.VersionTLS12,
 	})
 	if err != nil {
 		WriteReject(client, "upstream unreachable")
@@ -84,12 +78,48 @@ func InjectAndForwardTLS(client net.Conn, br *bufio.Reader, req *http.Request, d
 	defer upstream.Close()
 
 	req.RequestURI = ""
+	req.Close = true
+	req.Header.Set("Connection", "close")
 	if err := req.Write(upstream); err != nil {
 		return fmt.Errorf("write upstream request: %w", err)
 	}
-
-	splice(client, upstream, br)
+	if _, err := io.Copy(client, upstream); err != nil {
+		return fmt.Errorf("copy upstream response: %w", err)
+	}
 	return nil
+}
+
+// TunnelCONNECT establishes an opaque HTTP CONNECT tunnel. Keydris does not
+// terminate TLS, inspect request bodies, authorize, or mutate headers on it.
+func TunnelCONNECT(client net.Conn, bufferedClient io.Reader, target string) error {
+	upstream, err := net.Dial("tcp", target)
+	if err != nil {
+		WriteReject(client, "upstream unreachable")
+		return fmt.Errorf("dial tunnel upstream %s: %w", target, err)
+	}
+	defer upstream.Close()
+	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		return err
+	}
+	splice(client, upstream, bufferedClient)
+	return nil
+}
+
+// TunnelRaw establishes an opaque tunnel for transparently intercepted traffic
+// that has no HTTP CONNECT preamble.
+func TunnelRaw(client net.Conn, clientReader io.Reader, target string) error {
+	upstream, err := net.Dial("tcp", target)
+	if err != nil {
+		return fmt.Errorf("dial tunnel upstream %s: %w", target, err)
+	}
+	defer upstream.Close()
+	splice(client, upstream, clientReader)
+	return nil
+}
+
+func prepareOriginRequest(req *http.Request) {
+	req.Header.Del("Proxy-Authorization")
+	req.Header.Del("Proxy-Connection")
 }
 
 // WriteReject sends a synthetic 403 to the client without dialing upstream.

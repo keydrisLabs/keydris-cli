@@ -37,7 +37,7 @@ func runDeinit(args []string) int {
 
 	changed, err := sandbox.Deconfigure(cfg.ClaudeSettingsPath, sandbox.RemoveOptions{
 		HTTPProxyPort:  cfg.HTTPProxyPort,
-		CAPath:         cfg.CAPath,
+		CAPath:         cfg.CABundlePath,
 		AllowedDomains: cfg.AllowedDomains,
 	})
 	if err != nil {

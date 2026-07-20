@@ -28,7 +28,7 @@ client has any identity.
 | Listener | Default addr | Auth | Endpoints |
 | --- | --- | --- | --- |
 | **Public HTTP** | `127.0.0.1:8081` (`KEYDRIS_CONTROL_ADDR`) | none / OIDC bearer | `/healthz`, `/jwks`, `/oauth/authorize`, `/oauth/token`, `/identity/sign` |
-| **mTLS** | `127.0.0.1:8443` (`KEYDRIS_CONTROL_MTLS_ADDR`) | client cert signed by the control-plane **Client CA** | `/authorize`, `/authorize/issue`, `/authorize/{ulid}/revoke` |
+| **mTLS** | `127.0.0.1:8443` (`KEYDRIS_CONTROL_MTLS_ADDR`) | client cert signed by the control-plane **Client CA** | `/agent/authorize`, `/agent/authorize/issue`, `/agent/authorize/{ulid}/revoke` |
 
 The mTLS client cert is the one `keydris login` obtains from `/identity/sign`.
 The daemon presents it on every mTLS call.
@@ -95,7 +95,7 @@ signs a client cert.
 `200` on success; non-`200` (with a short error body) otherwise. The private key
 never leaves the client — only the CSR is sent.
 
-### 3.4 `POST /authorize/issue` — mTLS (issuer) **[impl]**
+### 3.4 `POST /agent/authorize/issue` — mTLS (issuer) **[impl]**
 
 Mint a per-session SPIFFE JWT-SVID. Called by the SessionStart hook / `keydris run`.
 
@@ -118,14 +118,16 @@ ID, and it is what the broker authorizes grants against. (In the CLI this is the
 }
 ```
 
-### 3.5 `POST /authorize/{ulid}/revoke` — mTLS (issuer) **[impl]**
+### 3.5 `POST /agent/authorize/{ulid}/revoke` — mTLS (issuer) **[impl]**
 
 Revoke a minted instance by its ULID (called at SessionEnd). `204` on success.
 After revocation the broker denies any flow carrying that SVID.
 
-### 3.6 `POST /authorize` — mTLS (broker) **[impl]**
+### 3.6 `POST /agent/authorize` — mTLS (broker) **[impl]**
 
-The per-connection decision, called by the proxy for every intercepted flow.
+The per-request decision, called by the proxy for every managed request.
+Unmanaged destinations use unchanged HTTP forwarding or an opaque CONNECT
+tunnel and never call the broker.
 
 ```json
 // request
@@ -134,9 +136,15 @@ The per-connection decision, called by the proxy for every intercepted flow.
   "dst_host":   "backend.keydris.test",   // optional
   "session_id": "spiffe://…",             // optional, for logging
   "svid":       "<JWT-SVID>",             // empty => unattributed
-  "policy_id":  "my-payment-agent"        // optional; redundant with the SVID's blueprint
+  "policy_id":  "my-payment-agent",       // optional; redundant with the SVID's blueprint
+  "tool_call":  "list_users",             // MCP tool name, or HTTP method + path
+  "tool_params": { "limit": 3 }           // MCP arguments, or the JSON request body
 }
 ```
+
+For an MCP Streamable HTTP JSON-RPC `tools/call`, the proxy promotes
+`params.name` to `tool_call` and `params.arguments` to `tool_params`. MCP
+lifecycle messages and non-MCP JSON requests retain the HTTP fallback shape.
 
 Decision logic: verify the SVID against the JWKS → derive the blueprint from the
 SPIFFE ID → reject if the instance is revoked → find an **active grant** for
@@ -153,6 +161,15 @@ session/upstream/destination and return how to inject it.
 
 HTTP is always `200` with the decision in the body (`400` only on a malformed
 request). The allow/deny distinction is **in the payload**, not the status code.
+Other non-2xx responses (including HTML 403s from ingress) are infrastructure
+errors, not policy denials; managed traffic fails closed.
+
+The CLI appends every managed call outcome to its local hash-chained ledger,
+including destination, session id, promoted tool name, full tool arguments,
+decision/reason, latency, and injected header name. It deliberately excludes
+the SVID, proxy token, request headers, and injected credential value. Because
+tool arguments can themselves contain secrets, the data directory and ledger
+must remain owner-only.
 
 ## 4. Data models
 
@@ -192,14 +209,14 @@ POC: seeded from JSON at startup, revoked in-memory; no live API. See §6.
 ```
 keydris login ──► POST /identity/sign (OIDC bearer) ──► client cert (mTLS identity)
 
-SessionStart  ──► POST /authorize/issue (mTLS) ─────► per-session SVID + ULID
+SessionStart  ──► POST /agent/authorize/issue (mTLS) ► per-session SVID + ULID
                                                        (registered locally; token in Proxy-Authorization)
 
-agent egress  ──► proxy ──► POST /authorize (mTLS) ──► allow + inject{Bearer access-token}
-                  proxy injects token, splices to upstream
+managed request ─► proxy ─► POST /agent/authorize ───► allow + inject{Bearer access-token}
+                  proxy injects token, forwards exactly one authorized request
                   upstream verifies token via GET /jwks ──► 200
 
-SessionEnd    ──► POST /authorize/{ulid}/revoke (mTLS) ► 204
+SessionEnd    ──► POST /agent/authorize/{ulid}/revoke ► 204
 ```
 
 Every issuance and allow/deny is appended to a hash-chained **evidence ledger**.
@@ -221,8 +238,8 @@ Every issuance and allow/deny is appended to a hash-chained **evidence ledger**.
   of a hand-edited seed file.
 - **Token hygiene [rec].** Keep access-token TTL in seconds; consider `jti`
   replay tracking at the upstream for the TTL window.
-- **Frozen contracts.** Treat `/authorize`, `/authorize/issue`,
-  `/authorize/{ulid}/revoke`, and the `/jwks` shape as stable — the node and
+- **Frozen contracts.** Treat `/agent/authorize`, `/agent/authorize/issue`,
+  `/agent/authorize/{ulid}/revoke`, and the `/jwks` shape as stable — the node and
   control plane evolve independently against them.
 
 ## 7. Config knobs (server side)

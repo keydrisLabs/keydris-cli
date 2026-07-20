@@ -84,7 +84,7 @@ func updateSessionOwner(cfg *config.Config, sid string, pid int) {
 	}
 	st.OwnerPID = pid
 	_ = saveState(cfg, st)
-	_ = sessionsock.Send(cfg.SessionSocket, sessionsock.Message{
+	_ = sendSessionMessage(cfg.SessionSocket, sessionsock.Message{
 		Action:   sessionsock.ActionUpdateOwner,
 		Handle:   st.Handle,
 		OwnerPID: pid,
@@ -100,13 +100,24 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 		return 1
 	}
 
-	inst, err := mintInstance(cfg, blueprint, handle)
+	inst, err := mintSessionInstance(cfg, blueprint, handle)
 	if err != nil {
+		unbindSessionForMode(cfg, handle)
 		fmt.Fprintf(os.Stderr, "keydris session: mint: %v\n", err)
 		return 1
 	}
 
-	if err := sessionsock.Send(cfg.SessionSocket, sessionsock.Message{
+	if err := saveState(cfg, sessionState{
+		SessionID: sid, Handle: handle, ULID: inst.ULID, SPIFFEID: inst.SPIFFEID, Blueprint: blueprint,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris session: save state: %v\n", err)
+		_ = revokeSessionInstance(cfg, inst.ULID)
+		unbindSessionForMode(cfg, handle)
+		_ = removeState(cfg, sid)
+		return 1
+	}
+
+	if err := sendSessionMessage(cfg.SessionSocket, sessionsock.Message{
 		Action:    sessionsock.ActionRegister,
 		Handle:    handle,
 		SPIFFEID:  inst.SPIFFEID,
@@ -115,13 +126,14 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 		ULID:      inst.ULID,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris session: register with daemon: %v\n", err)
-		// Identity was minted; continue so the session still has an SVID.
-	}
-
-	if err := saveState(cfg, sessionState{
-		SessionID: sid, Handle: handle, ULID: inst.ULID, SPIFFEID: inst.SPIFFEID, Blueprint: blueprint,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris session: save state: %v\n", err)
+		revokeErr := revokeSessionInstance(cfg, inst.ULID)
+		if revokeErr != nil {
+			fmt.Fprintf(os.Stderr, "keydris session: rollback revoke failed; retained state %q for retry: %v\n", sid, revokeErr)
+		} else {
+			_ = removeState(cfg, sid)
+		}
+		unbindSessionForMode(cfg, handle)
+		return 1
 	}
 
 	fmt.Fprintf(os.Stderr, "keydris: session %s bound to %s\n", sid, inst.SPIFFEID)
@@ -135,13 +147,19 @@ func hookSessionEnd(cfg *config.Config, sid string) int {
 		return 1
 	}
 
-	if err := revokeInstance(cfg, st.ULID); err != nil {
+	if err := revokeSessionInstance(cfg, st.ULID); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris session: revoke: %v\n", err)
+		_ = sendSessionMessage(cfg.SessionSocket, sessionsock.Message{
+			Action: sessionsock.ActionUnregister, Handle: st.Handle,
+		})
+		unbindSessionForMode(cfg, st.Handle)
+		return 1
 	}
-	if err := sessionsock.Send(cfg.SessionSocket, sessionsock.Message{
+	if err := sendSessionMessage(cfg.SessionSocket, sessionsock.Message{
 		Action: sessionsock.ActionUnregister, Handle: st.Handle,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris session: unregister: %v\n", err)
+		return 1
 	}
 	unbindSessionForMode(cfg, st.Handle)
 	_ = removeState(cfg, sid)
@@ -158,6 +176,12 @@ type mintedInstance struct {
 	ULID      string `json:"ulid"`
 	ExpiresAt string `json:"expires_at"`
 }
+
+var (
+	mintSessionInstance   = mintInstance
+	revokeSessionInstance = revokeInstance
+	sendSessionMessage    = sessionsock.Send
+)
 
 // mTLSClient builds the control-plane client that presents the login identity,
 // returning an actionable error when the node has not run `keydris login`.
@@ -227,11 +251,16 @@ func statePath(cfg *config.Config, sid string) string {
 }
 
 func saveState(cfg *config.Config, st sessionState) error {
-	if err := os.MkdirAll(stateDir(cfg), 0o755); err != nil {
+	if err := os.MkdirAll(stateDir(cfg), 0o700); err != nil {
 		return err
 	}
+	_ = os.Chmod(stateDir(cfg), 0o700)
 	b, _ := json.Marshal(st)
-	return os.WriteFile(statePath(cfg, st.SessionID), b, 0o644)
+	path := statePath(cfg, st.SessionID)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func loadState(cfg *config.Config, sid string) (sessionState, error) {

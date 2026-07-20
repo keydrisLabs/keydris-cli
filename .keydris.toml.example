@@ -8,5 +8,9 @@ control_url  = "http://127.0.0.1:8081"
 dataplane    = "transparent"   # or "proxyenv" on macOS/Windows
 blueprint    = "repo-tools"
 proxy_port   = "15001"
+# Optional environment-style override. Prefer `keydris proxy scope ...` for the
+# persisted managed-destination file.
+# managed_mode = "selected"
+# managed_destinations = "api.example.com:443,docs.mcp.cloudflare.com:443"
 backend_port = "8080"
 svid_ttl_seconds = "900"

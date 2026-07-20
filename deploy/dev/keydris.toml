@@ -18,7 +18,7 @@ trust_domain     = "keydris.local"
 # Sign-in via Cognito, so `keydris login` opens the hosted UI with no env vars.
 # oauth_client_id is the dev CLI app client; its access token's client_id must
 # match for /identity/sign to accept it.
-oidc_issuer        = "https://issuer-cognito-idp.us-east-1.amazonaws.com/us-east-1_Hjh0EehFH"
+oidc_issuer        = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Hjh0EehFH"
 cognito_domain     = "keydris-dev.auth.us-east-1.amazoncognito.com"
 oauth_client_id    = "791bq13e9aijdu8cspi851mv5u"
 oauth_scopes       = "openid email"

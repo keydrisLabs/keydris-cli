@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,12 +19,14 @@ import (
 
 	"github.com/keydrisLabs/keydris-cli/internal/authz"
 	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/evidence"
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 	"github.com/keydrisLabs/keydris-cli/internal/node/dataplane"
 	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 	"github.com/keydrisLabs/keydris-cli/internal/node/netfilter"
 	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
+	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
 )
 
 // preflight fails fast with an actionable message rather than starting a broken
@@ -67,6 +70,17 @@ func Run(cfg *config.Config) error {
 	// The session registry maps a platform handle (cgroup) to a registered
 	// per-session SVID; the SessionStart hook populates it over the socket.
 	sessions := attest.NewSessionRegistry()
+	if cfg.ManagedScopeError != nil {
+		return fmt.Errorf("read proxy scope: %w", cfg.ManagedScopeError)
+	}
+	scope, err := proxyscope.New(cfg.ManagedMode, cfg.ManagedDestinations)
+	if err != nil {
+		return fmt.Errorf("proxy scope: %w", err)
+	}
+	ledger, err := evidence.Open(cfg.LedgerPath)
+	if err != nil {
+		return fmt.Errorf("open evidence ledger: %w", err)
+	}
 
 	sock, err := sessionsock.Serve(cfg.SessionSocket, sessions, log.Printf)
 	if err != nil {
@@ -75,7 +89,7 @@ func Run(cfg *config.Config) error {
 	defer sock.Close()
 	log.Printf("session registration socket: %s", cfg.SessionSocket)
 
-	dp, usesNetfilter, err := buildDataPlane(cfg, sessions)
+	dp, usesNetfilter, err := buildDataPlane(cfg, sessions, scope)
 	if err != nil {
 		return err
 	}
@@ -103,16 +117,16 @@ func Run(cfg *config.Config) error {
 	if policy == "" {
 		policy = "(none)"
 	}
-	log.Printf("keydris daemon running (dataplane=%s, policy=%s, control=%s)", cfg.DataPlane, policy, cfg.ControlMTLSURL)
+	log.Printf("keydris daemon running (dataplane=%s, policy=%s, scope=%s, control=%s)", cfg.DataPlane, policy, scope.Mode(), cfg.ControlMTLSURL)
 	for flow := range dp.Flows() {
-		go handleFlow(ctx, cfg, authClient, dp, flow)
+		go handleFlow(ctx, cfg, authClient, dp, scope, ledger, flow)
 	}
 	return nil
 }
 
 // buildDataPlane selects the interception mode. The bool reports whether the
 // daemon must manage iptables rules for this plane.
-func buildDataPlane(cfg *config.Config, sessions *attest.SessionRegistry) (dataplane.DataPlane, bool, error) {
+func buildDataPlane(cfg *config.Config, sessions *attest.SessionRegistry, scope *proxyscope.Scope) (dataplane.DataPlane, bool, error) {
 	switch cfg.DataPlane {
 	case "sandbox", "claude-code":
 		ca, err := proxy.LoadOrCreateCA(cfg.CAPath, cfg.CAKeyPath, "Keydris CA", 825*24*time.Hour)
@@ -124,42 +138,95 @@ func buildDataPlane(cfg *config.Config, sessions *attest.SessionRegistry) (datap
 			dataplane.SandboxOptions{
 				AllowSoleFallback: cfg.AllowSoleFallback,
 				PeerVerify:        dataplane.ParsePeerVerify(cfg.PeerVerify),
+				Scope:             scope,
 			})
 		return dp, false, err
 	case "", "transparent", "linux":
 		if err := preflight(); err != nil {
 			return nil, false, err
 		}
+		if scope.Mode() == proxyscope.ModeSelected {
+			for _, destination := range scope.Destinations() {
+				host, _, splitErr := net.SplitHostPort(destination)
+				if splitErr != nil || net.ParseIP(host) == nil {
+					return nil, false, fmt.Errorf("transparent selected scope requires IP literals, got %q; use the sandbox or proxyenv data plane for hostname scope", destination)
+				}
+			}
+		}
 		resolver := attest.NewResolver(sessions)
-		dp, err := dataplane.NewTransparent(fmt.Sprintf("0.0.0.0:%d", cfg.ProxyPort), resolver)
+		dp, err := dataplane.NewTransparent(fmt.Sprintf("0.0.0.0:%d", cfg.ProxyPort), resolver, scope)
 		return dp, true, err
 	case "proxyenv":
-		dp, err := dataplane.NewProxyEnv(fmt.Sprintf("127.0.0.1:%d", cfg.ProxyPort))
+		ca, err := proxy.LoadOrCreateCA(cfg.CAPath, cfg.CAKeyPath, "Keydris CA", 825*24*time.Hour)
+		if err != nil {
+			return nil, false, fmt.Errorf("load Keydris CA: %w", err)
+		}
+		dp, err := dataplane.NewSandboxProxy(
+			fmt.Sprintf("127.0.0.1:%d", cfg.ProxyPort),
+			ca, sessions,
+			dataplane.SandboxOptions{
+				AllowSoleFallback: cfg.AllowSoleFallback,
+				PeerVerify:        dataplane.PeerVerifyOff,
+				Scope:             scope,
+			})
 		return dp, false, err
 	default:
 		return nil, false, fmt.Errorf("unknown KEYDRIS_DATAPLANE %q (want sandbox|transparent|proxyenv)", cfg.DataPlane)
 	}
 }
 
-func handleFlow(ctx context.Context, cfg *config.Config, client *http.Client, dp dataplane.DataPlane, flow dataplane.Flow) {
+func handleFlow(ctx context.Context, cfg *config.Config, client *http.Client, dp dataplane.DataPlane, scope *proxyscope.Scope, ledger *evidence.Ledger, flow dataplane.Flow) {
 	dst := flow.DstString()
 	origin := attributionString(flow)
+	if !scope.Managed(dst) {
+		log.Printf("PASSTHROUGH %s %s", dst, origin)
+		if err := dp.PassThrough(flow); err != nil {
+			log.Printf("passthrough %s: %v", dst, err)
+		}
+		return
+	}
 
-	resp, err := authz.Authorize(ctx, client, cfg.ControlMTLSURL, authz.AuthorizeRequest{
-		DstAddr:   dst,
-		SessionID: flow.SessionID,
-		SVID:      flow.SVID,
-		PolicyID:  cfg.PolicyID,
-	})
+	authReq := authz.AuthorizeRequest{
+		DstAddr:    dst,
+		DstHost:    flow.DstHost(),
+		SessionID:  flow.SessionID,
+		SVID:       flow.SVID,
+		PolicyID:   cfg.PolicyID,
+		ToolCall:   flow.ToolCall,
+		ToolParams: flow.ToolParams,
+	}
+	if flow.MetadataError != "" {
+		reason := "invalid request metadata: " + flow.MetadataError
+		denial := &authz.AuthorizeResponse{Decision: authz.DecisionDeny, Reason: reason}
+		if auditErr := appendAuthorizeAudit(ledger, authReq, denial, nil, 0); auditErr != nil {
+			log.Printf("authorize audit %s: %v", dst, auditErr)
+			_ = dp.Reject(flow, "authorization audit unavailable")
+			return
+		}
+		log.Printf("DENY  %s %s tool=%q: %s", dst, origin, flow.ToolCall, reason)
+		_ = dp.Reject(flow, reason)
+		return
+	}
+	started := time.Now()
+	resp, err := authz.Authorize(ctx, client, cfg.ControlMTLSURL, authReq)
+	elapsed := time.Since(started)
+	if auditErr := appendAuthorizeAudit(ledger, authReq, resp, err, elapsed); auditErr != nil {
+		log.Printf("authorize audit %s: %v", dst, auditErr)
+		_ = dp.Reject(flow, "authorization audit unavailable")
+		return
+	}
 	if err != nil {
-		log.Printf("broker error for %s: %v", dst, err)
+		params := sanitizeAuthorizeText(toolParamsForLog(flow.ToolParams), authReq, resp)
+		log.Printf("broker error for %s tool=%q tool_params=%s: %s", dst, flow.ToolCall, params, sanitizeAuthorizeText(err.Error(), authReq, resp))
 		_ = dp.Reject(flow, "broker unavailable")
 		return
 	}
 
 	if resp.Decision != authz.DecisionAllow {
-		log.Printf("DENY  %s %s: %s", dst, origin, resp.Reason)
-		_ = dp.Reject(flow, resp.Reason)
+		reason := sanitizeAuthorizeText(resp.Reason, authReq, resp)
+		params := sanitizeAuthorizeText(toolParamsForLog(flow.ToolParams), authReq, resp)
+		log.Printf("DENY  %s %s tool=%q tool_params=%s: %s", dst, origin, flow.ToolCall, params, reason)
+		_ = dp.Reject(flow, reason)
 		return
 	}
 
@@ -167,7 +234,8 @@ func handleFlow(ctx context.Context, cfg *config.Config, client *http.Client, dp
 	if resp.Inject != nil {
 		cred = dataplane.Credential{Type: resp.Inject.Type, Name: resp.Inject.Name, Value: resp.Inject.Value}
 	}
-	log.Printf("ALLOW %s %s (inject %s)", dst, origin, cred.Name)
+	params := sanitizeAuthorizeText(toolParamsForLog(flow.ToolParams), authReq, resp)
+	log.Printf("ALLOW %s %s tool=%q tool_params=%s (inject %s)", dst, origin, flow.ToolCall, params, cred.Name)
 	if err := dp.Inject(flow, cred); err != nil {
 		log.Printf("inject %s: %v", dst, err)
 	}

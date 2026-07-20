@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
 )
 
 // Linux netfilter constants for recovering the pre-REDIRECT destination.
@@ -23,7 +24,7 @@ const (
 // connections redirected to it by iptables REDIRECT, recovers each connection's
 // original destination via SO_ORIGINAL_DST, and attributes the source to a
 // process/session via the resolver.
-func NewTransparent(addr string, resolver attest.Resolver) (DataPlane, error) {
+func NewTransparent(addr string, resolver attest.Resolver, scope *proxyscope.Scope) (DataPlane, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -31,12 +32,12 @@ func NewTransparent(addr string, resolver attest.Resolver) (DataPlane, error) {
 	p := newInlinePlane(ln)
 	p.logf("dataplane(transparent): listening on %s", addr)
 	go p.serve(func(conn net.Conn) (Flow, error) {
-		return buildTransparentFlow(conn, resolver)
+		return buildTransparentFlow(conn, resolver, scope)
 	})
 	return p, nil
 }
 
-func buildTransparentFlow(conn net.Conn, resolver attest.Resolver) (Flow, error) {
+func buildTransparentFlow(conn net.Conn, resolver attest.Resolver, scope *proxyscope.Scope) (Flow, error) {
 	tcp, ok := conn.(*net.TCPConn)
 	if !ok {
 		return Flow{}, errors.New("transparent plane requires TCP connections")
@@ -44,6 +45,12 @@ func buildTransparentFlow(conn net.Conn, resolver attest.Resolver) (Flow, error)
 	dst, err := originalDestination(tcp)
 	if err != nil {
 		return Flow{}, err
+	}
+	if scope != nil && !scope.Managed(dst.String()) {
+		if err := tunnelRaw(conn, dst.String()); err != nil {
+			return Flow{}, err
+		}
+		return Flow{}, errFlowHandled
 	}
 	req, br, err := readRequest(conn)
 	if err != nil {
@@ -56,6 +63,11 @@ func buildTransparentFlow(conn net.Conn, resolver attest.Resolver) (Flow, error)
 		conn:    conn,
 		req:     req,
 		br:      br,
+	}
+	if scope == nil || scope.Managed(f.DstString()) {
+		if err := applyRequestMetadata(&f, req); err != nil {
+			f.MetadataError = err.Error()
+		}
 	}
 	if resolver != nil {
 		if src, ok := conn.RemoteAddr().(*net.TCPAddr); ok {

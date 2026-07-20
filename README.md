@@ -46,6 +46,13 @@ through a local proxy, and lets the control-plane **broker** inject the real
 upstream credential on the wire on allow. The agent never holds the secret; an
 unmodified client gets a `200` only because the proxy injected it.
 
+Proxy scope controls which exact origins receive that treatment. In `all` mode
+(the backward-compatible default), every destination is managed. In `selected`
+mode, only configured `host:port` origins are TLS-terminated, authorized, and
+credential-injected; all other HTTPS traffic uses an opaque CONNECT tunnel.
+Selected hostname scopes require the explicit `sandbox`/`proxyenv` planes;
+Linux transparent mode can safely scope only exact IP literals.
+
 **Concurrent sessions are isolated.** Each Claude session gets a distinct
 per-session token (carried in `Proxy-Authorization` via Claude Code's
 `$CLAUDE_ENV_FILE`), so the proxy attributes every connection to the right
@@ -61,7 +68,7 @@ configuration is needed. Override with `KEYDRIS_DATAPLANE` only for the others:
 - **`transparent`** (Linux + root): iptables `REDIRECT` + `SO_ORIGINAL_DST`,
   optionally race-free eBPF (`-tags ebpf`). See
   [docs/attribution.md](docs/attribution.md).
-- **`proxyenv`**: kernel-free `HTTP_PROXY` fallback (bypassable; no attribution).
+- **`proxyenv`**: kernel-free `HTTP_PROXY` fallback (bypassable; token-attributed).
   See [docs/distribution.md](docs/distribution.md).
 
 ## Quickstart (Claude Code sandbox proxy)
@@ -78,13 +85,16 @@ keydris login
 #    into ~/.claude/settings.json.
 keydris init claude-code <policy-id>   # add --trust-store to install the CA system-wide
 
-# 3. Start the brokered egress proxy in the background (no `&` needed).
+# 3. Optional: govern only selected origins; everything else passes unchanged.
+keydris proxy scope add api.example.com:443
+
+# 4. Start the brokered egress proxy in the background (no `&` needed).
 keydris proxy up
 
-# 4. Confirm enforcement state (warns if the sandbox is disabled / not routed).
+# 5. Confirm enforcement state and active proxy scope.
 keydris status
 
-# 5. Run a real session. Claude Code fires the wired SessionStart hook, which
+# 6. Run a real session. Claude Code fires the wired SessionStart hook, which
 #    mints a per-session SPIFFE SVID and registers it; the proxy attributes the
 #    session's egress to that identity, brokered and secretless.
 claude
@@ -98,9 +108,16 @@ exercising the same proxy/broker path:
 keydris run -- curl -s https://your-api/
 ```
 
+To cover Claude Code's native remote-HTTP MCP client (not only its sandboxed
+Bash children), launch the process itself through the proxy:
+
+```bash
+keydris run -- claude
+```
+
 ## Commands
 
-```
+```text
 keydris login                      Browser sign-in; stores a local client certificate
 keydris whoami                     Show the locally stored identity
 keydris logout                     Remove the locally stored identity
@@ -109,6 +126,9 @@ keydris init claude-code <policy>  Configure the Claude Code sandbox + CA for a 
 keydris deinit claude-code         Undo init: remove the Keydris sandbox config + policy id
 keydris proxy up                   Start the brokered egress proxy in the background
 keydris proxy down                 Stop the background proxy
+keydris proxy scope add <origin>   Manage only selected host:port origins
+keydris proxy scope remove <origin>
+keydris proxy scope list|all       Inspect scope or restore all-managed mode
 keydris run -- <cmd...>            Run a command inside a keydris session
 keydris status                     Show config + sandbox enforcement state
 keydris logs                       Print and verify the hash-chained evidence ledger
@@ -124,6 +144,8 @@ process env > `.env` > `./.keydris.toml` > `~/.keydris.toml` > defaults.
 ```bash
 export KEYDRIS_CONTROL_URL=https://api.keydris.com                  # /identity/sign, /agent/jwks (:443)
 export KEYDRIS_CONTROL_MTLS_URL=https://api.keydris.com:8443        # /agent/authorize* (mTLS)
+export KEYDRIS_MANAGED_MODE=selected
+export KEYDRIS_MANAGED_DESTINATIONS=docs.mcp.cloudflare.com:443
 ```
 
 `keydris login` signs in through the browser (OAuth 2.0 Authorization Code +
@@ -138,3 +160,7 @@ This is an extracted POC. Known hardening items (session-socket authentication,
 fail-closed audit, fail-closed identity fallback, proxy SSRF/canonicalization)
 are tracked in [SECURITY.md](SECURITY.md). Read it before relying on this in any
 adversarial setting.
+
+`keydris logs` and `proxy.log` include full JSON tool parameters for managed
+authorization calls. Owner-only permissions are enforced, but those files may
+still contain application secrets and must be handled accordingly.

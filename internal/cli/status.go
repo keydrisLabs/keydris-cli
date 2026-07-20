@@ -22,6 +22,18 @@ func runStatus() int {
 	fmt.Printf("policy id:    %s\n", policy)
 	fmt.Printf("blueprint:    %s\n", cfg.ResolveBlueprint(""))
 	fmt.Printf("proxy port:   %d\n", cfg.ProxyPort)
+	if cfg.ManagedScopeError != nil {
+		fmt.Printf("proxy scope:  INVALID (%v)\n", cfg.ManagedScopeError)
+	} else {
+		fmt.Printf("proxy scope:  %s", cfg.ManagedMode)
+		if cfg.ManagedMode == "selected" {
+			fmt.Printf(" (%d destinations)", len(cfg.ManagedDestinations))
+		}
+		fmt.Println()
+		for _, dst := range cfg.ManagedDestinations {
+			fmt.Printf("  managed:    %s\n", dst)
+		}
+	}
 	fmt.Printf("backend:      %s (dport %d)\n", cfg.BackendAddr, cfg.BackendPort)
 	fmt.Printf("control url:  %s\n", cfg.ControlURL)
 	fmt.Printf("session sock: %s\n", cfg.SessionSocket)
