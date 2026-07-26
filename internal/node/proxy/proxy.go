@@ -53,10 +53,7 @@ func InjectAndForwardOne(client net.Conn, req *http.Request, dst string, c Crede
 	if err := req.Write(upstream); err != nil {
 		return fmt.Errorf("write upstream request: %w", err)
 	}
-	if _, err := io.Copy(client, upstream); err != nil {
-		return fmt.Errorf("copy upstream response: %w", err)
-	}
-	return nil
+	return forwardOneResponse(client, upstream, req)
 }
 
 // InjectAndForwardTLSOne is the managed HTTPS equivalent of
@@ -83,7 +80,28 @@ func InjectAndForwardTLSOne(client net.Conn, req *http.Request, dst, sni string,
 	if err := req.Write(upstream); err != nil {
 		return fmt.Errorf("write upstream request: %w", err)
 	}
-	if _, err := io.Copy(client, upstream); err != nil {
+	return forwardOneResponse(client, upstream, req)
+}
+
+// forwardOneResponse relays one upstream response to the client, rewriting the
+// connection headers to announce the close. The forwarding path tears the
+// socket down after a single request, so a client that trusted an upstream
+// keep-alive header would pool the socket and have its next request reset
+// before the proxy ever reads it.
+func forwardOneResponse(client net.Conn, upstream net.Conn, req *http.Request) error {
+	resp, err := http.ReadResponse(bufio.NewReader(upstream), req)
+	if err != nil {
+		return fmt.Errorf("read upstream response: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Response.Write emits `Connection: close` from resp.Close; the inherited
+	// header would otherwise be written alongside it as a duplicate.
+	resp.Header.Del("Connection")
+	resp.Header.Del("Keep-Alive")
+	resp.Close = true
+
+	if err := resp.Write(client); err != nil {
 		return fmt.Errorf("copy upstream response: %w", err)
 	}
 	return nil
