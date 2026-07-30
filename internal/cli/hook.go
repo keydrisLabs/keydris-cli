@@ -193,6 +193,18 @@ func mTLSClient(cfg *config.Config) (*http.Client, error) {
 	return client, nil
 }
 
+// newIssuanceRequestID is the Idempotency-Key for a single mint. The control
+// plane treats a repeated key as a replay and hands back the KIT the first call
+// created, so every genuinely new session needs a fresh one. 32 hex characters
+// sits inside the server's 8-128 URL-safe constraint.
+func newIssuanceRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "kit" + time.Now().UTC().Format("20060102T150405.000000000")
+	}
+	return hex.EncodeToString(b[:])
+}
+
 func mintInstance(cfg *config.Config, policyName, handle string) (*mintedInstance, error) {
 	client, err := mTLSClient(cfg)
 	if err != nil {
@@ -201,7 +213,13 @@ func mintInstance(cfg *config.Config, policyName, handle string) (*mintedInstanc
 	// policy_name is resolved server-side to a policy the caller owns; the
 	// SVID is bound to it. session_handle is an optional correlation label.
 	body, _ := json.Marshal(map[string]any{"policy_name": policyName, "session_handle": handle})
-	resp, err := client.Post(cfg.ControlMTLSURL+"/agent/authorize/issue", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, cfg.ControlMTLSURL+"/agent/authorize/issue", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", newIssuanceRequestID())
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
