@@ -1,0 +1,40 @@
+{
+  "name": "@keydris/cli",
+  "version": "0.0.0",
+  "description": "Keydris CLI — manage agents with brokered, attested egress. Cross-platform launcher for the native keydris binary.",
+  "keywords": [
+    "keydris",
+    "cli",
+    "agents",
+    "security"
+  ],
+  "homepage": "https://github.com/keydrisLabs/keydris-cli#readme",
+  "bugs": {
+    "url": "https://github.com/keydrisLabs/keydris-cli/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keydrisLabs/keydris-cli.git",
+    "directory": "npm/packages/cli"
+  },
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "bin": {
+    "keydris": "bin/keydris.js"
+  },
+  "files": [
+    "bin/keydris.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "optionalDependencies": {
+    "@keydris/cli-darwin-x64": "0.0.0",
+    "@keydris/cli-darwin-arm64": "0.0.0",
+    "@keydris/cli-linux-x64": "0.0.0",
+    "@keydris/cli-linux-arm64": "0.0.0",
+    "@keydris/cli-win32-x64": "0.0.0",
+    "@keydris/cli-win32-arm64": "0.0.0"
+  }
+}

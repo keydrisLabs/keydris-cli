@@ -26,6 +26,18 @@ curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | KEYDRIS_CHANNEL=
   `KEYDRIS_VERSION` (default `latest`), `KEYDRIS_BASE_URL` (download host).
 - `keydris version` reports the installed build.
 
+**Via npm** (Windows, macOS, Linux) — the same binary, distributed through npm:
+
+```bash
+npm install -g @keydris/cli
+keydris version
+```
+
+`@keydris/cli` is a thin launcher; npm downloads only the one native binary
+matching your `os`/`cpu` (via `optionalDependencies`, the esbuild/Biome pattern —
+no `postinstall` download). See [npm/README.md](npm/README.md) for the layout and
+release flow.
+
 **From source** (developers):
 
 ```bash

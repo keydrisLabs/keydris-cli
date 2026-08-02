@@ -1,0 +1,28 @@
+name: npm-validate
+
+# On every PR that touches the npm workspace, verify the manifests are internally
+# consistent (single version, exact launcher pins) and that all packages pack
+# cleanly — catching version/pin/files regressions long before a release tag.
+on:
+  pull_request:
+    paths:
+      - 'npm/**'
+      - '.github/workflows/npm-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Manifest guard (binaries not required on PRs)
+        working-directory: npm
+        run: node scripts/prepublish-check.mjs --no-bin
+      - name: Pack dry-run
+        working-directory: npm
+        run: npm publish --workspaces --dry-run

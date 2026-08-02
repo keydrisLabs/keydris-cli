@@ -1,0 +1,28 @@
+{
+  "name": "@keydris/cli-win32-x64",
+  "version": "0.0.0",
+  "description": "Native keydris CLI binary for win32 x64. Installed automatically by @keydris/cli; do not depend on this package directly.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keydrisLabs/keydris-cli.git",
+    "directory": "npm/packages/platform-win32-x64"
+  },
+  "license": "UNLICENSED",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "bin/keydris.exe",
+  "bin": {
+    "keydris-native": "bin/keydris.exe"
+  },
+  "files": [
+    "bin/keydris.exe"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "preferUnplugged": true
+}

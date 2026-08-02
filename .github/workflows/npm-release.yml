@@ -1,0 +1,73 @@
+name: npm-release
+
+# Publish the @keydris/cli npm packages (launcher + per-platform native binaries)
+# on a version tag. This runs alongside the existing S3/CloudFront release
+# (see release.yml); the npm packages wrap the same native binaries built by
+# `make dist`.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write   # npm provenance (OIDC)
+
+jobs:
+  npm-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe / tags
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Version (strip leading v)
+        id: meta
+        run: |
+          tag="${{ github.ref_name }}"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Cross-compile native binaries
+        run: make dist VERSION=${{ github.ref_name }}
+
+      - name: Stage binaries into npm platform packages
+        run: make npm-stage
+
+      - name: Stamp versions across all packages
+        working-directory: npm
+        run: node scripts/sync-versions.mjs "${{ steps.meta.outputs.version }}"
+
+      - name: Prepublish check (versions, pins, binaries)
+        working-directory: npm
+        run: node scripts/prepublish-check.mjs
+
+      - name: Install workspace
+        working-directory: npm
+        run: npm install --no-audit --no-fund
+
+      # Publish platform packages FIRST, launcher LAST: a partially-failed publish
+      # must never leave an installable @keydris/cli pointing at a platform
+      # package that isn't on the registry yet.
+      - name: Publish platform packages
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for dir in packages/platform-*; do
+            echo "publishing $dir"
+            npm publish "$dir" --access public --provenance
+          done
+
+      - name: Publish launcher
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish packages/cli --access public --provenance

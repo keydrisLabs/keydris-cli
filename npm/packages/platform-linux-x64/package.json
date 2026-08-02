@@ -1,0 +1,28 @@
+{
+  "name": "@keydris/cli-linux-x64",
+  "version": "0.0.0",
+  "description": "Native keydris CLI binary for linux x64. Installed automatically by @keydris/cli; do not depend on this package directly.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keydrisLabs/keydris-cli.git",
+    "directory": "npm/packages/platform-linux-x64"
+  },
+  "license": "UNLICENSED",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "bin/keydris",
+  "bin": {
+    "keydris-native": "bin/keydris"
+  },
+  "files": [
+    "bin/keydris"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "preferUnplugged": true
+}

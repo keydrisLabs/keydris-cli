@@ -1,0 +1,10 @@
+# Native binaries are built by CI and copied into each platform package's bin/
+# just before publish; they are never committed. Keep the tracked .gitkeep so
+# the directories exist in a fresh checkout.
+packages/platform-*/bin/keydris
+packages/platform-*/bin/keydris.exe
+
+# Workspace install artifacts.
+node_modules/
+package-lock.json
+*.tgz

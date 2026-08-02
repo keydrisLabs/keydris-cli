@@ -1,0 +1,17 @@
+{
+  "name": "@keydris/npm-root",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Private workspace root for the @keydris/cli npm distribution. Not published.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node scripts/prepublish-check.mjs",
+    "sync-versions": "node scripts/sync-versions.mjs",
+    "publish:dry": "npm publish --workspaces --dry-run"
+  }
+}
