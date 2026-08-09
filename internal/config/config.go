@@ -10,6 +10,7 @@ package config
 import (
 	"bufio"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -86,11 +87,18 @@ type Config struct {
 	Blueprint string
 	// SessionSocket is the daemon's local registration socket (cgroup<->SVID).
 	SessionSocket string
+	// SessionAuthFile contains the local bearer secret shared by the CLI and
+	// daemon for authenticated session-registry messages.
+	SessionAuthFile string
 	// PolicyID is the governance policy this node enforces, set by
 	// `keydris init claude-code <policy-id>` and persisted under DataDir. The
 	// daemon sends it to the broker on every authorize so the decision resolves
 	// against the right policy.
 	PolicyID string
+	// AgentID is the explicit control-plane agent identity configured by
+	// `keydris init <target> <agent-id>`. New runtime sessions are always minted
+	// for this UUID; PolicyID remains only for legacy authorize payloads.
+	AgentID string
 
 	// --- Sandbox proxy (v2: Claude Code custom-proxy integration) ---
 
@@ -103,6 +111,10 @@ type Config struct {
 	// ClaudeSettingsPath is the Claude Code settings file `keydris init` writes
 	// the sandbox block + CA env into (default ~/.claude/settings.json).
 	ClaudeSettingsPath string
+	// CodexHooksPath is the Codex hooks file `keydris init codex` writes the
+	// command-gating hooks into (default $CODEX_HOME/hooks.json, with
+	// CODEX_HOME defaulting to ~/.codex).
+	CodexHooksPath string
 	// HTTPProxyPort is the port the Claude Code sandbox routes egress to
 	// (sandbox.network.httpProxyPort). Defaults to ProxyPort.
 	HTTPProxyPort int
@@ -175,11 +187,12 @@ type Config struct {
 	OAuthRedirectURL string
 }
 
-// Load reads configuration from the environment, layering in ./.env and the
-// .keydris.toml files first (process env always wins).
+// Load reads configuration from the environment and trusted user config.
+// Project-local files are loaded only when KEYDRIS_TRUST_PROJECT_CONFIG=1 was
+// explicitly present in the process environment.
 func Load() *Config {
 	loadLayeredFiles()
-	dataDir := env("KEYDRIS_DATA_DIR", ".keydris-data")
+	dataDir := env("KEYDRIS_DATA_DIR", defaultDataDir())
 	authorizeURL, tokenURL := cognitoEndpoints()
 	managed, managedErr := loadManagedScope(dataDir)
 	if value, ok := os.LookupEnv("KEYDRIS_MANAGED_MODE"); ok {
@@ -209,19 +222,22 @@ func Load() *Config {
 
 		TrustDomain:    env("KEYDRIS_TRUST_DOMAIN", "keydris.local"),
 		DataDir:        dataDir,
-		SigningKeyPath: env("KEYDRIS_SIGNING_KEY", dataDir+"/signing.key"),
-		LedgerPath:     env("KEYDRIS_LEDGER_PATH", dataDir+"/evidence.jsonl"),
+		SigningKeyPath: env("KEYDRIS_SIGNING_KEY", filepath.Join(dataDir, "signing.key")),
+		LedgerPath:     env("KEYDRIS_LEDGER_PATH", filepath.Join(dataDir, "evidence.jsonl")),
 		GrantsSeedPath: env("KEYDRIS_GRANTS_SEED", "deploy/seed/grants.seed.json"),
 		SVIDTTLSeconds: envInt("KEYDRIS_SVID_TTL_SECONDS", 900),
 
-		Blueprint:     env("KEYDRIS_BLUEPRINT", ""),
-		SessionSocket: env("KEYDRIS_SESSION_SOCKET", "/tmp/keydris-registry.sock"),
-		PolicyID:      env("KEYDRIS_POLICY_ID", readPolicyID(dataDir)),
+		Blueprint:       env("KEYDRIS_BLUEPRINT", ""),
+		SessionSocket:   env("KEYDRIS_SESSION_SOCKET", filepath.Join(dataDir, "registry.sock")),
+		SessionAuthFile: env("KEYDRIS_SESSION_AUTH_FILE", filepath.Join(dataDir, "session.auth")),
+		PolicyID:        env("KEYDRIS_POLICY_ID", readPolicyID(dataDir)),
+		AgentID:         env("KEYDRIS_AGENT_ID", readAgentID(dataDir)),
 
-		CAPath:              env("KEYDRIS_CA_PATH", dataDir+"/ca.crt"),
-		CAKeyPath:           env("KEYDRIS_CA_KEY_PATH", dataDir+"/ca.key"),
-		CABundlePath:        env("KEYDRIS_CA_BUNDLE_PATH", dataDir+"/ca-bundle.crt"),
+		CAPath:              env("KEYDRIS_CA_PATH", filepath.Join(dataDir, "ca.crt")),
+		CAKeyPath:           env("KEYDRIS_CA_KEY_PATH", filepath.Join(dataDir, "ca.key")),
+		CABundlePath:        env("KEYDRIS_CA_BUNDLE_PATH", filepath.Join(dataDir, "ca-bundle.crt")),
 		ClaudeSettingsPath:  env("KEYDRIS_CLAUDE_SETTINGS", defaultClaudeSettings()),
+		CodexHooksPath:      env("KEYDRIS_CODEX_HOOKS", defaultCodexHooks()),
 		HTTPProxyPort:       envInt("KEYDRIS_HTTP_PROXY_PORT", envInt("KEYDRIS_PROXY_PORT", 15001)),
 		AllowedDomains:      envList("KEYDRIS_ALLOWED_DOMAINS"),
 		ManagedMode:         managed.Mode,
@@ -230,9 +246,9 @@ func Load() *Config {
 		AllowSoleFallback:   env("KEYDRIS_ALLOW_SOLE_FALLBACK", "") != "",
 		PeerVerify:          env("KEYDRIS_PEER_VERIFY", "warn"),
 
-		ClientCAPath:       env("KEYDRIS_CLIENT_CA_PATH", dataDir+"/client-ca.crt"),
-		ClientCAKeyPath:    env("KEYDRIS_CLIENT_CA_KEY_PATH", dataDir+"/client-ca.key"),
-		IdentityDir:        env("KEYDRIS_IDENTITY_DIR", dataDir+"/identity"),
+		ClientCAPath:       env("KEYDRIS_CLIENT_CA_PATH", filepath.Join(dataDir, "client-ca.crt")),
+		ClientCAKeyPath:    env("KEYDRIS_CLIENT_CA_KEY_PATH", filepath.Join(dataDir, "client-ca.key")),
+		IdentityDir:        env("KEYDRIS_IDENTITY_DIR", filepath.Join(dataDir, "identity")),
 		IdentityTTLSeconds: envInt("KEYDRIS_IDENTITY_TTL_SECONDS", 43200),
 
 		OIDCIssuer:        env("KEYDRIS_OIDC_ISSUER", ""),
@@ -243,6 +259,17 @@ func Load() *Config {
 		OAuthScopes:       env("KEYDRIS_OAUTH_SCOPES", "openid email"),
 		OAuthRedirectURL:  env("KEYDRIS_OAUTH_REDIRECT_URL", "http://localhost:3000/callback"),
 	}
+}
+
+// defaultDataDir keeps identity material and daemon state stable across working
+// directories. Falling back to a relative path is reserved for environments
+// where the operating system cannot resolve a home directory.
+func defaultDataDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ".keydris-data"
+	}
+	return filepath.Join(home, ".keydris-data")
 }
 
 // cognitoEndpoints derives the OAuth authorize/token endpoints, preferring
@@ -281,7 +308,23 @@ func defaultClaudeSettings() string {
 	if err != nil || home == "" {
 		return ".claude/settings.json"
 	}
-	return home + "/.claude/settings.json"
+	return filepath.Join(home, ".claude", "settings.json")
+}
+
+func defaultCodexHooks() string {
+	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
+		if codexHome == "~" || strings.HasPrefix(codexHome, "~/") || strings.HasPrefix(codexHome, `~\`) {
+			if home, err := os.UserHomeDir(); err == nil && home != "" {
+				codexHome = filepath.Join(home, strings.TrimLeft(codexHome[1:], `/\`))
+			}
+		}
+		return filepath.Join(codexHome, "hooks.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ".codex/hooks.json"
+	}
+	return filepath.Join(home, ".codex", "hooks.json")
 }
 
 // envList parses a comma-separated environment variable into a trimmed slice.
@@ -318,8 +361,55 @@ func (c *Config) ResolveBlueprint(flag string) string {
 	}
 }
 
+// ResolveAgent selects the control-plane agent UUID. The legacy blueprint and
+// policy values are accepted only as migration fallbacks for existing installs.
+func (c *Config) ResolveAgent(flag string) string {
+	switch {
+	case flag != "":
+		return flag
+	case c.AgentID != "":
+		return c.AgentID
+	case c.Blueprint != "":
+		return c.Blueprint
+	case c.PolicyID != "":
+		return c.PolicyID
+	default:
+		return ""
+	}
+}
+
+func agentIDPath(dataDir string) string { return filepath.Join(dataDir, "agent-id") }
+
+func readAgentID(dataDir string) string {
+	b, err := os.ReadFile(agentIDPath(dataDir))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// SaveAgentID persists the explicit agent identity for runtime session minting.
+func SaveAgentID(dataDir, id string) error {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return err
+	}
+	_ = os.Chmod(dataDir, 0o700)
+	path := agentIDPath(dataDir)
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(id)+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
+
+func RemoveAgentID(dataDir string) error {
+	if err := os.Remove(agentIDPath(dataDir)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // policyIDPath is where `keydris init` persists the active policy id.
-func policyIDPath(dataDir string) string { return dataDir + "/policy-id" }
+func policyIDPath(dataDir string) string { return filepath.Join(dataDir, "policy-id") }
 
 // readPolicyID returns the persisted policy id, or "" if none is set yet.
 func readPolicyID(dataDir string) string {

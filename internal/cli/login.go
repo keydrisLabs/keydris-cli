@@ -24,11 +24,19 @@ func runLogin(args []string) int {
 	}
 
 	cfg := config.Load()
+	return browserLogin(cfg, *email, *noBrowser)
+}
+
+// browserLogin runs the PKCE browser sign-in. The device certificate it stores
+// is bound to cfg.AgentID when one is configured (`keydris init`), replacing
+// the removed one-time enrollment token as the agent-binding step.
+func browserLogin(cfg *config.Config, loginHint string, noBrowser bool) int {
 	opt := login.Options{
 		ControlURL:  cfg.ControlURL,
 		IdentityDir: cfg.IdentityDir,
-		LoginHint:   *email,
-		NoBrowser:   *noBrowser,
+		AgentID:     cfg.AgentID,
+		LoginHint:   loginHint,
+		NoBrowser:   noBrowser,
 		Timeout:     3 * time.Minute,
 	}
 	if cfg.LoginUsesExternalIDP() {
@@ -52,6 +60,10 @@ func runLogin(args []string) int {
 
 	fmt.Printf("keydris: signed in as %s\n", id.Email)
 	fmt.Printf("  identity:   %s\n", id.SPIFFEID)
+	fmt.Printf("  device id:  %s\n", id.DeviceID)
+	if id.AgentID != "" {
+		fmt.Printf("  agent id:   %s\n", id.AgentID)
+	}
 	fmt.Printf("  cert until: %s\n", id.NotAfter)
 	fmt.Printf("  stored in:  %s\n", cfg.IdentityDir)
 	return 0
@@ -71,6 +83,8 @@ func runWhoami(args []string) int {
 	}
 	fmt.Printf("email:      %s\n", id.Email)
 	fmt.Printf("identity:   %s\n", id.SPIFFEID)
+	fmt.Printf("device id:  %s\n", id.DeviceID)
+	fmt.Printf("agent id:   %s\n", id.AgentID)
 	fmt.Printf("subject:    %s\n", id.Subject)
 	fmt.Printf("control:    %s\n", id.ControlURL)
 	fmt.Printf("logged in:  %s\n", id.LoggedInAt)

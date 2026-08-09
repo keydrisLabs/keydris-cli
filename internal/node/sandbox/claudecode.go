@@ -12,8 +12,10 @@
 //	    "failIfUnavailable": true,
 //	    "allowUnsandboxedCommands": false,
 //	    "enableWeakerNetworkIsolation": true,   // macOS, required for MITM+custom CA
-//	    "allowedDomains": [...],
-//	    "network": { "httpProxyPort": 15001 }
+//	    "network": {
+//	      "httpProxyPort": 15001,
+//	      "allowedDomains": [...]
+//	    }
 //	  },
 //	  "hooks": { "SessionStart": [...], "SessionEnd": [...] },
 //	  "env": { "NODE_EXTRA_CA_CERTS": "...", "CURL_CA_BUNDLE": "...", ... }
@@ -47,6 +49,9 @@ type Options struct {
 	// per-session SVID (and revokes it on end). Empty disables hook wiring.
 	SessionStartHook string
 	SessionEndHook   string
+	// PreToolUseHook, when set, gates every shell command through the policy's
+	// command rules before Claude Code executes it. Empty disables the gate.
+	PreToolUseHook string
 }
 
 // Configure merges the Keydris sandbox block, per-session hooks, and CA env into
@@ -60,6 +65,9 @@ func Configure(path string, opt Options) error {
 	mergeSandbox(settings, opt)
 	if opt.SessionStartHook != "" && opt.SessionEndHook != "" {
 		mergeHooks(settings, opt.SessionStartHook, opt.SessionEndHook)
+	}
+	if opt.PreToolUseHook != "" {
+		mergePreToolUseHook(settings, opt.PreToolUseHook)
 	}
 	if opt.CAPath != "" {
 		mergeCAEnv(settings, opt.CAPath)
@@ -75,11 +83,50 @@ func mergeHooks(settings map[string]any, startCmd, endCmd string) {
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	entry := func(c string) []any {
-		return []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": c}}}}
+	entry := func(c string) any {
+		return map[string]any{"hooks": []any{map[string]any{"type": "command", "command": c}}}
 	}
-	hooks["SessionStart"] = entry(startCmd)
-	hooks["SessionEnd"] = entry(endCmd)
+	mergeEvent := func(event, command string) {
+		existing, _ := hooks[event].([]any)
+		kept := make([]any, 0, len(existing)+1)
+		for _, candidate := range existing {
+			if !entryReferencesKeydris(candidate) {
+				kept = append(kept, candidate)
+			}
+		}
+		hooks[event] = append(kept, entry(command))
+	}
+	mergeEvent("SessionStart", startCmd)
+	mergeEvent("SessionEnd", endCmd)
+	settings["hooks"] = hooks
+}
+
+// mergePreToolUseHook gates shell tools through the command-authorize hook.
+// The hook fails closed internally, and its harness timeout stays well above
+// the hook's own 5s control-plane budget so the harness never kills it first
+// (a killed hook fails OPEN in Claude Code).
+func mergePreToolUseHook(settings map[string]any, command string) {
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	matcher := "Bash"
+	if runtime.GOOS == "windows" {
+		matcher = "Bash|PowerShell"
+	}
+	existing, _ := hooks["PreToolUse"].([]any)
+	kept := make([]any, 0, len(existing)+1)
+	for _, candidate := range existing {
+		if !entryReferencesKeydris(candidate) {
+			kept = append(kept, candidate)
+		}
+	}
+	hooks["PreToolUse"] = append(kept, map[string]any{
+		"matcher": matcher,
+		"hooks": []any{map[string]any{
+			"type": "command", "command": command, "timeout": 30,
+		}},
+	})
 	settings["hooks"] = hooks
 }
 
@@ -104,13 +151,33 @@ func mergeSandbox(settings map[string]any, opt Options) {
 		network = map[string]any{}
 	}
 	network["httpProxyPort"] = opt.HTTPProxyPort
-	sb["network"] = network
 
-	if len(opt.AllowedDomains) > 0 {
-		sb["allowedDomains"] = mergeStringSet(sb["allowedDomains"], opt.AllowedDomains)
+	// Migrate the old top-level placement written by early Keydris builds even
+	// when this run adds no new domains.
+	existing := network["allowedDomains"]
+	if legacy, ok := sb["allowedDomains"]; ok {
+		existing = mergeStringSet(existing, stringsFromJSON(legacy))
+		delete(sb, "allowedDomains")
 	}
-
+	if len(opt.AllowedDomains) > 0 {
+		network["allowedDomains"] = mergeStringSet(existing, opt.AllowedDomains)
+	} else if existing != nil {
+		network["allowedDomains"] = existing
+	}
+	sb["network"] = network
 	settings["sandbox"] = sb
+}
+
+func stringsFromJSON(value any) []string {
+	var out []string
+	if values, ok := value.([]any); ok {
+		for _, candidate := range values {
+			if text, ok := candidate.(string); ok {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
 }
 
 // mergeCAEnv points the agent's subprocess tools at the Keydris CA so they trust

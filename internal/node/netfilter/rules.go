@@ -9,9 +9,17 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"strings"
+	"sync"
 )
 
 const chain = "KEYDRIS"
+
+var (
+	routeLocalnetMu       sync.Mutex
+	routeLocalnetOriginal string
+	routeLocalnetChanged  bool
+)
 
 func iptables(args ...string) error {
 	out, err := exec.Command("iptables", args...).CombinedOutput()
@@ -30,27 +38,31 @@ func Up(proxyPort, backendPort, proxyUID int) error {
 	// Always start from a clean slate.
 	Down(proxyPort, backendPort, proxyUID)
 
-	// Best-effort: permit REDIRECT of loopback-destined traffic. Ignored on
-	// kernels/configs where it is not applicable.
-	_ = exec.Command("sysctl", "-w", "net.ipv4.conf.all.route_localnet=1").Run()
+	// Best-effort: permit REDIRECT of loopback-destined traffic, remembering the
+	// old value so clean shutdown does not leave a host-wide sysctl changed.
+	enableRouteLocalnet()
 
 	if err := iptables("-t", "nat", "-N", chain); err != nil {
+		restoreRouteLocalnet()
 		return err
 	}
 	// Exempt the proxy's own egress so proxy->backend is not re-redirected.
 	if err := iptables("-t", "nat", "-A", chain,
 		"-m", "owner", "--uid-owner", strconv.Itoa(proxyUID), "-j", "RETURN"); err != nil {
+		_ = Down(proxyPort, backendPort, proxyUID)
 		return err
 	}
 	// Redirect everything else destined for the backend into the proxy.
 	if err := iptables("-t", "nat", "-A", chain,
 		"-p", "tcp", "--dport", strconv.Itoa(backendPort),
 		"-j", "REDIRECT", "--to-ports", strconv.Itoa(proxyPort)); err != nil {
+		_ = Down(proxyPort, backendPort, proxyUID)
 		return err
 	}
 	// Hook the chain into OUTPUT, scoped to the backend port.
 	if err := iptables("-t", "nat", "-A", "OUTPUT",
 		"-p", "tcp", "--dport", strconv.Itoa(backendPort), "-j", chain); err != nil {
+		_ = Down(proxyPort, backendPort, proxyUID)
 		return err
 	}
 	return nil
@@ -63,5 +75,38 @@ func Down(_ /*proxyPort*/, backendPort, _ /*proxyUID*/ int) error {
 		"-p", "tcp", "--dport", strconv.Itoa(backendPort), "-j", chain)
 	iptablesIgnore("-t", "nat", "-F", chain)
 	iptablesIgnore("-t", "nat", "-X", chain)
+	restoreRouteLocalnet()
 	return nil
+}
+
+func enableRouteLocalnet() {
+	routeLocalnetMu.Lock()
+	defer routeLocalnetMu.Unlock()
+	if routeLocalnetChanged {
+		return
+	}
+	out, err := exec.Command("sysctl", "-n", "net.ipv4.conf.all.route_localnet").Output()
+	if err != nil {
+		return
+	}
+	original := strings.TrimSpace(string(out))
+	if original == "" || original == "1" {
+		return
+	}
+	if exec.Command("sysctl", "-w", "net.ipv4.conf.all.route_localnet=1").Run() == nil {
+		routeLocalnetOriginal = original
+		routeLocalnetChanged = true
+	}
+}
+
+func restoreRouteLocalnet() {
+	routeLocalnetMu.Lock()
+	defer routeLocalnetMu.Unlock()
+	if !routeLocalnetChanged {
+		return
+	}
+	if exec.Command("sysctl", "-w", "net.ipv4.conf.all.route_localnet="+routeLocalnetOriginal).Run() == nil {
+		routeLocalnetChanged = false
+		routeLocalnetOriginal = ""
+	}
 }

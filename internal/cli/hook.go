@@ -1,12 +1,10 @@
 package cli
 
 import (
-	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +13,8 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/config"
 	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sessionstate"
+	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
 
 // The session lifecycle below (mint SVID + bind + register, and the reverse) is
@@ -61,20 +61,15 @@ func usesCgroupBinding(cfg *config.Config) bool {
 	}
 }
 
-type sessionState struct {
-	SessionID string `json:"session_id"`
-	Handle    string `json:"handle"`
-	ULID      string `json:"ulid"`
-	SPIFFEID  string `json:"spiffe_id"`
-	Blueprint string `json:"blueprint"`
-	OwnerPID  int    `json:"owner_pid,omitempty"`
-}
+// Keep the package-local name used throughout the CLI while sharing the
+// durable schema with the daemon's renewal loop.
+type sessionState = sessionstate.State
 
 // updateSessionOwner records the session's root process and re-registers it with
 // the daemon so the sandbox proxy can verify that connecting processes belong to
 // this session (peer verification). Best-effort: on failure the session stays
 // token-only (no peer check). A non-positive pid is ignored.
-func updateSessionOwner(cfg *config.Config, sid string, pid int) {
+func updateSessionOwner(cfg *config.Config, sid string, pid int, managed bool) {
 	if pid <= 0 {
 		return
 	}
@@ -83,16 +78,51 @@ func updateSessionOwner(cfg *config.Config, sid string, pid int) {
 		return
 	}
 	st.OwnerPID = pid
+	st.OwnerManaged = managed
+	if managed {
+		identity, identityErr := processIdentity(pid)
+		if identityErr != nil {
+			fmt.Fprintf(os.Stderr, "keydris session: identify owner process: %v\n", identityErr)
+		} else {
+			st.OwnerIdentity = identity
+		}
+	} else {
+		st.OwnerIdentity = ""
+	}
 	_ = saveState(cfg, st)
-	_ = sendSessionMessage(cfg.SessionSocket, sessionsock.Message{
-		Action:   sessionsock.ActionUpdateOwner,
-		Handle:   st.Handle,
-		OwnerPID: pid,
+	_ = sendAuthenticatedSessionMessage(cfg, sessionsock.Message{
+		Action:        sessionsock.ActionUpdateOwner,
+		Handle:        st.Handle,
+		OwnerPID:      pid,
+		OwnerManaged:  managed,
+		OwnerIdentity: st.OwnerIdentity,
 	})
 }
 
 func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
-	blueprint := cfg.ResolveBlueprint(blueprintFlag)
+	if err := validateSessionID(sid); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris session: %v\n", err)
+		return 1
+	}
+
+	// SessionStart can fire more than once for one logical session (for example
+	// after Claude/Codex compaction). Revoke and remove the old instance before
+	// replacing its state so its ULID is never orphaned.
+	if _, err := loadState(cfg, sid); err == nil {
+		if code := hookSessionEnd(cfg, sid); code != 0 {
+			fmt.Fprintf(os.Stderr, "keydris session: cannot replace existing session %q\n", sid)
+			return code
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "keydris session: read existing state %q: %v\n", sid, err)
+		return 1
+	}
+
+	blueprint := cfg.ResolveAgent(blueprintFlag)
+	if blueprint == "" {
+		fmt.Fprintln(os.Stderr, "keydris session: no agent configured (run `keydris init` or `keydris init <target> <agent-id>`)")
+		return 1
+	}
 
 	handle, err := bindSessionForMode(cfg, sid)
 	if err != nil {
@@ -107,26 +137,44 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 		return 1
 	}
 
+	routes, err := fetchSessionRoutes(cfg, inst.KIT)
+	if err != nil {
+		_ = revokeSessionInstance(cfg, inst.SessionID)
+		unbindSessionForMode(cfg, handle)
+		fmt.Fprintf(os.Stderr, "keydris session: fetch runtime routes: %v\n", err)
+		return 1
+	}
+	if routes.Agent.AgentID != blueprint {
+		_ = revokeSessionInstance(cfg, inst.SessionID)
+		unbindSessionForMode(cfg, handle)
+		fmt.Fprintln(os.Stderr, "keydris session: runtime routes agent does not match the selected agent")
+		return 1
+	}
+
 	if err := saveState(cfg, sessionState{
-		SessionID: sid, Handle: handle, ULID: inst.ULID, SPIFFEID: inst.SPIFFEID, Blueprint: blueprint,
+		SessionID: sid, Handle: handle, ULID: inst.SessionID, SPIFFEID: inst.SPIFFEID, Blueprint: blueprint, ExpiresAt: inst.ExpiresAt, KIT: inst.KIT, Routes: routes,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris session: save state: %v\n", err)
-		_ = revokeSessionInstance(cfg, inst.ULID)
+		_ = revokeSessionInstance(cfg, inst.SessionID)
 		unbindSessionForMode(cfg, handle)
 		_ = removeState(cfg, sid)
 		return 1
 	}
 
-	if err := sendSessionMessage(cfg.SessionSocket, sessionsock.Message{
+	if err := sendAuthenticatedSessionMessage(cfg, sessionsock.Message{
 		Action:    sessionsock.ActionRegister,
 		Handle:    handle,
 		SPIFFEID:  inst.SPIFFEID,
-		SVID:      inst.SVID,
+		SVID:      inst.KIT,
 		Blueprint: blueprint,
-		ULID:      inst.ULID,
+		ULID:      inst.SessionID,
+		AgentID:   blueprint,
+		ExpiresAt: inst.ExpiresAt,
+		SessionID: sid,
+		Routes:    routes,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris session: register with daemon: %v\n", err)
-		revokeErr := revokeSessionInstance(cfg, inst.ULID)
+		revokeErr := revokeSessionInstance(cfg, inst.SessionID)
 		if revokeErr != nil {
 			fmt.Fprintf(os.Stderr, "keydris session: rollback revoke failed; retained state %q for retry: %v\n", sid, revokeErr)
 		} else {
@@ -141,51 +189,140 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 }
 
 func hookSessionEnd(cfg *config.Config, sid string) int {
+	if err := validateSessionID(sid); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris session: %v\n", err)
+		return 1
+	}
 	st, err := loadState(cfg, sid)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris session: no state for session %q: %v\n", sid, err)
 		return 1
 	}
 
-	if err := revokeSessionInstance(cfg, st.ULID); err != nil {
+	currentULID := st.ULID
+	currentSPIFFEID := st.SPIFFEID
+	snapshot, unregisterErr := exchangeAuthenticatedSessionMessage(cfg, sessionsock.Message{
+		Action: sessionsock.ActionUnregister, Handle: st.Handle,
+	})
+	if snapshot != nil {
+		if snapshot.SessionID != "" && snapshot.SessionID != sid {
+			unregisterErr = fmt.Errorf("daemon returned a different session id")
+		} else {
+			currentULID = snapshot.ULID
+			currentSPIFFEID = snapshot.SPIFFEID
+			// Retain the current renewed identity if revocation fails and this
+			// SessionEnd must be retried after the daemon has unregistered it.
+			st.ULID = snapshot.ULID
+			st.SPIFFEID = snapshot.SPIFFEID
+			st.KIT = snapshot.SVID
+			st.ExpiresAt = snapshot.ExpiresAt
+			_ = saveState(cfg, st)
+		}
+	}
+
+	if err := revokeSessionInstance(cfg, currentULID); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris session: revoke: %v\n", err)
-		_ = sendSessionMessage(cfg.SessionSocket, sessionsock.Message{
-			Action: sessionsock.ActionUnregister, Handle: st.Handle,
-		})
 		unbindSessionForMode(cfg, st.Handle)
 		return 1
 	}
-	if err := sendSessionMessage(cfg.SessionSocket, sessionsock.Message{
-		Action: sessionsock.ActionUnregister, Handle: st.Handle,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris session: unregister: %v\n", err)
+	if unregisterErr != nil {
+		fmt.Fprintf(os.Stderr, "keydris session: unregister: %v\n", unregisterErr)
 		return 1
 	}
 	unbindSessionForMode(cfg, st.Handle)
 	_ = removeState(cfg, sid)
 
-	fmt.Fprintf(os.Stderr, "keydris: session %s ended (%s revoked)\n", sid, st.SPIFFEID)
+	fmt.Fprintf(os.Stderr, "keydris: session %s ended (%s revoked)\n", sid, currentSPIFFEID)
 	return 0
 }
 
 // --- control-plane client ---
 
-type mintedInstance struct {
-	SPIFFEID  string `json:"spiffe_id"`
-	SVID      string `json:"svid"`
-	ULID      string `json:"ulid"`
-	ExpiresAt string `json:"expires_at"`
-}
+type mintedInstance = runtimecontract.KitSession
 
 var (
-	mintSessionInstance   = mintInstance
-	revokeSessionInstance = revokeInstance
-	sendSessionMessage    = sessionsock.Send
+	mintSessionInstance    = mintInstance
+	revokeSessionInstance  = revokeInstance
+	sendSessionMessage     = sessionsock.Send
+	exchangeSessionMessage = sessionsock.Exchange
+	fetchSessionRoutes     = fetchRoutesInstance
 )
+
+func fetchRoutesInstance(
+	cfg *config.Config,
+	runtimeToken string,
+) (*runtimecontract.RuntimeRoutes, error) {
+	client, err := mTLSClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return runtimecontract.FetchRuntimeRoutes(
+		ctx,
+		client,
+		cfg.ControlMTLSURL,
+		runtimeToken,
+	)
+}
+
+func sendAuthenticatedSessionMessage(cfg *config.Config, message sessionsock.Message) error {
+	_, err := exchangeAuthenticatedSessionMessageWith(cfg, message, func(path string, message sessionsock.Message) (*sessionsock.SessionSnapshot, error) {
+		if err := sendSessionMessage(path, message); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	return err
+}
+
+func exchangeAuthenticatedSessionMessage(
+	cfg *config.Config,
+	message sessionsock.Message,
+) (*sessionsock.SessionSnapshot, error) {
+	return exchangeAuthenticatedSessionMessageWith(cfg, message, exchangeSessionMessage)
+}
+
+func exchangeAuthenticatedSessionMessageWith(
+	cfg *config.Config,
+	message sessionsock.Message,
+	exchange func(string, sessionsock.Message) (*sessionsock.SessionSnapshot, error),
+) (*sessionsock.SessionSnapshot, error) {
+	authPath := cfg.SessionAuthFile
+	if authPath == "" {
+		authPath = filepath.Join(cfg.DataDir, "session.auth")
+	}
+	secret, err := sessionsock.LoadOrCreateSecret(authPath)
+	if err != nil {
+		return nil, fmt.Errorf("session socket auth: %w", err)
+	}
+	message.Auth = secret
+	return exchange(cfg.SessionSocket, message)
+}
+
+func lookupRegisteredSession(
+	cfg *config.Config,
+	handle string,
+) (*sessionsock.SessionSnapshot, error) {
+	snapshot, err := exchangeAuthenticatedSessionMessage(cfg, sessionsock.Message{
+		Action: sessionsock.ActionLookup,
+		Handle: handle,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if snapshot == nil || snapshot.SVID == "" {
+		return nil, fmt.Errorf("daemon returned no session")
+	}
+	return snapshot, nil
+}
 
 // mTLSClient builds the control-plane client that presents the login identity,
 // returning an actionable error when the node has not run `keydris login`.
 func mTLSClient(cfg *config.Config) (*http.Client, error) {
+	if _, err := login.EnsureFresh(cfg.IdentityDir, cfg.ControlMTLSURL, cfg.MTLSServerCA, 48*time.Hour); err != nil {
+		return nil, fmt.Errorf("renew control-plane mTLS identity: %w", err)
+	}
 	client, err := login.HTTPClient(cfg.IdentityDir, cfg.MTLSServerCA, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("control-plane mTLS identity (run `keydris login`): %w", err)
@@ -193,50 +330,18 @@ func mTLSClient(cfg *config.Config) (*http.Client, error) {
 	return client, nil
 }
 
-// newIssuanceRequestID is the Idempotency-Key for a single mint. The control
-// plane treats a repeated key as a replay and hands back the KIT the first call
-// created, so every genuinely new session needs a fresh one. 32 hex characters
-// sits inside the server's 8-128 URL-safe constraint.
-func newIssuanceRequestID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "kit" + time.Now().UTC().Format("20060102T150405.000000000")
-	}
-	return hex.EncodeToString(b[:])
-}
-
-func mintInstance(cfg *config.Config, policyName, handle string) (*mintedInstance, error) {
+func mintInstance(cfg *config.Config, agentID, handle string) (*mintedInstance, error) {
 	client, err := mTLSClient(cfg)
 	if err != nil {
 		return nil, err
 	}
-	// policy_name is resolved server-side to a policy the caller owns; the
-	// SVID is bound to it. session_handle is an optional correlation label.
-	body, _ := json.Marshal(map[string]any{"policy_name": policyName, "session_handle": handle})
-	req, err := http.NewRequest(http.MethodPost, cfg.ControlMTLSURL+"/agent/authorize/issue", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", newIssuanceRequestID())
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	// Issue returns 200 or 201 (Created); accept any 2xx.
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		if resp.StatusCode == http.StatusNotFound {
-			return nil, fmt.Errorf("policy %q not found or not owned by this user: %s", policyName, bytes.TrimSpace(b))
-		}
-		return nil, fmt.Errorf("control returned %s: %s", resp.Status, bytes.TrimSpace(b))
-	}
-	var out mintedInstance
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return runtimecontract.CreateKitSession(ctx, client, cfg.ControlMTLSURL, runtimecontract.CreateKitSessionInput{
+		AgentID:        agentID,
+		SessionHandle:  handle,
+		IdempotencyKey: "cli-" + newProxyToken(),
+	})
 }
 
 func revokeInstance(cfg *config.Config, ulid string) error {
@@ -244,52 +349,32 @@ func revokeInstance(cfg *config.Config, ulid string) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, cfg.ControlMTLSURL+"/agent/authorize/"+ulid+"/revoke", nil)
-	if err != nil {
-		return err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	// Revoke is 204 (No Content); accept any 2xx (idempotent).
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("revoke returned %s", resp.Status)
-	}
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return runtimecontract.RevokeKitSession(ctx, client, cfg.ControlMTLSURL, ulid)
 }
 
 // --- session state (so SessionEnd can find the minted instance) ---
 
-func stateDir(cfg *config.Config) string { return filepath.Join(cfg.DataDir, "sessions") }
+func stateDir(cfg *config.Config) string { return sessionstate.Dir(cfg.DataDir) }
 
 func statePath(cfg *config.Config, sid string) string {
-	return filepath.Join(stateDir(cfg), sid+".json")
+	path, _ := sessionstate.Path(cfg.DataDir, sid)
+	return path
+}
+
+func validateSessionID(sid string) error {
+	return sessionstate.ValidateID(sid)
 }
 
 func saveState(cfg *config.Config, st sessionState) error {
-	if err := os.MkdirAll(stateDir(cfg), 0o700); err != nil {
-		return err
-	}
-	_ = os.Chmod(stateDir(cfg), 0o700)
-	b, _ := json.Marshal(st)
-	path := statePath(cfg, st.SessionID)
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o600)
+	return sessionstate.Save(cfg.DataDir, st)
 }
 
 func loadState(cfg *config.Config, sid string) (sessionState, error) {
-	var st sessionState
-	b, err := os.ReadFile(statePath(cfg, sid))
-	if err != nil {
-		return st, err
-	}
-	return st, json.Unmarshal(b, &st)
+	return sessionstate.Load(cfg.DataDir, sid)
 }
 
 func removeState(cfg *config.Config, sid string) error {
-	return os.Remove(statePath(cfg, sid))
+	return sessionstate.Remove(cfg.DataDir, sid)
 }

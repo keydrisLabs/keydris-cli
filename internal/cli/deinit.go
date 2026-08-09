@@ -9,22 +9,26 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 )
 
-// runDeinit implements `keydris deinit claude-code`, the inverse of
-// `keydris init claude-code`. It strips the Keydris sandbox routing, CA env, and
-// any stale Keydris hooks from the Claude Code settings file (preserving
-// unrelated settings) and clears the persisted policy id. The Keydris CA files
-// are left in place so a later `init` reuses them; if you installed the CA into
-// the OS trust store with `--trust-store`, remove it there manually.
+// runDeinit implements `keydris deinit claude-code|codex`, the inverse of
+// `keydris init`. It strips the Keydris configuration for the chosen target —
+// the Claude Code sandbox routing, CA env, and hooks, or the Codex command
+// hooks — preserving unrelated settings, and clears the persisted policy id.
+// The Keydris CA files are left in place so a later `init` reuses them; if you
+// installed the CA into the OS trust store with `--trust-store`, remove it
+// there manually.
 func runDeinit(args []string) int {
-	const usage = "usage: keydris deinit claude-code"
+	const usage = "usage: keydris deinit claude-code|codex"
 
 	if len(args) == 0 || args[0] == "" || args[0][0] == '-' {
 		fmt.Fprintln(os.Stderr, usage)
 		return 1
 	}
 	target := args[0]
-	if target != "claude-code" {
-		fmt.Fprintf(os.Stderr, "keydris deinit: unknown target %q (want claude-code)\n", target)
+	if target == "openai" {
+		target = "codex"
+	}
+	if target != "claude-code" && target != "codex" {
+		fmt.Fprintf(os.Stderr, "keydris deinit: unknown target %q (want claude-code or codex)\n", target)
 		return 1
 	}
 
@@ -35,11 +39,20 @@ func runDeinit(args []string) int {
 
 	cfg := config.Load()
 
-	changed, err := sandbox.Deconfigure(cfg.ClaudeSettingsPath, sandbox.RemoveOptions{
-		HTTPProxyPort:  cfg.HTTPProxyPort,
-		CAPath:         cfg.CABundlePath,
-		AllowedDomains: cfg.AllowedDomains,
-	})
+	var changed bool
+	var err error
+	var configPath string
+	if target == "claude-code" {
+		configPath = cfg.ClaudeSettingsPath
+		changed, err = sandbox.Deconfigure(configPath, sandbox.RemoveOptions{
+			HTTPProxyPort:  cfg.HTTPProxyPort,
+			CAPath:         cfg.CABundlePath,
+			AllowedDomains: cfg.AllowedDomains,
+		})
+	} else {
+		configPath = cfg.CodexHooksPath
+		changed, err = sandbox.DeconfigureCodexHooks(configPath)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris deinit: %v\n", err)
 		return 1
@@ -48,12 +61,16 @@ func runDeinit(args []string) int {
 		fmt.Fprintf(os.Stderr, "keydris deinit: clear policy id: %v\n", err)
 		return 1
 	}
+	if err := config.RemoveAgentID(cfg.DataDir); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris deinit: clear agent id: %v\n", err)
+		return 1
+	}
 
 	if changed {
-		fmt.Printf("keydris: removed Keydris sandbox config from %s\n", cfg.ClaudeSettingsPath)
+		fmt.Printf("keydris: removed Keydris config from %s\n", configPath)
 	} else {
-		fmt.Printf("keydris: no Keydris sandbox config in %s (nothing to remove)\n", cfg.ClaudeSettingsPath)
+		fmt.Printf("keydris: no Keydris config in %s (nothing to remove)\n", configPath)
 	}
-	fmt.Printf("  cleared policy id; left the Keydris CA at %s in place\n", cfg.CAPath)
+	fmt.Printf("  cleared agent and legacy policy ids; left the Keydris CA at %s in place\n", cfg.CAPath)
 	return 0
 }

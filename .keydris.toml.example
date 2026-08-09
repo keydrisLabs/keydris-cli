@@ -1,11 +1,13 @@
-# Keydris layered config (copy to .keydris.toml or ~/.keydris.toml).
-# Precedence: process env > .env > ./.keydris.toml > ~/.keydris.toml > defaults.
+# Keydris layered config (normally copy to ~/.keydris.toml).
+# Precedence: process env > ~/.keydris.toml > opted-in project files > defaults.
+# Project .env/.keydris.toml files are ignored unless the process environment
+# explicitly contains KEYDRIS_TRUST_PROJECT_CONFIG=1.
 # Each key maps to KEYDRIS_<UPPER(KEY)>.
 
 [keydris]
 trust_domain = "keydris.local"
 control_url  = "http://127.0.0.1:8081"
-dataplane    = "transparent"   # or "proxyenv" on macOS/Windows
+dataplane    = "sandbox"       # default; "transparent" is Linux/root only
 blueprint    = "repo-tools"
 proxy_port   = "15001"
 # Optional environment-style override. Prefer `keydris proxy scope ...` for the

@@ -3,6 +3,9 @@ package cli
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
@@ -15,12 +18,14 @@ func runStatus() int {
 
 	fmt.Printf("trust domain: %s\n", cfg.TrustDomain)
 	fmt.Printf("dataplane:    %s\n", cfg.DataPlane)
-	policy := cfg.PolicyID
-	if policy == "" {
-		policy = "(none — run `keydris init claude-code <policy-id>`)"
+	agent := cfg.AgentID
+	if agent == "" {
+		agent = "(none - run `keydris init`)"
 	}
-	fmt.Printf("policy id:    %s\n", policy)
-	fmt.Printf("blueprint:    %s\n", cfg.ResolveBlueprint(""))
+	fmt.Printf("agent id:     %s\n", agent)
+	if cfg.PolicyID != "" {
+		fmt.Printf("legacy policy: %s\n", cfg.PolicyID)
+	}
 	fmt.Printf("proxy port:   %d\n", cfg.ProxyPort)
 	if cfg.ManagedScopeError != nil {
 		fmt.Printf("proxy scope:  INVALID (%v)\n", cfg.ManagedScopeError)
@@ -41,9 +46,8 @@ func runStatus() int {
 
 	reportIdentity(cfg)
 	reportSandbox(cfg)
+	reportCodex(cfg)
 
-	// Use the public /agent/jwks endpoint as the reachability/health signal: the
-	// new control-plane API does not expose /healthz.
 	client := &http.Client{Timeout: 2 * time.Second}
 	jresp, err := client.Get(cfg.ControlURL + "/agent/jwks")
 	if err != nil {
@@ -59,24 +63,50 @@ func runStatus() int {
 	return 0
 }
 
-// reportIdentity surfaces whether the user has logged in (`keydris login`) and
-// whether the stored client certificate is still valid.
+func reportCodex(cfg *config.Config) {
+	path, err := exec.LookPath("codex")
+	if err != nil {
+		fmt.Println("codex:        NOT FOUND (install Codex, then launch with `keydris codex`)")
+		return
+	}
+	fmt.Printf("codex:        READY [%s; launch with `keydris codex`]\n", path)
+	hookOptions, err := codexHookOptions()
+	if err != nil {
+		fmt.Printf("  WARNING: cannot resolve Keydris hook executable: %v\n", err)
+		return
+	}
+	wired, err := sandbox.VerifyCodexHooks(cfg.CodexHooksPath, hookOptions)
+	if err != nil {
+		fmt.Printf("  WARNING: cannot read %s: %v\n", cfg.CodexHooksPath, err)
+		return
+	}
+	if wired {
+		fmt.Printf("  command hooks: wired [%s; trust once via `/hooks` inside Codex]\n", cfg.CodexHooksPath)
+	} else {
+		fmt.Printf("  WARNING: command hooks not wired: shell commands bypass the policy's command rules (run `keydris init codex <agent-id>`)\n")
+	}
+}
+
 func reportIdentity(cfg *config.Config) {
 	id, err := login.Load(cfg.IdentityDir)
 	if err != nil {
-		fmt.Printf("identity:     NOT LOGGED IN (run `keydris login`)\n")
+		fmt.Printf("identity:     NOT ENROLLED (run `keydris login`)\n")
 		return
 	}
 	state := "valid"
 	if id.Expired() {
 		state = "EXPIRED (run `keydris login`)"
 	}
-	fmt.Printf("identity:     %s [%s, cert until %s]\n", id.Email, state, id.NotAfter)
+	fmt.Printf(
+		"identity:     %s [%s, device %s, agent %s, cert until %s]\n",
+		id.Email,
+		state,
+		id.DeviceID,
+		id.AgentID,
+		id.NotAfter,
+	)
 }
 
-// reportSandbox surfaces Claude Code sandbox enforcement drift: enforcement only
-// holds while the sandbox is enabled and routed to the Keydris proxy port
-// (plan_v1.md section 7).
 func reportSandbox(cfg *config.Config) {
 	st, err := sandbox.Verify(cfg.ClaudeSettingsPath, cfg.HTTPProxyPort)
 	if err != nil {
@@ -91,4 +121,32 @@ func reportSandbox(cfg *config.Config) {
 	for _, w := range st.Warnings {
 		fmt.Printf("  WARNING: %s\n", w)
 	}
+	for _, path := range claudeProjectSettings() {
+		absConfigured, _ := filepath.Abs(cfg.ClaudeSettingsPath)
+		absCandidate, _ := filepath.Abs(path)
+		if absConfigured != absCandidate {
+			fmt.Printf("  WARNING: higher-priority Claude settings may change the effective sandbox: %s\n", path)
+		}
+	}
+}
+
+func claudeProjectSettings() []string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	var found []string
+	for dir := wd; ; dir = filepath.Dir(dir) {
+		for _, name := range []string{"settings.json", "settings.local.json"} {
+			path := filepath.Join(dir, ".claude", name)
+			if _, err := os.Stat(path); err == nil {
+				found = append(found, path)
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return found
 }

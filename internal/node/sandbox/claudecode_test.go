@@ -16,6 +16,9 @@ func TestConfigureMergesAndPreserves(t *testing.T) {
 		"model": "claude-x",
 		"hooks": map[string]any{
 			"PreToolUse": []any{map[string]any{"hooks": []any{}}},
+			"SessionStart": []any{map[string]any{"hooks": []any{
+				map[string]any{"type": "command", "command": "echo user-start"},
+			}}},
 		},
 		"sandbox": map[string]any{
 			"allowedDomains": []any{"existing.example"},
@@ -54,6 +57,10 @@ func TestConfigureMergesAndPreserves(t *testing.T) {
 	if _, ok := hooks["SessionStart"]; !ok {
 		t.Errorf("SessionStart hook not wired")
 	}
+	startEntries := hooks["SessionStart"].([]any)
+	if len(startEntries) != 2 {
+		t.Errorf("existing SessionStart hook was clobbered: %v", startEntries)
+	}
 
 	sb := got["sandbox"].(map[string]any)
 	if sb["enabled"] != true {
@@ -66,7 +73,7 @@ func TestConfigureMergesAndPreserves(t *testing.T) {
 	if int(net["httpProxyPort"].(float64)) != 15001 {
 		t.Errorf("httpProxyPort=%v, want 15001", net["httpProxyPort"])
 	}
-	domains := sb["allowedDomains"].([]any)
+	domains := net["allowedDomains"].([]any)
 	if len(domains) != 2 {
 		t.Errorf("allowedDomains should union existing+new, got %v", domains)
 	}
@@ -80,7 +87,7 @@ func TestConfigureMergesAndPreserves(t *testing.T) {
 func TestVerifyReportsDrift(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
-	if err := Configure(path, Options{HTTPProxyPort: 15001, CAPath: "/tmp/ca.crt", Strict: true, SessionStartHook: "keydris __session-start", SessionEndHook: "keydris __session-end"}); err != nil {
+	if err := Configure(path, Options{HTTPProxyPort: 15001, CAPath: "/tmp/ca.crt", Strict: true, SessionStartHook: "keydris __session-start", SessionEndHook: "keydris __session-end", PreToolUseHook: "keydris __pretool-use"}); err != nil {
 		t.Fatal(err)
 	}
 

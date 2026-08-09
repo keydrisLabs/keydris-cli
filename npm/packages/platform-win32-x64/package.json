@@ -1,0 +1,30 @@
+{
+  "name": "@keydris/cli-win32-x64",
+  "version": "0.1.0-next.2",
+  "description": "Keydris native binary for Windows x64",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "bin/keydris.exe",
+  "bin": {
+    "keydris-native": "bin/keydris.exe"
+  },
+  "files": [
+    "bin/keydris.exe"
+  ],
+  "scripts": {
+    "prepublishOnly": "node ../../scripts/prepublish-check.mjs"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keydrisLabs/keydris-cli.git",
+    "directory": "npm/packages/platform-win32-x64"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

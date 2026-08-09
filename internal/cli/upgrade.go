@@ -8,7 +8,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,6 +21,12 @@ import (
 // defaultBaseURL is where release artifacts live; it mirrors install.sh and can
 // be overridden with KEYDRIS_BASE_URL or --base-url.
 const defaultBaseURL = "https://dev.get.keydris.com/keydris-cli"
+
+const (
+	maxUpgradeBinary = 256 << 20
+	maxChecksumFile  = 1 << 20
+	maxDevConfig     = 4 << 20
+)
 
 // runUpgrade downloads the latest `keydris` binary for the selected channel,
 // verifies its checksum, and atomically replaces the running executable in
@@ -39,6 +47,17 @@ func runUpgrade(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if printNPMUpgradeInstructions(os.Stderr) {
+		return 0
+	}
+	if *channel != "stable" && *channel != "dev" {
+		fmt.Fprintln(os.Stderr, "keydris upgrade: channel must be stable or dev")
+		return 1
+	}
+	if !safeArtifactSegment(*version) {
+		fmt.Fprintf(os.Stderr, "keydris upgrade: invalid version %q\n", *version)
+		return 1
+	}
 
 	osName, arch, err := platform()
 	if err != nil {
@@ -51,12 +70,12 @@ func runUpgrade(args []string) int {
 	verdir := fmt.Sprintf("%s/%s/%s", base, *channel, *version)
 
 	fmt.Fprintf(os.Stderr, "==> downloading %s (%s/%s)\n", name, *channel, *version)
-	binBytes, err := httpGet(verdir + "/" + name)
+	binBytes, err := httpGetLimit(verdir+"/"+name, maxUpgradeBinary)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris upgrade: download binary: %v\n", err)
 		return 1
 	}
-	sums, err := httpGet(verdir + "/SHA256SUMS")
+	sums, err := httpGetLimit(verdir+"/SHA256SUMS", maxChecksumFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris upgrade: download checksums: %v\n", err)
 		return 1
@@ -91,6 +110,18 @@ func runUpgrade(args []string) int {
 
 	fmt.Fprintf(os.Stderr, "==> done (was %s); run `keydris version` to confirm\n", Version)
 	return 0
+}
+
+func printNPMUpgradeInstructions(w io.Writer) bool {
+	if os.Getenv("KEYDRIS_DISTRIBUTION") != "npm" {
+		return false
+	}
+	fmt.Fprintln(w, "keydris: this installation is managed by npm")
+	fmt.Fprintln(w, "upgrade globally with:")
+	fmt.Fprintln(w, "  npm install --global @keydris/cli@latest")
+	fmt.Fprintln(w, "or update a project dependency with:")
+	fmt.Fprintln(w, "  npm install --save-dev @keydris/cli@latest")
+	return true
 }
 
 // platform maps the Go runtime to the {os, arch} used in release artifact names,
@@ -170,7 +201,7 @@ func refreshDevConfig(base, version string) {
 	}
 	dst := filepath.Join(home, ".keydris.toml")
 
-	data, err := httpGet(fmt.Sprintf("%s/dev/%s/keydris.toml", base, version))
+	data, err := httpGetLimit(fmt.Sprintf("%s/dev/%s/keydris.toml", base, version), maxDevConfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "==> WARNING: could not fetch dev config (%v); left %s unchanged\n", err, dst)
 		return
@@ -201,24 +232,90 @@ func checksumFor(sums []byte, name string) string {
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
 		if len(fields) >= 2 && fields[len(fields)-1] == name {
-			return fields[0]
+			candidate := strings.ToLower(fields[0])
+			if len(candidate) != sha256.Size*2 {
+				return ""
+			}
+			if _, err := hex.DecodeString(candidate); err != nil {
+				return ""
+			}
+			return candidate
 		}
 	}
 	return ""
 }
 
-// httpGet fetches a URL and returns its body, erroring on any non-200 status.
-func httpGet(url string) ([]byte, error) {
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(url)
+// httpGetLimit fetches a release artifact over HTTPS with a strict body bound.
+// Plain HTTP is accepted only for a loopback test/development server.
+func httpGetLimit(rawURL string, maxBytes int64) ([]byte, error) {
+	if err := validateUpgradeURL(rawURL); err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return validateUpgradeRedirect(req, via)
+		},
+	}
+	resp, err := client.Get(rawURL)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+		return nil, fmt.Errorf("GET %s: %s", rawURL, resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("GET %s: response exceeds %d bytes", rawURL, maxBytes)
+	}
+	return body, nil
+}
+
+func validateUpgradeRedirect(req *http.Request, via []*http.Request) error {
+	for _, previous := range via {
+		if previous.URL.Scheme == "https" && req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing HTTPS downgrade redirect to %s", req.URL)
+		}
+	}
+	return validateUpgradeURL(req.URL.String())
+}
+
+func validateUpgradeURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("invalid download URL %q", rawURL)
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	if parsed.Scheme == "http" && (strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("refusing insecure download URL %q (HTTPS required)", rawURL)
+}
+
+func safeArtifactSegment(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z') &&
+			!(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') &&
+			r != '.' && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // envOr returns the environment value for key, or def when unset/empty.

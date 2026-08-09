@@ -1,6 +1,6 @@
 // Package cli implements the keydris user/agent commands: sign-in, Claude Code
-// onboarding, the background egress proxy, session-wrapped run, status, and the
-// evidence ledger.
+// and OpenAI Codex onboarding, the background egress proxy, session-wrapped
+// run, status, and the evidence ledger.
 package cli
 
 import (
@@ -33,6 +33,8 @@ func Execute() int {
 		return runLogout(args[1:])
 	case "run":
 		return runRun(args[1:])
+	case "codex", "openai":
+		return runCodex(args[1:])
 	case "init":
 		return runInit(args[1:])
 	case "deinit":
@@ -42,6 +44,10 @@ func Execute() int {
 		return runInternalSessionHook("start", args[1:])
 	case "__session-end":
 		return runInternalSessionHook("end", args[1:])
+	case "__pretool-use":
+		return runPreToolUse(args[1:])
+	case "__permission-request":
+		return runPermissionRequest(args[1:])
 	case "logs":
 		return runLogs()
 	case "upgrade":
@@ -67,15 +73,19 @@ Usage:
                                        [--email you@example.com] [--no-browser]
   keydris whoami                     Show the locally stored identity
   keydris logout                     Remove the locally stored identity
-  keydris init claude-code <policy>  Configure the Claude Code sandbox + CA for the
-                                       given policy id  [--strict] [--trust-store]
-  keydris deinit claude-code         Undo init: remove the Keydris sandbox config
+  keydris init                       Interactive agent setup
+  keydris init claude-code <agent>   Configure Claude Code sandbox + CA
+                                       [--strict] [--trust-store]
+  keydris init codex <agent>         Configure OpenAI Codex + CA
+                                       [--trust-store]
+  keydris deinit claude-code|codex   Undo init: remove the Keydris config
   keydris proxy up                   Start the brokered egress proxy in the background
   keydris proxy down                 Stop the background proxy
   keydris proxy scope add <origin>   Manage only selected host:port origins
   keydris proxy scope remove <origin>
   keydris proxy scope list|all
   keydris run -- <cmd...>            Run a command inside a keydris session
+  keydris codex [args...]            Run OpenAI Codex inside a keydris session
   keydris status                     Show config + sandbox enforcement state
   keydris logs                       Print and verify the hash-chained evidence ledger
   keydris upgrade                    Download & replace the binary with the latest release

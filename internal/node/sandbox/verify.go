@@ -13,14 +13,16 @@ type Status struct {
 	Enabled        bool
 	ProxyPort      int  // sandbox.network.httpProxyPort found in settings (0 if unset)
 	PortMatches    bool // ProxyPort == expected
-	HooksWired     bool // SessionStart + SessionEnd hooks present
+	Strict         bool // failIfUnavailable=true and allowUnsandboxedCommands=false
+	HooksWired     bool // exact Keydris SessionStart + SessionEnd hooks present
+	CommandGate    bool // Keydris PreToolUse command-authorization hook present
 	Warnings       []string
 }
 
 // OK reports whether enforcement is intact: sandbox enabled and routed to the
 // Keydris proxy port.
 func (s Status) OK() bool {
-	return s.Enabled && s.PortMatches
+	return s.Enabled && s.PortMatches && s.Strict && s.HooksWired && s.CommandGate
 }
 
 // Verify inspects the settings file and reports the sandbox enforcement state
@@ -45,6 +47,12 @@ func Verify(path string, expectedPort int) (Status, error) {
 	if !st.Enabled {
 		st.Warnings = append(st.Warnings, "sandbox.enabled is false: the agent can bypass the proxy")
 	}
+	failClosed, _ := sb["failIfUnavailable"].(bool)
+	allowUnsandboxed, allowPresent := sb["allowUnsandboxedCommands"].(bool)
+	st.Strict = failClosed && allowPresent && !allowUnsandboxed
+	if !st.Strict {
+		st.Warnings = append(st.Warnings, "strict sandbox fields are missing or weakened: require failIfUnavailable=true and allowUnsandboxedCommands=false")
+	}
 
 	if network, ok := sb["network"].(map[string]any); ok {
 		if p, ok := jsonInt(network["httpProxyPort"]); ok {
@@ -59,15 +67,34 @@ func Verify(path string, expectedPort int) (Status, error) {
 	}
 
 	if hooks, ok := settings["hooks"].(map[string]any); ok {
-		_, hasStart := hooks["SessionStart"]
-		_, hasEnd := hooks["SessionEnd"]
+		hasStart := eventHasCommand(hooks["SessionStart"], "keydris __session-start")
+		hasEnd := eventHasCommand(hooks["SessionEnd"], "keydris __session-end")
 		st.HooksWired = hasStart && hasEnd
+		st.CommandGate = eventHasCommand(hooks["PreToolUse"], "keydris __pretool-use")
 	}
 	if !st.HooksWired {
-		st.Warnings = append(st.Warnings, "SessionStart/SessionEnd hooks not wired: sessions get no per-session SVID (re-run `keydris init claude-code <policy-id>`)")
+		st.Warnings = append(st.Warnings, "SessionStart/SessionEnd hooks not wired: sessions get no per-session SVID (re-run `keydris init claude-code <agent-id>`)")
+	}
+	if !st.CommandGate {
+		st.Warnings = append(st.Warnings, "PreToolUse hook not wired: shell commands bypass the policy's command rules (re-run `keydris init claude-code <agent-id>`)")
 	}
 
 	return st, nil
+}
+
+func eventHasCommand(value any, want string) bool {
+	entries, _ := value.([]any)
+	for _, entry := range entries {
+		group, _ := entry.(map[string]any)
+		handlers, _ := group["hooks"].([]any)
+		for _, handler := range handlers {
+			hook, _ := handler.(map[string]any)
+			if command, _ := hook["command"].(string); command == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // jsonInt coerces a JSON number (float64) or int into an int.

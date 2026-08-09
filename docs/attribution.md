@@ -184,8 +184,8 @@ Two points worth emphasizing:
   with zero changes to the broker, issuer, or L7 path. The hard work is
   packaging and signing, not architecture.
 
-See [distribution.md](distribution.md) for the platform rollout strategy this
-slots into.
+This is the long-term, per-OS packaging target that the built Linux
+transparent/eBPF plane already demonstrates the shape of.
 
 ## 5. Comparison summary
 
@@ -204,6 +204,6 @@ slots into.
    independently. The broker's degraded branch now only triggers for flows
    outside any keydris session.
 2. **Tier 2 only if the macOS demo must show kernel-asserted attribution.**
-3. **Keep Tier 3 as the post-POC roadmap item** it already is in
-   [plan.md section 7](../plan.md): it is a packaging/signing project more than
-   a code project, and the architecture is already shaped for it.
+3. **Keep Tier 3 as a post-POC roadmap item**: it is a packaging/signing
+   project more than a code project, and the architecture is already shaped
+   for it.

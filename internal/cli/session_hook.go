@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
@@ -21,9 +24,32 @@ import (
 const (
 	internalSessionStartCmd = "keydris __session-start"
 	internalSessionEndCmd   = "keydris __session-end"
+	internalPreToolUseCmd   = "keydris __pretool-use"
 	sessionOwnerEnv         = "KEYDRIS_SESSION_OWNER"
 	sessionOwnerRun         = "keydris-run"
 )
+
+func codexHookOptions() (sandbox.CodexHookOptions, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return sandbox.CodexHookOptions{}, fmt.Errorf("resolve keydris executable: %w", err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+		executable = resolved
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return sandbox.CodexHookOptions{}, fmt.Errorf("resolve absolute keydris executable: %w", err)
+	}
+	quoted := shellQuote(executable)
+	if runtime.GOOS == "windows" {
+		quoted = `"` + executable + `"`
+	}
+	return sandbox.CodexHookOptions{
+		PreToolUseHook:        quoted + " __pretool-use --codex",
+		PermissionRequestHook: quoted + " __permission-request",
+	}, nil
+}
 
 // proxyAuthURL builds the local proxy URL a session points its HTTP(S)_PROXY at.
 // When token is non-empty it is carried as the Proxy-Authorization password (the
@@ -48,12 +74,17 @@ func runInternalSessionHook(phase string, args []string) int {
 	switch phase {
 	case "start":
 		sid := sessionID(*session, true)
+		if err := validateSessionID(sid); err != nil {
+			fmt.Fprintf(os.Stderr, "keydris session: %v\n", err)
+			return 1
+		}
 		if os.Getenv(sessionOwnerEnv) == sessionOwnerRun {
 			if _, err := loadState(cfg, sid); err != nil {
 				fmt.Fprintf(os.Stderr, "keydris session: wrapper-owned state %q: %v\n", sid, err)
 				return 1
 			}
-			updateSessionOwner(cfg, sid, os.Getppid())
+			// `keydris run` records the exact child PID after Start. Do not
+			// overwrite it with this hook's potentially short-lived shell parent.
 			writeClaudeProxyEnv(cfg, sid)
 			return 0
 		}
@@ -63,7 +94,7 @@ func runInternalSessionHook(phase string, args []string) int {
 		// Best-effort peer-verification anchor: the process that spawned this hook
 		// (the Claude session's process). Reliable on Linux when Claude is the
 		// direct parent; see the caveat in docs/attribution.md.
-		updateSessionOwner(cfg, sid, os.Getppid())
+		updateSessionOwner(cfg, sid, os.Getppid(), false)
 		// Hand the session its per-session proxy token via $CLAUDE_ENV_FILE so
 		// every Bash subprocess routes egress through Keydris carrying the token
 		// in Proxy-Authorization. This is what isolates concurrent sessions.
@@ -119,8 +150,17 @@ func writeClaudeProxyEnv(cfg *config.Config, sid string) {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "export HTTP_PROXY=%s\nexport HTTPS_PROXY=%s\nexport http_proxy=%s\nexport https_proxy=%s\n", p, p, p, p)
-	fmt.Fprintf(f, "export CURL_CA_BUNDLE=%s\nexport SSL_CERT_FILE=%s\nexport NODE_EXTRA_CA_CERTS=%s\nexport GIT_SSL_CAINFO=%s\nexport REQUESTS_CA_BUNDLE=%s\n", caBundle, caBundle, caBundle, caBundle, caBundle)
+	proxyValue := shellQuote(p)
+	caValue := shellQuote(caBundle)
+	fmt.Fprintf(f, "export HTTP_PROXY=%s\nexport HTTPS_PROXY=%s\nexport http_proxy=%s\nexport https_proxy=%s\n", proxyValue, proxyValue, proxyValue, proxyValue)
+	fmt.Fprintf(f, "export NODE_EXTRA_CA_CERTS=%s\n", caValue)
+	if runtime.GOOS != "windows" {
+		fmt.Fprintf(f, "export CURL_CA_BUNDLE=%s\nexport SSL_CERT_FILE=%s\nexport GIT_SSL_CAINFO=%s\nexport REQUESTS_CA_BUNDLE=%s\n", caValue, caValue, caValue, caValue)
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 // sessionID resolves the session identifier so SessionStart and SessionEnd agree

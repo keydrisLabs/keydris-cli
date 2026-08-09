@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "request_id": "logical-action-001",
+  "decision": {
+    "schema_version": 1,
+    "decision_id": "Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H7",
+    "request_id": "logical-action-001",
+    "attempt_id": "01K1X4Y5Z6A7B8C9D0E1F2G3H5",
+    "correlation_id": "01K1X4Y5Z6A7B8C9D0E1F2G3H6",
+    "decided_at": "2026-07-28T12:00:00.125Z",
+    "decision": "allow",
+    "reason_code": "keydris_policy_allowed",
+    "obligations": []
+  },
+  "execution_status": "succeeded",
+  "replayed": false,
+  "error_code": null,
+  "provider_response": {
+    "status": 201,
+    "headers": {
+      "content-type": "application/json",
+      "x-github-request-id": "fixture-provider-request"
+    },
+    "body": {
+      "id": 42,
+      "number": 7,
+      "html_url": "https://github.example/acme/example/pull/7"
+    }
+  }
+}

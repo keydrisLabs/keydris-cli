@@ -1,6 +1,9 @@
 package sandbox
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // RemoveOptions drives Deconfigure. The values identify what Keydris wrote so
 // the inverse only strips Keydris's own entries and leaves unrelated user
@@ -55,11 +58,21 @@ func unmergeSandbox(settings map[string]any, opt RemoveOptions) bool {
 			delete(network, "httpProxyPort")
 			changed = true
 		}
+		if len(opt.AllowedDomains) > 0 {
+			if remaining, did := removeStrings(network["allowedDomains"], opt.AllowedDomains); did {
+				changed = true
+				if len(remaining) == 0 {
+					delete(network, "allowedDomains")
+				} else {
+					network["allowedDomains"] = remaining
+				}
+			}
+		}
 		if len(network) == 0 {
 			delete(sb, "network")
 		}
 	}
-
+	// Also clean the schema used by older Keydris releases.
 	if len(opt.AllowedDomains) > 0 {
 		if remaining, did := removeStrings(sb["allowedDomains"], opt.AllowedDomains); did {
 			changed = true
@@ -85,16 +98,16 @@ func unmergeSandbox(settings map[string]any, opt RemoveOptions) bool {
 	return changed
 }
 
-// unmergeKeydrisHooks removes SessionStart/SessionEnd hook entries that invoke
-// `keydris ...` (cleaning up stale hooks from an older init), preserving any
-// other user hooks.
+// unmergeKeydrisHooks removes SessionStart/SessionEnd/PreToolUse hook entries
+// that invoke `keydris ...` (cleaning up stale hooks from an older init),
+// preserving any other user hooks.
 func unmergeKeydrisHooks(settings map[string]any) bool {
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		return false
 	}
 	changed := false
-	for _, event := range []string{"SessionStart", "SessionEnd"} {
+	for _, event := range []string{"SessionStart", "SessionEnd", "PreToolUse"} {
 		entries, ok := hooks[event].([]any)
 		if !ok {
 			continue
@@ -131,11 +144,29 @@ func entryReferencesKeydris(entry any) bool {
 	list, _ := m["hooks"].([]any)
 	for _, h := range list {
 		hm, _ := h.(map[string]any)
-		if cmd, ok := hm["command"].(string); ok && strings.Contains(cmd, "keydris") {
+		if cmd, ok := hm["command"].(string); ok && isKeydrisCommand(cmd) {
 			return true
 		}
 	}
 	return false
+}
+
+func isKeydrisCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	executable := command
+	if command[0] == '\'' || command[0] == '"' {
+		quote := command[0]
+		if end := strings.IndexByte(command[1:], quote); end >= 0 {
+			executable = command[1 : end+1]
+		}
+	} else if end := strings.IndexAny(command, " \t\r\n"); end >= 0 {
+		executable = command[:end]
+	}
+	base := strings.ToLower(filepath.Base(executable))
+	return base == "keydris" || base == "keydris.exe"
 }
 
 // unmergeCAEnv removes the CA env keys that point at the Keydris CA, dropping

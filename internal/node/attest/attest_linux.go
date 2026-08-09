@@ -35,6 +35,7 @@ func (r *procResolver) Resolve(srcIP string, srcPort int) (Attribution, error) {
 		if s, ok := r.reg.Lookup(attr.Cgroup); ok {
 			attr.SessionID = s.SPIFFEID
 			attr.SVID = s.SVID
+			attr.Routes = s.Routes
 		}
 	}
 	return attr, nil

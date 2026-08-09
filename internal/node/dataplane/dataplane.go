@@ -11,11 +11,14 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
 	"sync"
+
+	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
 
 // Credential is what the broker tells the data plane to inject. Phase 1 only
@@ -38,6 +41,10 @@ type Flow struct {
 	ToolCall      string          // intercepted HTTP operation, formatted as "METHOD /path"
 	ToolParams    json.RawMessage // intercepted JSON request body (nil when absent/non-JSON)
 	MetadataError string          // local request-metadata validation failure; reject before broker
+	MCPMethod     string          // validated JSON-RPC method for MCP traffic
+	MCPRequestID  json.RawMessage // immutable JSON-RPC request identity for gateway relaying
+	MCPAction     *MCPAction      // governed MCP action, nil for lifecycle/discovery traffic
+	Routes        *runtimecontract.RuntimeRoutes
 
 	conn net.Conn
 	req  *http.Request
@@ -46,6 +53,17 @@ type Flow struct {
 
 	upstreamTLS bool   // dial the upstream over TLS (sandbox CONNECT/MITM path)
 	dstHost     string // SNI/host for the upstream TLS dial
+}
+
+// MCPAction is the normalized, request-derived subset used to select a
+// manifest resource and mint an action-bound KIT token.
+type MCPAction struct {
+	ActionType     string
+	ActionName     string
+	ResourceType   string
+	RoutingKeyType string
+	RoutingValue   string
+	Parameters     map[string]any
 }
 
 // DstString returns the dial/authorize target for the flow.
@@ -68,6 +86,68 @@ func (f Flow) DstHost() string {
 	return f.DstString()
 }
 
+// DstPort returns the destination port, applying the flow's transport default
+// only when a proxy request omitted an explicit port.
+func (f Flow) DstPort() int {
+	_, portText, err := net.SplitHostPort(f.DstString())
+	if err == nil {
+		var port int
+		if _, scanErr := fmt.Sscanf(portText, "%d", &port); scanErr == nil {
+			return port
+		}
+	}
+	if f.upstreamTLS {
+		return 443
+	}
+	return 80
+}
+
+// Scheme reports the authenticated upstream transport selected by the data
+// plane. Manifest routing never trusts a scheme supplied inside the JSON body.
+func (f Flow) Scheme() string {
+	if f.upstreamTLS {
+		return "https"
+	}
+	return "http"
+}
+
+func (f Flow) RequestMethod() string {
+	if f.req == nil {
+		return ""
+	}
+	return f.req.Method
+}
+
+func (f Flow) RequestPath() string {
+	if f.req == nil || f.req.URL == nil {
+		return "/"
+	}
+	path := f.req.URL.EscapedPath()
+	if path == "" {
+		return "/"
+	}
+	return path
+}
+
+func (f Flow) RequestQuery() map[string][]string {
+	if f.req == nil || f.req.URL == nil {
+		return map[string][]string{}
+	}
+	return f.req.URL.Query()
+}
+
+func (f Flow) ProviderRequestHeaders() runtimecontract.ProviderRequestHeaders {
+	if f.req == nil {
+		return runtimecontract.ProviderRequestHeaders{}
+	}
+	return runtimecontract.ProviderRequestHeaders{
+		Accept:           f.req.Header.Get("Accept"),
+		IfMatch:          f.req.Header.Get("If-Match"),
+		IfNoneMatch:      f.req.Header.Get("If-None-Match"),
+		GithubAPIVersion: f.req.Header.Get("X-GitHub-Api-Version"),
+	}
+}
+
 // DataPlane abstracts per-OS interception + attribution.
 //
 // Inject and Reject consume the flow's connection (allow vs deny). Reject is a
@@ -76,7 +156,9 @@ func (f Flow) DstHost() string {
 type DataPlane interface {
 	Flows() <-chan Flow
 	Inject(f Flow, c Credential) error
+	InjectMCPActionToken(f Flow, token string) error
 	PassThrough(f Flow) error
+	Respond(f Flow, response runtimecontract.ProviderHTTPResponse) error
 	Reject(f Flow, reason string) error
 	Close() error
 }
@@ -141,12 +223,31 @@ func (p *inlinePlane) Inject(f Flow, c Credential) error {
 	return injectAndForward(f.conn, f.br, f.req, f.DstString(), c)
 }
 
+func (p *inlinePlane) InjectMCPActionToken(f Flow, token string) error {
+	defer f.conn.Close()
+	if f.req == nil || f.br == nil {
+		return errNoRequest
+	}
+	if err := injectMCPActionToken(f.req, token); err != nil {
+		return err
+	}
+	return forwardUnchanged(f.conn, f.br, f.req, f.DstString())
+}
+
 func (p *inlinePlane) PassThrough(f Flow) error {
 	defer f.conn.Close()
 	if f.req == nil || f.br == nil {
 		return errNoRequest
 	}
 	return forwardUnchanged(f.conn, f.br, f.req, f.DstString())
+}
+
+func (p *inlinePlane) Respond(
+	f Flow,
+	response runtimecontract.ProviderHTTPResponse,
+) error {
+	defer f.conn.Close()
+	return writeProviderResponse(f.conn, response)
 }
 
 func (p *inlinePlane) Reject(f Flow, reason string) error {
