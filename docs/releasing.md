@@ -26,8 +26,10 @@ keydris-cli/install.sh                                https://dev.get.keydris.co
 keydris-cli/<channel>/<version>/keydris-<os>-<arch>    …/keydris-cli/<channel>/<version>/keydris-<os>-<arch>
 keydris-cli/<channel>/<version>/SHA256SUMS             …/keydris-cli/<channel>/<version>/SHA256SUMS
 keydris-cli/<channel>/latest/…                         …/keydris-cli/<channel>/latest/…   (mutable pointer)
-keydris-cli/dev/<version>/keydris.toml                 …/keydris-cli/dev/<version>/keydris.toml (dev only)
+keydris-cli/dev/<version>/keydris.toml                 …/keydris-cli/dev/<version>/keydris.toml
 keydris-cli/dev/latest/keydris.toml                    …/keydris-cli/dev/latest/keydris.toml
+keydris-cli/stable/<version>/keydris.toml              …/keydris-cli/stable/<version>/keydris.toml
+keydris-cli/stable/latest/keydris.toml                 …/keydris-cli/stable/latest/keydris.toml
 ```
 
 `latest/` and `install.sh` are published with `Cache-Control: max-age=60`;
