@@ -37,7 +37,7 @@ dist:
 	@cd $(DIST) && (command -v sha256sum >/dev/null 2>&1 && sha256sum keydris-* || shasum -a 256 keydris-*) > SHA256SUMS
 	@echo "  wrote $(DIST)/SHA256SUMS"
 
-# Publish $(DIST) + install.sh (+ dev config) to S3. Needs S3_BUCKET and AWS creds.
+# Publish $(DIST) + install.sh (+ per-channel keydris.toml) to S3. Needs S3_BUCKET and AWS creds.
 release: dist
 	@test -n "$(S3_BUCKET)" || { echo "set S3_BUCKET=<your-bucket>"; exit 1; }
 	aws s3 sync $(DIST)/ s3://$(S3_BUCKET)/keydris-cli/$(CHANNEL)/$(VERSION)/
@@ -46,6 +46,9 @@ release: dist
 	@if [ "$(CHANNEL)" = dev ]; then \
 	  aws s3 cp deploy/dev/keydris.toml s3://$(S3_BUCKET)/keydris-cli/dev/$(VERSION)/keydris.toml --cache-control max-age=60; \
 	  aws s3 cp deploy/dev/keydris.toml s3://$(S3_BUCKET)/keydris-cli/dev/latest/keydris.toml --cache-control max-age=60; \
+	elif [ "$(CHANNEL)" = stable ]; then \
+	  aws s3 cp deploy/stable/keydris.toml s3://$(S3_BUCKET)/keydris-cli/stable/$(VERSION)/keydris.toml --cache-control max-age=60; \
+	  aws s3 cp deploy/stable/keydris.toml s3://$(S3_BUCKET)/keydris-cli/stable/latest/keydris.toml --cache-control max-age=60; \
 	fi
 	@if [ -n "$(DISTRIBUTION_ID)" ]; then \
 	  aws cloudfront create-invalidation --distribution-id $(DISTRIBUTION_ID) --paths "/keydris-cli/install.sh" "/keydris-cli/$(CHANNEL)/latest/*"; \

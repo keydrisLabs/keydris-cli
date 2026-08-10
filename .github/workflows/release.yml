@@ -56,6 +56,9 @@ jobs:
           if [ "$CHANNEL" = dev ]; then
             aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/keydris-cli/dev/$VERSION/keydris.toml" --cache-control max-age=60
             aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/keydris-cli/dev/latest/keydris.toml" --cache-control max-age=60
+          elif [ "$CHANNEL" = stable ]; then
+            aws s3 cp deploy/stable/keydris.toml "s3://$BUCKET/keydris-cli/stable/$VERSION/keydris.toml" --cache-control max-age=60
+            aws s3 cp deploy/stable/keydris.toml "s3://$BUCKET/keydris-cli/stable/latest/keydris.toml" --cache-control max-age=60
           fi
 
       - name: Invalidate CloudFront
