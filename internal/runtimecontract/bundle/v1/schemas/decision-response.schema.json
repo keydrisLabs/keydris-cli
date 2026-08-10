@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.keydris.com/runtime/v1/decision-response.schema.json",
+  "title": "Decision Response",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "decision_id": {
+          "type": "string",
+          "pattern": "^Keydris-[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "correlation_id": {
+          "type": "string",
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "decided_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "obligations": {
+          "maxItems": 0,
+          "type": "array",
+          "items": {
+            "not": {}
+          }
+        },
+        "decision": {
+          "type": "string",
+          "const": "allow"
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "keydris_policy_allowed",
+            "keydris_approval_granted"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "decision_id",
+        "request_id",
+        "attempt_id",
+        "correlation_id",
+        "decided_at",
+        "obligations",
+        "decision",
+        "reason_code"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "decision_id": {
+          "type": "string",
+          "pattern": "^Keydris-[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "correlation_id": {
+          "type": "string",
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "decided_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "obligations": {
+          "maxItems": 0,
+          "type": "array",
+          "items": {
+            "not": {}
+          }
+        },
+        "decision": {
+          "type": "string",
+          "const": "deny"
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "keydris_policy_denied",
+            "keydris_policy_unavailable",
+            "keydris_invalid_request",
+            "keydris_identity_unavailable",
+            "keydris_target_unavailable",
+            "keydris_action_unsupported",
+            "keydris_manifest_stale",
+            "keydris_request_conflict",
+            "keydris_kit_action_token_invalid",
+            "keydris_enforcement_unavailable"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "decision_id",
+        "request_id",
+        "attempt_id",
+        "correlation_id",
+        "decided_at",
+        "obligations",
+        "decision",
+        "reason_code"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "decision_id": {
+          "type": "string",
+          "pattern": "^Keydris-[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "correlation_id": {
+          "type": "string",
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        "decided_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "obligations": {
+          "maxItems": 0,
+          "type": "array",
+          "items": {
+            "not": {}
+          }
+        },
+        "decision": {
+          "type": "string",
+          "const": "approval_required"
+        },
+        "reason_code": {
+          "type": "string",
+          "const": "keydris_approval_required"
+        }
+      },
+      "required": [
+        "schema_version",
+        "decision_id",
+        "request_id",
+        "attempt_id",
+        "correlation_id",
+        "decided_at",
+        "obligations",
+        "decision",
+        "reason_code"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

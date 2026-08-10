@@ -45,6 +45,13 @@ type Options struct {
 	ControlURL string
 	// IdentityDir is where the resulting key/cert/metadata are written.
 	IdentityDir string
+	// DeviceName is the human-readable installation label shown in the control
+	// plane. It defaults to the local hostname.
+	DeviceName string
+	// AgentID, when set, asks /identity/sign to bind the enrolled device to
+	// this agent identity (the caller must be allowed to use the agent). Empty
+	// keeps the sign-in device-only.
+	AgentID string
 
 	// AuthorizeURL / TokenURL are the OAuth provider endpoints. When empty they
 	// default to the control plane's built-in mock IdP, so the flow works
@@ -156,7 +163,11 @@ func Run(opt Options) (*Identity, error) {
 	if bearer == "" {
 		bearer = tokens.idToken
 	}
-	signed, err := signCSR(opt.ControlURL, bearer, csrPEM)
+	deviceID := ""
+	if existing, loadErr := Load(opt.IdentityDir); loadErr == nil {
+		deviceID = existing.DeviceID
+	}
+	signed, err := signCSR(opt.ControlURL, bearer, csrPEM, deviceID, opt.DeviceName, opt.AgentID)
 	if err != nil {
 		return nil, fmt.Errorf("sign certificate: %w", err)
 	}
@@ -165,6 +176,8 @@ func Run(opt Options) (*Identity, error) {
 		Email:      signed.Email,
 		Subject:    signed.Subject,
 		SPIFFEID:   signed.SPIFFEID,
+		DeviceID:   signed.DeviceID,
+		AgentID:    signed.AgentID,
 		NotAfter:   signed.NotAfter,
 		ControlURL: opt.ControlURL,
 		LoggedInAt: time.Now().UTC().Format(time.RFC3339),
@@ -188,6 +201,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.ClientID == "" {
 		o.ClientID = defaultClientID
+	}
+	if o.DeviceName == "" {
+		o.DeviceName = defaultDeviceName()
 	}
 	if o.AuthorizeURL == "" {
 		o.AuthorizeURL = strings.TrimRight(o.ControlURL, "/") + "/oauth/authorize"
@@ -340,10 +356,19 @@ type signResponse struct {
 	Subject     string `json:"subject"`
 	Email       string `json:"email"`
 	NotAfter    string `json:"not_after"`
+	DeviceID    string `json:"device_id"`
+	AgentID     string `json:"agent_id"`
 }
 
-func signCSR(controlURL, token string, csrPEM []byte) (*signResponse, error) {
-	body, _ := json.Marshal(map[string]string{"csr": string(csrPEM)})
+func signCSR(controlURL, token string, csrPEM []byte, deviceID, deviceName, agentID string) (*signResponse, error) {
+	payload := map[string]string{"csr": string(csrPEM), "device_name": deviceName}
+	if deviceID != "" {
+		payload["device_id"] = deviceID
+	}
+	if agentID != "" {
+		payload["agent_id"] = agentID
+	}
+	body, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, controlURL+"/identity/sign", bytes.NewReader(body))
@@ -369,6 +394,14 @@ func signCSR(controlURL, token string, csrPEM []byte) (*signResponse, error) {
 }
 
 // --- PKCE helpers ---
+
+func defaultDeviceName() string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "Keydris CLI"
+	}
+	return "Keydris CLI on " + strings.TrimSpace(host)
+}
 
 func randURL(n int) string {
 	b := make([]byte, n)

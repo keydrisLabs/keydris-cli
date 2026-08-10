@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -8,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
@@ -19,6 +19,11 @@ import (
 // daemonEnv marks the re-exec'd child that actually runs the proxy in the
 // foreground, so the parent can return after backgrounding it.
 const daemonEnv = "KEYDRIS_PROXY_DAEMON"
+
+type proxyProcessRecord struct {
+	PID      int    `json:"pid"`
+	Identity string `json:"identity"`
+}
 
 // runProxy dispatches `keydris proxy <subcommand>`.
 func runProxy(args []string) int {
@@ -125,8 +130,8 @@ func updateProxyScope(cfg *config.Config, action, raw string) int {
 }
 
 // runProxyDown stops the backgrounded proxy started by `keydris proxy up`. It
-// reads the pidfile under the data dir, sends SIGTERM (the daemon shuts down
-// cleanly on it), waits briefly for exit, and removes the pidfile.
+// reads the pidfile under the data dir, verifies that the PID still identifies
+// the exact process started by Keydris, asks it to stop, and waits for exit.
 func runProxyDown() int {
 	cfg := config.Load()
 	pidPath := filepath.Join(cfg.DataDir, "proxy.pid")
@@ -140,33 +145,55 @@ func runProxyDown() int {
 		fmt.Fprintf(os.Stderr, "keydris proxy down: %v\n", err)
 		return 1
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
+	var record proxyProcessRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		// Older releases wrote a bare PID. Refuse to signal it because a reused
+		// PID could now belong to an unrelated process.
+		if pid, legacyErr := strconv.Atoi(strings.TrimSpace(string(data))); legacyErr == nil && pid > 0 {
+			fmt.Fprintf(os.Stderr, "keydris proxy down: legacy pidfile %s cannot be safely verified; verify pid %d manually, then remove the pidfile\n", pidPath, pid)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "keydris proxy down: invalid pidfile %s\n", pidPath)
+		return 1
+	}
+	if record.PID <= 0 || record.Identity == "" {
 		fmt.Fprintf(os.Stderr, "keydris proxy down: invalid pidfile %s\n", pidPath)
 		return 1
 	}
 
-	proc, _ := os.FindProcess(pid) // always succeeds on Unix
-	if proc.Signal(syscall.Signal(0)) != nil {
+	identity, err := processIdentity(record.PID)
+	if err != nil {
 		_ = os.Remove(pidPath)
-		fmt.Printf("keydris: proxy not running (removed stale pidfile, pid=%d)\n", pid)
+		fmt.Printf("keydris: proxy not running (removed stale pidfile, pid=%d)\n", record.PID)
 		return 0
 	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris proxy down: signal pid %d: %v\n", pid, err)
+	if identity != record.Identity {
+		fmt.Fprintf(os.Stderr, "keydris proxy down: pid %d belongs to a different process; refusing to stop it (remove stale %s)\n", record.PID, pidPath)
 		return 1
 	}
 
-	// Wait up to ~3s for a clean exit before removing the pidfile.
+	proc, err := os.FindProcess(record.PID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "keydris proxy down: find pid %d: %v\n", record.PID, err)
+		return 1
+	}
+	if err := stopProcess(proc); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris proxy down: stop pid %d: %v\n", record.PID, err)
+		return 1
+	}
+
+	// Wait up to ~3s for a clean exit. Keep the pidfile when the process does
+	// not stop so a subsequent command can retry rather than reporting success.
 	for i := 0; i < 30; i++ {
-		if proc.Signal(syscall.Signal(0)) != nil {
-			break
+		if current, identityErr := processIdentity(record.PID); identityErr != nil || current != record.Identity {
+			_ = os.Remove(pidPath)
+			fmt.Printf("keydris: proxy stopped (pid=%d)\n", record.PID)
+			return 0
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	_ = os.Remove(pidPath)
-	fmt.Printf("keydris: proxy stopped (pid=%d)\n", pid)
-	return 0
+	fmt.Fprintf(os.Stderr, "keydris proxy down: timed out waiting for pid %d; pidfile retained\n", record.PID)
+	return 1
 }
 
 // runProxyUp starts the brokered egress proxy. It backgrounds itself — no
@@ -218,14 +245,33 @@ func runProxyUp() int {
 	child := exec.Command(exe, "proxy", "up")
 	child.Env = append(os.Environ(), daemonEnv+"=1")
 	child.Stdout, child.Stderr = logFile, logFile
-	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from this terminal/session
+	configureDetachedProcess(child)
 	if err := child.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris proxy up: start: %v\n", err)
 		return 1
 	}
 	pid := child.Process.Pid
 	pidPath := filepath.Join(cfg.DataDir, "proxy.pid")
-	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(pid)+"\n"), 0o600)
+	identity, err := processIdentity(pid)
+	if err != nil {
+		_ = stopProcess(child.Process)
+		_ = child.Wait()
+		fmt.Fprintf(os.Stderr, "keydris proxy up: identify child: %v\n", err)
+		return 1
+	}
+	record, err := json.Marshal(proxyProcessRecord{PID: pid, Identity: identity})
+	if err != nil {
+		_ = stopProcess(child.Process)
+		_ = child.Wait()
+		fmt.Fprintf(os.Stderr, "keydris proxy up: encode pidfile: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(pidPath, append(record, '\n'), 0o600); err != nil {
+		_ = stopProcess(child.Process)
+		_ = child.Wait()
+		fmt.Fprintf(os.Stderr, "keydris proxy up: write pidfile: %v\n", err)
+		return 1
+	}
 	_ = os.Chmod(pidPath, 0o600)
 
 	// Detect an early exit via Wait (reliable, unlike signalling a pid that may
@@ -238,6 +284,7 @@ func runProxyUp() int {
 	for time.Now().Before(deadline) {
 		select {
 		case werr := <-exited:
+			_ = os.Remove(pidPath)
 			fmt.Fprintf(os.Stderr, "keydris proxy up: daemon exited on startup (%s); see %s\n", exitReason(werr), logPath)
 			return 1
 		default:
@@ -254,6 +301,7 @@ func runProxyUp() int {
 	// No listener yet at the deadline: report whether it died or is just slow.
 	select {
 	case werr := <-exited:
+		_ = os.Remove(pidPath)
 		fmt.Fprintf(os.Stderr, "keydris proxy up: daemon exited on startup (%s); see %s\n", exitReason(werr), logPath)
 		return 1
 	default:

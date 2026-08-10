@@ -17,6 +17,7 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
 	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
+	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
 
 // sandboxPlane is the v2 data plane: a TLS-terminating forward proxy that Claude
@@ -179,14 +180,13 @@ func (p *sandboxPlane) buildConnect(conn net.Conn, connectReq *http.Request, br 
 		host = h
 	}
 
-	if p.scope != nil && !p.scope.Managed(target) {
+	sess := p.resolveSession(conn, connectReq)
+	if !p.managesSessionOrigin(sess, "https", host, portForTarget(target, 443)) {
 		p.logf("PASSTHROUGH %s (opaque CONNECT)", target)
 		_ = tunnelCONNECT(conn, br, target)
 		_ = conn.Close()
 		return Flow{}, false
 	}
-
-	sess := p.resolveSession(conn, connectReq)
 
 	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		_ = conn.Close()
@@ -257,8 +257,9 @@ func (p *sandboxPlane) buildPlain(conn net.Conn, req *http.Request, br *bufio.Re
 		return Flow{}, false
 	}
 
+	sess := p.resolveSession(conn, req)
 	f := Flow{dst: host, dstHost: hostOnly(host), conn: conn, req: req, br: br}
-	if p.scope == nil || p.scope.Managed(host) {
+	if p.managesSessionOrigin(sess, "http", hostOnly(host), portForTarget(host, 80)) {
 		if err := applyRequestMetadata(&f, req); err != nil {
 			p.logf("dataplane(sandbox): request metadata for %s: %v", host, err)
 			f.MetadataError = err.Error()
@@ -267,8 +268,31 @@ func (p *sandboxPlane) buildPlain(conn net.Conn, req *http.Request, br *bufio.Re
 	if ap, err := netip.ParseAddrPort(host); err == nil {
 		f.OrigDst = ap
 	}
-	applySession(&f, p.resolveSession(conn, req))
+	applySession(&f, sess)
 	return f, true
+}
+
+func (p *sandboxPlane) managesSessionOrigin(
+	session *attest.Session,
+	scheme, host string,
+	port int,
+) bool {
+	if session != nil && session.Routes != nil {
+		return session.Routes.ManagesOrigin(scheme, host, port)
+	}
+	return p.scope == nil || p.scope.Managed(net.JoinHostPort(host, strconv.Itoa(port)))
+}
+
+func portForTarget(target string, defaultPort int) int {
+	_, portText, err := net.SplitHostPort(target)
+	if err != nil {
+		return defaultPort
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return defaultPort
+	}
+	return port
 }
 
 func hostOnly(dst string) string {
@@ -405,6 +429,7 @@ func applySession(f *Flow, s *attest.Session) {
 	}
 	f.SessionID = s.SPIFFEID
 	f.SVID = s.SVID
+	f.Routes = s.Routes
 }
 
 // handleFromProxyAuth extracts the Keydris session handle from a
@@ -437,6 +462,20 @@ func (p *sandboxPlane) Inject(f Flow, c Credential) error {
 	return injectAndForward(f.conn, f.br, f.req, f.DstString(), c)
 }
 
+func (p *sandboxPlane) InjectMCPActionToken(f Flow, token string) error {
+	defer f.conn.Close()
+	if f.req == nil || f.br == nil {
+		return errNoRequest
+	}
+	if err := injectMCPActionToken(f.req, token); err != nil {
+		return err
+	}
+	if f.upstreamTLS {
+		return forwardUnchangedTLS(f.conn, f.br, f.req, f.DstString(), f.dstHost)
+	}
+	return forwardUnchanged(f.conn, f.br, f.req, f.DstString())
+}
+
 func (p *sandboxPlane) PassThrough(f Flow) error {
 	defer f.conn.Close()
 	if f.req == nil || f.br == nil {
@@ -446,6 +485,14 @@ func (p *sandboxPlane) PassThrough(f Flow) error {
 		return forwardUnchangedTLS(f.conn, f.br, f.req, f.DstString(), f.dstHost)
 	}
 	return forwardUnchanged(f.conn, f.br, f.req, f.DstString())
+}
+
+func (p *sandboxPlane) Respond(
+	f Flow,
+	response runtimecontract.ProviderHTTPResponse,
+) error {
+	defer f.conn.Close()
+	return writeProviderResponse(f.conn, response)
 }
 
 func (p *sandboxPlane) Reject(f Flow, reason string) error {

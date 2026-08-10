@@ -76,6 +76,7 @@ func buildTransparentFlow(conn net.Conn, resolver attest.Resolver, scope *proxys
 				f.Cgroup = attr.Cgroup
 				f.SessionID = attr.SessionID
 				f.SVID = attr.SVID
+				f.Routes = attr.Routes
 			}
 		}
 	}

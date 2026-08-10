@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // CA trust for the agent's sandboxed subprocess tools.
@@ -23,6 +24,12 @@ import (
 // caEnvKeys lists the environment variables the common sandboxed tools read to
 // locate an extra CA bundle. All are set to the Keydris CA path.
 func caEnvKeys() []string {
+	if runtime.GOOS == "windows" {
+		// Replacement-style PEM variables would hide Windows' public root store;
+		// Node's additive variable is safe. Other native tools use the Windows
+		// store and can be covered with `init --trust-store`.
+		return []string{"NODE_EXTRA_CA_CERTS"}
+	}
 	return []string{
 		"NODE_EXTRA_CA_CERTS", // node / npm / claude-code itself
 		"SSL_CERT_FILE",       // openssl, python (certifi-aware builds), many CLIs
@@ -59,11 +66,19 @@ func BuildCABundle(caPath, bundlePath string) error {
 		}
 	}
 	if len(systemRoots) == 0 {
-		return fmt.Errorf("no system PEM root bundle found; set SSL_CERT_FILE to the platform root bundle")
+		if runtime.GOOS != "windows" {
+			return fmt.Errorf("no system PEM root bundle found; set SSL_CERT_FILE to the platform root bundle")
+		}
+		// Windows keeps roots in the certificate store rather than a PEM file.
+		// Keep this file additive for Node (NODE_EXTRA_CA_CERTS) and leave native
+		// tools on the Windows root store.
+		systemRoots = nil
 	}
 
 	bundle := append([]byte(nil), bytes.TrimSpace(systemRoots)...)
-	bundle = append(bundle, '\n')
+	if len(bundle) > 0 {
+		bundle = append(bundle, '\n')
+	}
 	bundle = append(bundle, bytes.TrimSpace(keydrisCA)...)
 	bundle = append(bundle, '\n')
 	if err := os.MkdirAll(filepath.Dir(bundlePath), 0o700); err != nil {

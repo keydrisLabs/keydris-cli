@@ -1,8 +1,8 @@
 # Keydris on Claude Code's sandbox (v2)
 
-This is the design in [plan_v1.md](../plan_v1.md): instead of building a per-OS
-kernel data plane, Keydris rides Claude Code's sandbox as the **custom proxy** it
-documents, plus the per-session identity broker.
+Instead of building a per-OS kernel data plane, Keydris rides Claude Code's
+sandbox as the **custom proxy** it documents, plus the per-session identity
+broker.
 
 ## Why
 
@@ -41,9 +41,11 @@ Claude session  ── Bash subprocess egress (curl/git/npm) ──►  Keydris 
     (with `--strict`, the default) so the sandbox is a hard gate;
   - `sandbox.enableWeakerNetworkIsolation: true` on macOS (required for MITM with
     a custom CA under Seatbelt);
-  - merges any `allowedDomains`;
+  - merges any `sandbox.network.allowedDomains`;
 - merges the `SessionStart`/`SessionEnd` hooks (the internal
-  `keydris __session-start` / `keydris __session-end` entrypoints);
+  `keydris __session-start` / `keydris __session-end` entrypoints) and a
+  `PreToolUse` hook (`keydris __pretool-use`) that gates every shell command
+  against the policy's command rules — see [Command gating](#command-gating);
 - builds an owner-only bundle containing the platform roots plus the Keydris CA,
   then points the agent's subprocess tools at that bundle via the settings `env` block
   (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`,
@@ -52,10 +54,28 @@ Claude session  ── Bash subprocess egress (curl/git/npm) ──►  Keydris 
   the OS trust store (best-effort, may need privileges). Platforms without a
   discoverable PEM root bundle must set `SSL_CERT_FILE` to one before init;
   Keydris fails setup rather than replacing public roots with its private CA.
+  Windows is the exception: its public roots live in the certificate store, so
+  Keydris sets only Node's additive `NODE_EXTRA_CA_CERTS` by default and
+  `--trust-store` installs the CA into the current user's Windows root store.
 
-`SessionStart` mints a per-session SPIFFE JWT-SVID and registers its handle with
-the daemon; `SessionEnd` revokes it. `keydris status` reports whether the
+`SessionStart` mints a per-session runtime session (KIT) and registers its
+handle with the daemon; `SessionEnd` revokes it. If Claude emits another start
+for the same session after resume, clear, or compaction, Keydris revokes the
+old instance before replacing it. `keydris status` reports whether the
 sandbox is still enabled and routed to Keydris (enforcement drift).
+
+## Command gating
+
+The same settings file carries a fourth hook alongside SessionStart/SessionEnd:
+`hooks.PreToolUse` → `keydris __pretool-use` (matcher `Bash`, or
+`Bash|PowerShell` on Windows). Claude Code sends every shell command through it
+before running it; the hook forwards the command to
+`POST /v1/runtime/commands/authorize` with the session's KIT and returns the
+matching `permissionDecision` (`allow` / `ask` / `deny`). It fails closed: any
+error — no active session, control plane unreachable, a timeout — is an
+explicit `deny`, because a crashed or silent hook would otherwise fail *open*.
+`keydris deinit claude-code` removes this hook along with the rest of the
+Keydris configuration.
 
 ## Per-session attribution
 
@@ -79,6 +99,16 @@ no per-session port required. Caveat: the Claude path depends on
 version; re-verify on upgrades. `keydris run` does not depend on it. See
 [attribution.md](attribution.md).
 
+The daemon renews each registered session before its KIT expires. Renewal
+keeps the same attribution token and process owner, atomically replaces the
+live SVID and owner-only hook state, refreshes runtime routes, and makes
+SessionEnd revoke the latest replacement ULID. A session that ends during
+renewal causes the unused replacement to be revoked. For `keydris run`, the
+daemon additionally binds renewal to the wrapped process's PID and creation
+identity and retires an abandoned session after a short grace period. Claude's
+standalone command-hook parent remains advisory because it can be a short-lived
+shell; Claude continues to use its SessionStart/SessionEnd lifecycle unchanged.
+
 ## Managed destination scope
 
 By default every destination is managed, matching the original proxy behavior.
@@ -97,9 +127,9 @@ proxy does not terminate TLS, inspect bodies, call the broker, or mutate
 headers. `keydris proxy scope all` restores the backward-compatible all-managed
 mode.
 
-This scope is separate from Claude's `sandbox.allowedDomains`: the sandbox list
-controls where Claude may connect, while proxy scope controls where Keydris
-governs and injects.
+This scope is separate from Claude's `sandbox.network.allowedDomains`: the
+sandbox list controls where Claude may connect, while proxy scope controls
+where Keydris governs and injects.
 
 ## Coverage and trust model
 
@@ -126,12 +156,12 @@ governs and injects.
 
 ## Try it
 
-Needs a running control plane and a prior `keydris login` (the per-session SVID
-is minted over mTLS). Then:
+Needs a running control plane and an agent id (a UUID created in the Keydris
+console). `init` runs the browser sign-in itself if this device has no valid
+identity bound to that agent yet:
 
 ```bash
-keydris login
-keydris init claude-code <policy-id>
+keydris init claude-code <agent-id>
 keydris proxy up
 claude   # each session's Bash egress is brokered, secretless, and per-session attributed
 ```

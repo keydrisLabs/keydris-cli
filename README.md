@@ -6,7 +6,7 @@ brokered, secretless egress for an **unmodified** agent.
 This repo is the **agent/client side** of Keydris, packaged to install on its
 own. It is the `keydris` binary extracted from the
 [Keydris POC](https://github.com/nocaplabs/keydris): the CLI, the proxy data
-plane, session attribution, and Claude Code integration. The **control plane**
+plane, session attribution, and Claude Code/OpenAI Codex integrations. The **control plane**
 (issuer + broker + grant store) is a separate service the CLI talks to over
 mTLS — see [Pointing at a control plane](#pointing-at-a-control-plane).
 
@@ -26,12 +26,30 @@ curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | KEYDRIS_CHANNEL=
   `KEYDRIS_VERSION` (default `latest`), `KEYDRIS_BASE_URL` (download host).
 - `keydris version` reports the installed build.
 
+**npm distribution** (after the packages are published):
+
+```bash
+npm install --global @keydris/cli
+keydris init
+```
+
+The npm package selects a prebuilt native binary for Windows, macOS, or Linux;
+it does not replace the security-sensitive Go runtime with JavaScript. A global
+installation is recommended for the background proxy. See
+[docs/npm-distribution.md](docs/npm-distribution.md).
+
 **From source** (developers):
 
 ```bash
 make install                 # build + install to /usr/local/bin  (PREFIX=$HOME/.local make install)
 make build && ./bin/keydris status
 go install github.com/keydrisLabs/keydris-cli/cmd/keydris@latest   # once the module is reachable
+```
+
+On Windows, build natively with:
+
+```powershell
+go build -o bin\keydris.exe .\cmd\keydris
 ```
 
 **Cutting a release** (`make dist` cross-compiles darwin/linux × amd64/arm64 with
@@ -41,17 +59,22 @@ vars, manual publish) in [docs/releasing.md](docs/releasing.md).
 
 ## What it does
 
-`keydris` gives a session a fresh **SPIFFE JWT-SVID**, routes the agent's egress
-through a local proxy, and lets the control-plane **broker** inject the real
-upstream credential on the wire on allow. The agent never holds the secret; an
-unmodified client gets a `200` only because the proxy injected it.
+`keydris` gives a session a fresh cryptographic identity, routes the agent's
+egress through a local proxy, and keeps the real upstream credential off the
+agent's machine entirely. For origins the agent's policy governs (GitHub,
+Slack, MCP), the control plane executes the request itself and relays back the
+response — see [Runtime enforcement](#runtime-enforcement). For everything
+else, the older **broker** path injects the real upstream credential on the
+wire on allow: the agent never holds the secret, and an unmodified client gets
+a `200` only because the proxy injected it.
 
-Proxy scope controls which exact origins receive that treatment. In `all` mode
-(the backward-compatible default), every destination is managed. In `selected`
-mode, only configured `host:port` origins are TLS-terminated, authorized, and
-credential-injected; all other HTTPS traffic uses an opaque CONNECT tunnel.
-Selected hostname scopes require the explicit `sandbox`/`proxyenv` planes;
-Linux transparent mode can safely scope only exact IP literals.
+Proxy scope controls which exact origins receive that credential-injecting
+treatment. In `all` mode (the backward-compatible default), every ungoverned
+destination is managed this way. In `selected` mode, only configured
+`host:port` origins are TLS-terminated, authorized, and credential-injected;
+all other HTTPS traffic uses an opaque CONNECT tunnel. Selected hostname
+scopes require the explicit `sandbox`/`proxyenv` planes; Linux transparent
+mode can safely scope only exact IP literals.
 
 **Concurrent sessions are isolated.** Each Claude session gets a distinct
 per-session token (carried in `Proxy-Authorization` via Claude Code's
@@ -69,36 +92,84 @@ configuration is needed. Override with `KEYDRIS_DATAPLANE` only for the others:
   optionally race-free eBPF (`-tags ebpf`). See
   [docs/attribution.md](docs/attribution.md).
 - **`proxyenv`**: kernel-free `HTTP_PROXY` fallback (bypassable; token-attributed).
-  See [docs/distribution.md](docs/distribution.md).
+  See [docs/attribution.md](docs/attribution.md).
+
+## Runtime enforcement
+
+At session start, the SessionStart hook mints a **runtime session** over mTLS
+(`POST /runtime/sessions`, with an `Idempotency-Key`) and gets back a **KIT** —
+a short-lived SPIFFE JWT-SVID bearer token. It then fetches the session's
+**routes** (`GET /v1/runtime/routes`, KIT bearer): the origins the agent's
+policy governs, each tagged with an enforcement mode and the specific
+resources (repos, channels, tools) selected for that agent, addressed by
+stable routing keys. The daemon registers the session — KIT and routes
+included — over its authenticated local socket, and every proxied request is
+matched against those routes before anything reaches the network.
+
+| Enforcement mode | What happens |
+| --- | --- |
+| `provider_executor` | The request (GitHub, Slack) is relayed to the control plane's executor endpoint (`POST /v1/runtime/providers/<provider>/execute`) with the stable resource id resolved from the request — GitHub: `owner/repo` from the path → `github.full_name` (case-insensitive); Slack: the request body's `channel` → `slack.channel_id`. The control plane authorizes and executes upstream with the org credential; the agent never holds it. |
+| `mcp_gateway` | JSON-RPC `tools/call` / `resources/read` calls are relayed through `POST /v1/runtime/mcp/gateway`. |
+| `mcp_kit_reader` | Not part of this CLI build — the daemon fails closed rather than pass governed traffic through unenforced. |
+| origin not governed by any route | Falls back to the legacy broker path (`/agent/authorize`) and the proxy-scope rules described above. |
+
+Every decision the CLI makes here is re-enforced server-side at execution
+time. A repeated SessionStart for the same logical session (Claude
+compaction/resume, a Codex retry) revokes the previous instance first;
+SessionEnd revokes on exit.
 
 ## Quickstart (Claude Code sandbox proxy)
 
-With a control plane reachable (see below):
+With a control plane reachable (see below) and an **agent id** — a UUID an
+operator creates for this integration in the Keydris console, where the
+governing policy is assigned; the CLI never selects or overrides a policy:
 
 ```bash
-# 1. Sign in. The per-session SVID is minted over mTLS with this identity, so
-#    this must happen before any session starts.
-keydris login
+# 1. Configure Claude Code's sandbox: generate the Keydris CA and write the
+#    sandbox block + CA env + SessionStart/SessionEnd/PreToolUse hooks into
+#    ~/.claude/settings.json. If no identity bound to this agent exists yet,
+#    init finishes with a browser sign-in that binds this device to it.
+keydris init claude-code <agent-id>   # add --trust-store to install the CA system-wide
 
-# 2. Configure Claude Code's sandbox for a governance policy: generate the
-#    Keydris CA and write the sandbox block + CA env + per-session SVID hooks
-#    into ~/.claude/settings.json.
-keydris init claude-code <policy-id>   # add --trust-store to install the CA system-wide
-
-# 3. Optional: govern only selected origins; everything else passes unchanged.
+# 2. Optional: govern only selected origins; everything else passes unchanged.
 keydris proxy scope add api.example.com:443
 
-# 4. Start the brokered egress proxy in the background (no `&` needed).
+# 3. Start the brokered egress proxy in the background (no `&` needed).
 keydris proxy up
 
-# 5. Confirm enforcement state and active proxy scope.
+# 4. Confirm enforcement state and active proxy scope.
 keydris status
 
-# 6. Run a real session. Claude Code fires the wired SessionStart hook, which
-#    mints a per-session SPIFFE SVID and registers it; the proxy attributes the
-#    session's egress to that identity, brokered and secretless.
+# 5. Run a real session. Claude Code fires the wired SessionStart hook, which
+#    mints a runtime session (KIT) and registers it; the proxy attributes the
+#    session's egress to that identity, brokered and secretless, and every
+#    Bash command the agent runs is checked against the policy's command rules.
 claude
 ```
+
+Running `keydris init` without arguments opens an interactive setup menu that
+prompts for the same choices (Claude Code or OpenAI Codex, then the agent id).
+Scripts can continue using the explicit commands shown above. `keydris login`
+also works standalone (e.g. to re-authenticate); `init` runs it automatically
+when needed.
+
+## Quickstart (OpenAI Codex)
+
+Codex does not currently expose a reliable end-of-session hook. Keydris
+therefore owns the lifecycle by wrapping the Codex process:
+
+```bash
+keydris init codex <agent-id>        # `init openai` is also accepted; binds via browser sign-in
+keydris proxy scope add api.example.com:443
+keydris proxy up
+keydris codex                        # pass normal Codex arguments after this
+```
+
+The wrapper enables Codex's sandboxed network proxy, chains it through Keydris,
+mints and registers one session before Codex starts, and revokes it when Codex
+exits. Use selected proxy scope so Codex's own model traffic stays an opaque
+tunnel. Launch Codex through `keydris codex`, not directly, when Keydris
+governance is required. See [docs/codex.md](docs/codex.md).
 
 The sandbox data plane is the default, so you never need to set
 `KEYDRIS_DATAPLANE`. Without Claude Code, `keydris run` plays the sandbox's role,
@@ -115,31 +186,75 @@ Bash children), launch the process itself through the proxy:
 keydris run -- claude
 ```
 
+## Command gating
+
+A policy can also carry **command rules** — glob patterns over the full shell
+command line (`git push*` also matches `git push --force`) — with `allow`,
+`require_approval`, or `reject` effects. Each shell command the agent runs is
+sent to `POST /v1/runtime/commands/authorize` with the session's KIT, and the
+decision maps to the harness's own permission verdict:
+
+- **Claude Code**: `keydris init claude-code` wires a `PreToolUse` hook
+  (`keydris __pretool-use`, matcher `Bash` — `Bash|PowerShell` on Windows)
+  into `~/.claude/settings.json`, alongside the SessionStart/SessionEnd hooks.
+- **Codex**: `keydris init codex` writes `~/.codex/hooks.json` with two hooks —
+  `PreToolUse` (`keydris __pretool-use --codex`, deny-only) and
+  `PermissionRequest` (`keydris __permission-request`, which auto-allows
+  policy-allowed commands and stays silent otherwise so approval-required
+  commands land on Codex's interactive prompt). Pair it with
+  `approval_policy = "untrusted"`, and run `/hooks` once inside Codex to trust
+  the new entries. Details: [docs/codex.md](docs/codex.md).
+
+**Fail-closed**: every error path — no active session, control plane
+unreachable, request timeout — produces an explicit deny, never a silent
+allow. `keydris status` reports whether the hooks are wired; `keydris deinit
+claude-code|codex` removes them.
+
 ## Commands
+
+Kept in sync with `usage()` in [internal/cli/cli.go](internal/cli/cli.go):
 
 ```text
 keydris login                      Browser sign-in; stores a local client certificate
+                                     [--email you@example.com] [--no-browser]
 keydris whoami                     Show the locally stored identity
 keydris logout                     Remove the locally stored identity
-keydris init claude-code <policy>  Configure the Claude Code sandbox + CA for a policy id
+keydris init                       Interactive agent setup
+keydris init claude-code <agent>   Configure Claude Code sandbox + CA
                                      [--strict] [--trust-store]
-keydris deinit claude-code         Undo init: remove the Keydris sandbox config + policy id
+keydris init codex <agent>         Configure OpenAI Codex + CA
+                                     [--trust-store]
+keydris deinit claude-code|codex   Undo init: remove the Keydris config
 keydris proxy up                   Start the brokered egress proxy in the background
 keydris proxy down                 Stop the background proxy
 keydris proxy scope add <origin>   Manage only selected host:port origins
 keydris proxy scope remove <origin>
-keydris proxy scope list|all       Inspect scope or restore all-managed mode
+keydris proxy scope list|all
 keydris run -- <cmd...>            Run a command inside a keydris session
+keydris codex [args...]            Run OpenAI Codex inside a keydris session
 keydris status                     Show config + sandbox enforcement state
 keydris logs                       Print and verify the hash-chained evidence ledger
+keydris upgrade                    Download & replace the binary with the latest release
+                                     [--channel stable|dev] [--version <v>] [--no-config]
+keydris version                    Print the version
+keydris help                       Show this help
 ```
+
+`<agent>` is the agent id (a UUID) created for this integration in the Keydris
+console; the policy that governs it is assigned there, not on the command line.
 
 ## Pointing at a control plane
 
 The CLI authorizes against a running **keydris control plane**. Configure it via
-environment, a local `.env` (see [.env.example](.env.example)), or a layered
-`.keydris.toml` (see [.keydris.toml.example](.keydris.toml.example)). Precedence:
-process env > `.env` > `./.keydris.toml` > `~/.keydris.toml` > defaults.
+the process environment or trusted user-level `~/.keydris.toml` (see
+[.keydris.toml.example](.keydris.toml.example)). Precedence is process
+environment > user config > defaults.
+
+Project-local `.env` and `.keydris.toml` files are ignored by default because
+allowing a repository to redirect OAuth, identity, and control-plane endpoints
+would cross a trust boundary. To use project-local configuration intentionally,
+set `KEYDRIS_TRUST_PROJECT_CONFIG=1` in the process environment before invoking
+Keydris; trusted user settings still take precedence.
 
 ```bash
 export KEYDRIS_CONTROL_URL=https://api.keydris.com                  # /identity/sign, /agent/jwks (:443)
@@ -156,8 +271,8 @@ set `KEYDRIS_OIDC_ISSUER` and the OAuth vars (see `.env.example`).
 
 ## Security
 
-This is an extracted POC. Known hardening items (session-socket authentication,
-fail-closed audit, fail-closed identity fallback, proxy SSRF/canonicalization)
+This is an extracted POC. Known hardening items (peer-derived session
+attribution, SVID verification, fail-closed audit, and proxy SSRF protection)
 are tracked in [SECURITY.md](SECURITY.md). Read it before relying on this in any
 adversarial setting.
 

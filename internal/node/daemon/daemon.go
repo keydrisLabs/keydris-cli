@@ -62,6 +62,9 @@ func Run(cfg *config.Config) error {
 	// The daemon authenticates to the control plane over mTLS with the identity
 	// `keydris login` stored. Build it up front so we fail fast (rather than per
 	// flow) when the node has not been logged in.
+	if _, err := login.EnsureFresh(cfg.IdentityDir, cfg.ControlMTLSURL, cfg.MTLSServerCA, 48*time.Hour); err != nil {
+		return fmt.Errorf("renew control-plane mTLS identity: %w", err)
+	}
 	authClient, err := login.HTTPClient(cfg.IdentityDir, cfg.MTLSServerCA, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("control-plane mTLS identity (run `keydris login`): %w", err)
@@ -82,7 +85,11 @@ func Run(cfg *config.Config) error {
 		return fmt.Errorf("open evidence ledger: %w", err)
 	}
 
-	sock, err := sessionsock.Serve(cfg.SessionSocket, sessions, log.Printf)
+	sessionSecret, err := sessionsock.LoadOrCreateSecret(cfg.SessionAuthFile)
+	if err != nil {
+		return fmt.Errorf("session socket auth: %w", err)
+	}
+	sock, err := sessionsock.Serve(cfg.SessionSocket, sessionSecret, sessions, log.Printf)
 	if err != nil {
 		return fmt.Errorf("session socket: %w", err)
 	}
@@ -94,6 +101,8 @@ func Run(cfg *config.Config) error {
 		return err
 	}
 	defer dp.Close()
+	router := newRuntimeRouter(authClient, cfg.ControlMTLSURL)
+	go runSessionRenewalLoop(ctx, cfg, authClient, sessions, log.Printf)
 
 	if usesNetfilter {
 		if err := netfilter.Up(cfg.ProxyPort, cfg.BackendPort, cfg.ProxyUID); err != nil {
@@ -119,7 +128,7 @@ func Run(cfg *config.Config) error {
 	}
 	log.Printf("keydris daemon running (dataplane=%s, policy=%s, scope=%s, control=%s)", cfg.DataPlane, policy, scope.Mode(), cfg.ControlMTLSURL)
 	for flow := range dp.Flows() {
-		go handleFlow(ctx, cfg, authClient, dp, scope, ledger, flow)
+		go handleFlow(ctx, cfg, authClient, router, dp, scope, ledger, flow)
 	}
 	return nil
 }
@@ -175,9 +184,14 @@ func buildDataPlane(cfg *config.Config, sessions *attest.SessionRegistry, scope 
 	}
 }
 
-func handleFlow(ctx context.Context, cfg *config.Config, client *http.Client, dp dataplane.DataPlane, scope *proxyscope.Scope, ledger *evidence.Ledger, flow dataplane.Flow) {
+func handleFlow(ctx context.Context, cfg *config.Config, client *http.Client, router *runtimeRouter, dp dataplane.DataPlane, scope *proxyscope.Scope, ledger *evidence.Ledger, flow dataplane.Flow) {
 	dst := flow.DstString()
 	origin := attributionString(flow)
+	if flow.Routes != nil {
+		if router.handle(ctx, dp, flow) {
+			return
+		}
+	}
 	if !scope.Managed(dst) {
 		log.Printf("PASSTHROUGH %s %s", dst, origin)
 		if err := dp.PassThrough(flow); err != nil {

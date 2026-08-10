@@ -3,6 +3,11 @@
 The CLI ships as **prebuilt static binaries** on S3, served over CloudFront, and
 installed with a `curl … | bash` one-liner. No Go or checkout required by users.
 
+An npm-backed distribution workspace is also prepared under `npm/`, but npm
+publishing is intentionally manual until the organization, license, trusted
+publisher, and code-signing prerequisites are configured. See
+[npm-distribution.md](npm-distribution.md).
+
 ## Distribution at a glance
 
 - **Base URL:** `https://dev.get.keydris.com/keydris-cli` (CloudFront → S3 bucket

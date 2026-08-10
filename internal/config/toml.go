@@ -9,9 +9,11 @@ import (
 
 // loadToml applies a minimal .keydris.toml to the environment. Each `key = val`
 // (optionally under a `[keydris]` table) maps to KEYDRIS_<UPPER(KEY)> and is set
-// only if not already present, so the precedence is:
+// only if not already present. Process environment values always win; the
+// trusted user file is loaded by default, while project files require explicit
+// opt-in.
 //
-//	process env  >  .env  >  ./.keydris.toml  >  ~/.keydris.toml  >  defaults
+//	process env > ~/.keydris.toml > opted-in project files > defaults
 //
 // This is a tiny flat parser (strings/ints, # comments), not full TOML.
 func loadToml(path string) {
@@ -43,12 +45,17 @@ func loadToml(path string) {
 	}
 }
 
-// loadLayeredFiles seeds the environment from .env then the layered
-// .keydris.toml files (cwd first, then home), each only filling unset keys.
+// loadLayeredFiles seeds the environment from trusted user configuration.
+// Project-local configuration can redirect authentication and control-plane
+// traffic, so it is ignored unless the caller explicitly opted in through the
+// process environment before Load was called.
 func loadLayeredFiles() {
-	loadDotEnv(".env")
-	loadToml(".keydris.toml")
+	trustProject := os.Getenv("KEYDRIS_TRUST_PROJECT_CONFIG") == "1"
 	if home, err := os.UserHomeDir(); err == nil {
 		loadToml(filepath.Join(home, ".keydris.toml"))
+	}
+	if trustProject {
+		loadDotEnv(".env")
+		loadToml(".keydris.toml")
 	}
 }

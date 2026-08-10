@@ -1,6 +1,16 @@
 # Build output
 /bin/
 /dist/
+/npm/packages/platform-*/bin/keydris
+/npm/packages/platform-*/bin/keydris.exe
+/npm/.npm-cache/
+/npm/.test-tmp/
+/npm/.install-tmp/
+/npm/.mode-check/
+/npm/.local-pack/
+/npm/.local-test/
+/npm/node_modules/
+/npm/**/*.tgz
 
 # Local configuration (copy from .env.example)
 /.env

@@ -9,25 +9,22 @@ listed for completeness.
 > Threat-model note: the strong guarantee holds only while the OS sandbox
 > (Seatbelt/bubblewrap) or iptables redirect is enabled and routed to the proxy.
 > The `proxyenv` data plane is intentionally bypassable. See
-> [docs/distribution.md](docs/distribution.md).
+> [docs/attribution.md](docs/attribution.md).
 
 ## In this repo
 
-### P0 — Session socket is unauthenticated and world-writable  (high)
+### Session socket residual trust  (medium)
 
-`internal/node/sessionsock/sessionsock.go` creates the registration socket
-world-writable (`os.Chmod(path, 0o666)`) and registers a fully client-supplied
-`{Handle, SPIFFEID, SVID, Blueprint}` with **no peer authentication and no SVID
-verification**. Any local process can bind its own cgroup to a privileged
-identity, or unregister another session.
+The registration socket is owner-only and every message authenticates with a
+random, owner-only per-install secret. This prevents unrelated local users from
+registering or unregistering sessions. Two production hardening steps remain:
 
-Fix:
-
-- `0o600` perms (or daemon-owned dir), not `0o666`.
-- Authenticate the caller with `SO_PEERCRED` (uid/gid/pid).
-- Derive the cgroup `Handle` from the verified peer PID — do not trust the
-  client-claimed handle. Reuse the `/proc`→cgroup logic in `internal/node/attest`.
-- Verify the submitted SVID against the issuer JWKS at registration time.
+- Verify the peer with `SO_PEERCRED` (uid/gid/pid) and, for the transparent
+  plane, derive the cgroup handle from the verified peer PID rather than the
+  client-claimed handle.
+- Verify a submitted SVID against the issuer JWKS at registration time. The
+  current secret proves that the caller can access Keydris user state, not that
+  every message field was independently issued by the control plane.
 
 ### P3 — Proxy egress hardening  (medium)
 

@@ -26,8 +26,11 @@ func TestDeconfigureRemovesKeydrisPreservesUser(t *testing.T) {
 	_ = json.Unmarshal(raw, &cur)
 	cur["model"] = "claude-x"
 	cur["hooks"] = map[string]any{
-		"PreToolUse":   []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "echo hi"}}}},
-		"SessionStart": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "keydris hook session-start"}}}},
+		"PreToolUse": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "echo hi"}}}},
+		"SessionStart": []any{
+			map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "keydris hook session-start"}}},
+			map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "echo keydris is configured"}}},
+		},
 	}
 	b, _ := json.Marshal(cur)
 	_ = os.WriteFile(path, b, 0o644)
@@ -62,8 +65,9 @@ func TestDeconfigureRemovesKeydrisPreservesUser(t *testing.T) {
 	if _, ok := hooks["PreToolUse"]; !ok {
 		t.Errorf("user hook PreToolUse dropped")
 	}
-	if _, ok := hooks["SessionStart"]; ok {
-		t.Errorf("stale keydris SessionStart hook not removed")
+	start, ok := hooks["SessionStart"].([]any)
+	if !ok || len(start) != 1 {
+		t.Errorf("non-Keydris SessionStart hook should be preserved, got %v", hooks["SessionStart"])
 	}
 
 	// Idempotent: a second deinit is a no-op.

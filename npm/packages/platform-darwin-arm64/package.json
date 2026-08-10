@@ -1,0 +1,30 @@
+{
+  "name": "@keydris/cli-darwin-arm64",
+  "version": "0.1.0-next.2",
+  "description": "Keydris native binary for macOS ARM64",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "bin/keydris",
+  "bin": {
+    "keydris-native": "bin/keydris"
+  },
+  "files": [
+    "bin/keydris"
+  ],
+  "scripts": {
+    "prepublishOnly": "node ../../scripts/prepublish-check.mjs"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keydrisLabs/keydris-cli.git",
+    "directory": "npm/packages/platform-darwin-arm64"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

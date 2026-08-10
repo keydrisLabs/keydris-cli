@@ -1,11 +1,11 @@
-//go:build !darwin && !linux
+//go:build !darwin && !linux && !windows
 
 package sandbox
 
 import "fmt"
 
-// installTrustStore is unsupported off macOS/Linux; the env-var layer still
-// applies. Native Windows has no Claude Code sandbox anyway (use WSL2).
+// installTrustStore is unsupported on this platform; the env-var layer still
+// applies.
 func installTrustStore(caPath string) error {
 	return fmt.Errorf("OS trust-store install is not supported on this platform; the CA env vars are set instead (CA at %s)", caPath)
 }

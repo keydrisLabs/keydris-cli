@@ -2,11 +2,14 @@ package dataplane
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"testing"
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
+	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
 
 func reqWithToken(token string) *http.Request {
@@ -48,6 +51,62 @@ func TestMatchSessionTokenAndSoleGate(t *testing.T) {
 	pa := &sandboxPlane{reg: reg, allowSole: true}
 	if s := pa.matchSession(reqWithToken("")); s != nil {
 		t.Errorf("ambiguous tokenless should be nil, got %+v", s)
+	}
+}
+
+func TestRoutesOriginOverridesLegacyManualScope(t *testing.T) {
+	legacy, err := proxyscope.New(
+		proxyscope.ModeSelected,
+		[]string{"legacy.example:443"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := "keydris_action_unsupported"
+	routes := runtimecontract.RuntimeRoutes{
+		SchemaVersion:  1,
+		OrganizationID: "11111111-1111-4111-8111-111111111111",
+		Agent: runtimecontract.RoutesAgent{
+			AgentID:     "33333333-3333-4333-8333-333333333333",
+			DisplayName: "Test agent",
+		},
+		Policy: &runtimecontract.RoutesPolicy{
+			PolicyID:        "55555555-5555-4555-8555-555555555555",
+			PolicyVersionID: "66666666-6666-4666-8666-666666666666",
+			PolicyHash:      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		Routes: []runtimecontract.RuntimeRoute{
+			{
+				RouteID:          "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				DisplayName:      "Managed provider",
+				Provider:         "github",
+				ConnectionID:     "77777777-7777-4777-8777-777777777777",
+				EnforcementMode:  "provider_executor",
+				Availability:     "unavailable",
+				StatusReasonCode: &reason,
+				Matchers: []runtimecontract.RouteMatcher{
+					{
+						MatcherType: "http.origin",
+						Attributes:  json.RawMessage(`{"scheme":"https","host":"api.github.com","port":443,"path_prefix":"/"}`),
+					},
+				},
+				RuntimeEndpointPath: "/v1/runtime/providers/github/execute",
+			},
+		},
+	}
+	if err := routes.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	session := &attest.Session{Routes: &routes}
+	proxy := &sandboxPlane{scope: legacy}
+	if !proxy.managesSessionOrigin(session, "https", "api.github.com", 443) {
+		t.Fatal("routes origin was not managed")
+	}
+	if proxy.managesSessionOrigin(session, "https", "legacy.example", 443) {
+		t.Fatal("legacy scope overrode the session routes")
+	}
+	if !proxy.managesSessionOrigin(nil, "https", "legacy.example", 443) {
+		t.Fatal("legacy scope was not retained for a pre-routes session")
 	}
 }
 

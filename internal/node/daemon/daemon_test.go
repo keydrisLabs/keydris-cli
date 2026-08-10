@@ -15,12 +15,16 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/evidence"
 	"github.com/keydrisLabs/keydris-cli/internal/node/dataplane"
 	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
+	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
 
 type fakeDataPlane struct {
-	injected      bool
-	passedThrough bool
-	rejected      bool
+	injected         bool
+	passedThrough    bool
+	rejected         bool
+	actionToken      string
+	providerResponse *runtimecontract.ProviderHTTPResponse
+	rejectReason     string
 }
 
 func (p *fakeDataPlane) Flows() <-chan dataplane.Flow { return nil }
@@ -29,12 +33,24 @@ func (p *fakeDataPlane) Inject(dataplane.Flow, dataplane.Credential) error {
 	p.injected = true
 	return nil
 }
+func (p *fakeDataPlane) InjectMCPActionToken(_ dataplane.Flow, token string) error {
+	p.actionToken = token
+	return nil
+}
 func (p *fakeDataPlane) PassThrough(dataplane.Flow) error {
 	p.passedThrough = true
 	return nil
 }
-func (p *fakeDataPlane) Reject(dataplane.Flow, string) error {
+func (p *fakeDataPlane) Respond(
+	_ dataplane.Flow,
+	response runtimecontract.ProviderHTTPResponse,
+) error {
+	p.providerResponse = &response
+	return nil
+}
+func (p *fakeDataPlane) Reject(_ dataplane.Flow, reason string) error {
 	p.rejected = true
+	p.rejectReason = reason
 	return nil
 }
 
@@ -68,7 +84,7 @@ func TestHandleFlowAuditsManagedToolWithoutSecrets(t *testing.T) {
 		ToolCall:   "list_users",
 		ToolParams: json.RawMessage(`{"limit":3,"note":"svid-secret"}`),
 	}
-	handleFlow(context.Background(), &config.Config{ControlMTLSURL: server.URL, PolicyID: "test"}, server.Client(), dp, scope, ledger, flow)
+	handleFlow(context.Background(), &config.Config{ControlMTLSURL: server.URL, PolicyID: "test"}, server.Client(), nil, dp, scope, ledger, flow)
 
 	if calls != 1 || !dp.injected || dp.passedThrough || dp.rejected {
 		t.Fatalf("calls=%d injected=%v passed=%v rejected=%v", calls, dp.injected, dp.passedThrough, dp.rejected)
@@ -102,7 +118,7 @@ func TestHandleFlowPassesUnmanagedWithoutBroker(t *testing.T) {
 	}
 	dp := &fakeDataPlane{}
 	flow := dataplane.Flow{OrigDst: netip.MustParseAddrPort("192.0.2.10:443")}
-	handleFlow(context.Background(), &config.Config{ControlMTLSURL: server.URL}, server.Client(), dp, scope, nil, flow)
+	handleFlow(context.Background(), &config.Config{ControlMTLSURL: server.URL}, server.Client(), nil, dp, scope, nil, flow)
 
 	if calls != 0 || !dp.passedThrough || dp.injected || dp.rejected {
 		t.Fatalf("calls=%d injected=%v passed=%v rejected=%v", calls, dp.injected, dp.passedThrough, dp.rejected)
@@ -131,7 +147,7 @@ func TestTwoMCPCallsAuthorizeIndependently(t *testing.T) {
 			ToolParams: json.RawMessage(params),
 		}
 		dp := &fakeDataPlane{}
-		handleFlow(context.Background(), cfg, server.Client(), dp, scope, nil, flow)
+		handleFlow(context.Background(), cfg, server.Client(), nil, dp, scope, nil, flow)
 		if !dp.injected {
 			t.Fatalf("call %d was not forwarded", i+1)
 		}
@@ -166,7 +182,7 @@ func TestHandleFlowFailsClosedWhenAuditAppendFails(t *testing.T) {
 	scope, _ := proxyscope.New(proxyscope.ModeAll, nil)
 	dp := &fakeDataPlane{}
 	flow := dataplane.Flow{OrigDst: netip.MustParseAddrPort("192.0.2.10:443")}
-	handleFlow(context.Background(), &config.Config{ControlMTLSURL: server.URL}, server.Client(), dp, scope, ledger, flow)
+	handleFlow(context.Background(), &config.Config{ControlMTLSURL: server.URL}, server.Client(), nil, dp, scope, ledger, flow)
 	if !dp.rejected || dp.injected {
 		t.Fatalf("audit failure rejected=%v injected=%v", dp.rejected, dp.injected)
 	}
@@ -191,7 +207,7 @@ func TestHandleFlowAuditsMetadataValidationDenial(t *testing.T) {
 		ToolCall:      "POST /mcp",
 		MetadataError: "tool params exceed 1048576 bytes",
 	}
-	handleFlow(context.Background(), &config.Config{ControlMTLSURL: server.URL}, server.Client(), dp, scope, ledger, flow)
+	handleFlow(context.Background(), &config.Config{ControlMTLSURL: server.URL}, server.Client(), nil, dp, scope, ledger, flow)
 	if calls != 0 || !dp.rejected || dp.injected {
 		t.Fatalf("calls=%d rejected=%v injected=%v", calls, dp.rejected, dp.injected)
 	}

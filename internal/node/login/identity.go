@@ -27,9 +27,21 @@ type Identity struct {
 	Email      string `json:"email"`
 	Subject    string `json:"subject"`
 	SPIFFEID   string `json:"spiffe_id"`
+	DeviceID   string `json:"device_id"`
+	AgentID    string `json:"agent_id,omitempty"`
 	NotAfter   string `json:"not_after"`
 	ControlURL string `json:"control_url"`
 	LoggedInAt string `json:"logged_in_at"`
+}
+
+// ExpiresWithin reports whether the certificate is expired or enters the
+// requested renewal window.
+func (id *Identity) ExpiresWithin(window time.Duration) bool {
+	t, err := time.Parse(time.RFC3339, id.NotAfter)
+	if err != nil {
+		return true
+	}
+	return time.Now().Add(window).After(t)
 }
 
 // Expired reports whether the certificate's NotAfter has passed.

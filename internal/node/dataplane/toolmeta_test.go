@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -53,6 +54,14 @@ func TestApplyRequestMetadataPromotesMCPToolCall(t *testing.T) {
 	if string(flow.ToolParams) != `{"limit":3}` {
 		t.Fatalf("ToolParams = %s", flow.ToolParams)
 	}
+	if flow.MCPMethod != "tools/call" || flow.MCPAction == nil ||
+		flow.MCPAction.ActionType != "mcp.tool.call" ||
+		flow.MCPAction.RoutingValue != "list_users" {
+		t.Fatalf("MCP action = %+v, method=%q", flow.MCPAction, flow.MCPMethod)
+	}
+	if string(flow.MCPRequestID) != "7" {
+		t.Fatalf("MCP request ID = %s", flow.MCPRequestID)
+	}
 
 	gotBody, err := io.ReadAll(req.Body)
 	if err != nil {
@@ -80,6 +89,68 @@ func TestApplyRequestMetadataKeepsHTTPFallbackForMCPDiscovery(t *testing.T) {
 	}
 	if string(flow.ToolParams) != body {
 		t.Fatalf("ToolParams = %s", flow.ToolParams)
+	}
+	if flow.MCPMethod != "tools/list" || flow.MCPAction != nil {
+		t.Fatalf("discovery metadata = method %q action %+v", flow.MCPMethod, flow.MCPAction)
+	}
+}
+
+func TestApplyRequestMetadataPromotesMCPResourceRead(t *testing.T) {
+	const body = `{"jsonrpc":"2.0","id":"r1","method":"resources/read","params":{"uri":"file:///report.csv"}}`
+	req, err := http.NewRequest(http.MethodPost, "https://mockmcp.io/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var flow Flow
+	if err := applyRequestMetadata(&flow, req); err != nil {
+		t.Fatal(err)
+	}
+	if flow.MCPAction == nil ||
+		flow.MCPAction.ActionType != "mcp.resource.read" ||
+		flow.MCPAction.RoutingKeyType != "mcp.resource_uri" ||
+		flow.MCPAction.RoutingValue != "file:///report.csv" {
+		t.Fatalf("MCP resource action = %+v", flow.MCPAction)
+	}
+	if string(flow.MCPRequestID) != `"r1"` {
+		t.Fatalf("MCP request ID = %s", flow.MCPRequestID)
+	}
+}
+
+func TestApplyRequestMetadataRejectsDuplicateKeys(t *testing.T) {
+	const body = `{"jsonrpc":"2.0","method":"tools/call","method":"tools/list","params":{}}`
+	req, err := http.NewRequest(http.MethodPost, "https://mockmcp.io/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var flow Flow
+	if err := applyRequestMetadata(&flow, req); err == nil {
+		t.Fatal("duplicate MCP keys were accepted")
+	}
+}
+
+func TestInjectMCPActionTokenPreservesExistingMeta(t *testing.T) {
+	const body = `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"list_users","arguments":{"limit":3},"_meta":{"trace":"keep"}}}`
+	req, err := http.NewRequest(http.MethodPost, "https://mockmcp.io/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if err := injectMCPActionToken(req, "single-use-token"); err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Params struct {
+			Meta map[string]any `json:"_meta"`
+		} `json:"params"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Params.Meta["trace"] != "keep" ||
+		envelope.Params.Meta["keydris/kit_action_token"] != "single-use-token" {
+		t.Fatalf("injected _meta = %#v", envelope.Params.Meta)
 	}
 }
 
