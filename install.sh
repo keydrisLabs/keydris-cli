@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # keydris installer — downloads a prebuilt `keydris` binary. No Go, no checkout.
 #
-#   curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | bash                     # stable
+#   curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | bash                     # stable (zero-config)
 #   curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | KEYDRIS_CHANNEL=dev bash # dev (zero-config)
 #
 # Env:
@@ -53,16 +53,13 @@ echo "==> installing to $BINDIR/keydris"
 $SUDO install -d "$BINDIR"
 $SUDO install -m 0755 "$tmp/$name" "$BINDIR/keydris"
 
-# Dev channel: drop a zero-config ~/.keydris.toml (points the CLI at the dev
-# control plane + IdP) so it works without setting any env vars. Never clobber an
-# existing file.
-if [ "$CHANNEL" = dev ]; then
-  dst="$HOME/.keydris.toml"
-  if [ -e "$dst" ]; then
-    echo "==> $dst already exists; leaving it (delete it to pick up dev defaults)"
-  elif curl -fSL --proto '=https' "$BASE/dev/$VERSION/keydris.toml" -o "$dst" 2>/dev/null; then
-    echo "==> wrote dev config to $dst"
-  fi
+# Create a zero-config ~/.keydris.toml for the installed channel.
+# Never overwrite an existing config.
+dst="$HOME/.keydris.toml"
+if [ -e "$dst" ]; then
+  echo "==> $dst already exists; leaving it (delete it to pick up $CHANNEL defaults)"
+elif curl -fSL --proto '=https' "$verdir/keydris.toml" -o "$dst" 2>/dev/null; then
+  echo "==> wrote $CHANNEL config to $dst"
 fi
 
 echo "==> done: $("$BINDIR/keydris" version 2>/dev/null || echo 'keydris installed')"
