@@ -15,12 +15,6 @@ import (
 	"strings"
 )
 
-// Channel is stamped as "stable" only for tag-triggered releases.
-// It affects client-facing fallback URLs (ControlURL, etc.) only.
-// Local control-plane/backend addresses and DataDir always remain
-// pinned to 127.0.0.1, regardless of Channel.
-var Channel = ""
-
 // Config is the full set of knobs the POC needs. Not every field is used by
 // every binary, but sharing one struct keeps the credential and ports in sync.
 type Config struct {
@@ -209,9 +203,9 @@ func Load() *Config {
 	}
 	return &Config{
 		ControlAddr:     env("KEYDRIS_CONTROL_ADDR", "127.0.0.1:8081"),
-		ControlURL:      envOrChannelDefault("KEYDRIS_CONTROL_URL", "http://127.0.0.1:8081", "https://api.keydris.com"),
+		ControlURL:      env("KEYDRIS_CONTROL_URL", "http://127.0.0.1:8081"),
 		ControlMTLSAddr: env("KEYDRIS_CONTROL_MTLS_ADDR", "127.0.0.1:8443"),
-		ControlMTLSURL:  envOrChannelDefault("KEYDRIS_CONTROL_MTLS_URL", "https://127.0.0.1:8443", "https://api.keydris.com:8443"),
+		ControlMTLSURL:  env("KEYDRIS_CONTROL_MTLS_URL", "https://127.0.0.1:8443"),
 		MTLSServerCA:    env("KEYDRIS_MTLS_SERVER_CA", ""),
 		ProxyPort:       envInt("KEYDRIS_PROXY_PORT", 15001),
 		// Sandbox (the Claude Code custom proxy) is the default plane, so users
@@ -257,13 +251,13 @@ func Load() *Config {
 		IdentityDir:        env("KEYDRIS_IDENTITY_DIR", filepath.Join(dataDir, "identity")),
 		IdentityTTLSeconds: envInt("KEYDRIS_IDENTITY_TTL_SECONDS", 43200),
 
-		OIDCIssuer:        envOrChannelDefault("KEYDRIS_OIDC_ISSUER", "", "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_ft2ArrhS7"),
+		OIDCIssuer:        env("KEYDRIS_OIDC_ISSUER", ""),
 		OAuthAuthorizeURL: authorizeURL,
 		OAuthTokenURL:     tokenURL,
-		OAuthClientID:     envOrChannelDefault("KEYDRIS_OAUTH_CLIENT_ID", "", "6rll39d1l5hq1irjag9o4cu8m2"),
+		OAuthClientID:     env("KEYDRIS_OAUTH_CLIENT_ID", ""),
 		OAuthClientSecret: env("KEYDRIS_OAUTH_CLIENT_SECRET", ""),
 		OAuthScopes:       env("KEYDRIS_OAUTH_SCOPES", "openid email"),
-		OAuthRedirectURL:  envOrChannelDefault("KEYDRIS_OAUTH_REDIRECT_URL", "http://localhost:3000/callback", "https://app.keydris.com/auth/callback"),
+		OAuthRedirectURL:  env("KEYDRIS_OAUTH_REDIRECT_URL", "http://localhost:3000/callback"),
 	}
 }
 
@@ -284,7 +278,7 @@ func defaultDataDir() string {
 func cognitoEndpoints() (authorizeURL, tokenURL string) {
 	authorizeURL = env("KEYDRIS_OAUTH_AUTHORIZE_URL", "")
 	tokenURL = env("KEYDRIS_OAUTH_TOKEN_URL", "")
-	domain := envOrChannelDefault("KEYDRIS_COGNITO_DOMAIN", "", "https://auth.keydris.com")
+	domain := env("KEYDRIS_COGNITO_DOMAIN", "")
 	if domain != "" {
 		base := domain
 		if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
@@ -454,15 +448,6 @@ func env(key, def string) string {
 		return v
 	}
 	return def
-}
-
-// envOrChannelDefault is like env, but substitutes stableDefault for the
-// fallback when this binary was built for the stable channel (see Channel).
-func envOrChannelDefault(key, pocDefault, stableDefault string) string {
-	if Channel == "stable" {
-		pocDefault = stableDefault
-	}
-	return env(key, pocDefault)
 }
 
 func envInt(key string, def int) int {

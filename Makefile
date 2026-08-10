@@ -4,8 +4,7 @@ DIST ?= dist
 PREFIX ?= /usr/local
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS_EXTRA ?=
-LDFLAGS := -s -w -X github.com/keydrisLabs/keydris-cli/internal/cli.Version=$(VERSION) $(LDFLAGS_EXTRA)
+LDFLAGS := -s -w -X github.com/keydrisLabs/keydris-cli/internal/cli.Version=$(VERSION)
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
 # Release distribution: which S3 bucket + channel to publish to, and the

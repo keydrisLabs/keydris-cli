@@ -28,15 +28,13 @@ jobs:
           if [ "${{ github.ref_type }}" = tag ]; then
             echo "channel=stable" >> "$GITHUB_OUTPUT"
             echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "ldflags_extra=-X github.com/keydrisLabs/keydris-cli/internal/config.Channel=stable" >> "$GITHUB_OUTPUT"
           else
             echo "channel=dev" >> "$GITHUB_OUTPUT"
             echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
-            echo "ldflags_extra=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build release matrix
-        run: make dist VERSION=${{ steps.meta.outputs.version }} LDFLAGS_EXTRA="${{ steps.meta.outputs.ldflags_extra }}"
+        run: make dist VERSION=${{ steps.meta.outputs.version }}
 
       - name: Verify checksums
         run: cd dist && (command -v sha256sum >/dev/null && sha256sum -c SHA256SUMS || shasum -a 256 -c SHA256SUMS)
