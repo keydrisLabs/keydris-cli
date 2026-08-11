@@ -22,4 +22,4 @@ oidc_issuer        = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_ft2A
 cognito_domain     = "https://auth.keydris.com"
 oauth_client_id    = "6rll39d1l5hq1irjag9o4cu8m2"
 oauth_scopes       = "openid email"
-oauth_redirect_url = "https://app.keydris.com/auth/callback"
+oauth_redirect_url = "http://localhost:3000/callback"
