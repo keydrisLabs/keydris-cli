@@ -48,7 +48,7 @@ func (router *runtimeRouter) handle(
 		return false
 	}
 	if router == nil || router.client == nil {
-		_ = dp.Reject(flow, "runtime enforcement unavailable")
+		rejectRuntime(dp, flow, "runtime enforcement unavailable")
 		return true
 	}
 
@@ -61,40 +61,140 @@ func (router *runtimeRouter) handle(
 	switch len(matches) {
 	case 0:
 		if routes.ManagesOrigin(flow.Scheme(), flow.DstHost(), flow.DstPort()) {
-			_ = dp.Reject(flow, "runtime routes have no route for this path")
-		} else if err := dp.PassThrough(flow); err != nil {
-			log.Printf("runtime passthrough %s: %v", flow.DstString(), err)
+			rejectRuntime(dp, flow, "runtime routes have no route for this path")
+		} else {
+			passThroughRuntime(dp, flow, "unmanaged_origin")
 		}
 		return true
 	case 1:
 	default:
-		_ = dp.Reject(flow, "runtime route is ambiguous")
+		rejectRuntime(dp, flow, "runtime route is ambiguous")
 		return true
 	}
 
 	route := matches[0]
+	log.Printf(
+		"RUNTIME_ROUTE dst=%s method=%s path=%s mcp_method=%q route=%s mode=%s",
+		flow.DstString(),
+		flow.RequestMethod(),
+		flow.RequestPath(),
+		flow.MCPMethod,
+		route.RouteID,
+		route.EnforcementMode,
+	)
 	if route.Availability != "ready" {
 		reason := "runtime route unavailable"
 		if route.StatusReasonCode != nil {
 			reason += ": " + *route.StatusReasonCode
 		}
-		_ = dp.Reject(flow, reason)
+		rejectRuntime(dp, flow, reason)
 		return true
 	}
 
 	switch route.EnforcementMode {
 	case "provider_executor":
+		logRuntimeGovern(flow, route)
 		router.handleProviderExecutor(ctx, dp, flow, route)
 	case "mcp_gateway":
-		router.handleMCPGateway(ctx, dp, flow, route)
+		if reason, ok := mcpPassthroughReason(flow); ok {
+			passThroughRuntime(dp, flow, reason)
+		} else {
+			logRuntimeGovern(flow, route)
+			router.handleMCPGateway(ctx, dp, flow, route)
+		}
 	case "mcp_kit_reader":
 		// The Kit Reader bridge is not part of this CLI build; fail closed
 		// rather than passing governed traffic through unenforced.
-		_ = dp.Reject(flow, "Kit Reader enforcement is not supported by this CLI")
+		rejectRuntime(dp, flow, "Kit Reader enforcement is not supported by this CLI")
 	default:
-		_ = dp.Reject(flow, "runtime enforcement mode is unsupported")
+		rejectRuntime(dp, flow, "runtime enforcement mode is unsupported")
 	}
 	return true
+}
+
+func logRuntimeGovern(
+	flow dataplane.Flow,
+	route runtimecontract.RuntimeRoute,
+) {
+	log.Printf(
+		"RUNTIME_GOVERN dst=%s method=%s path=%s mcp_method=%q route=%s mode=%s",
+		flow.DstString(),
+		flow.RequestMethod(),
+		flow.RequestPath(),
+		flow.MCPMethod,
+		route.RouteID,
+		route.EnforcementMode,
+	)
+}
+
+func mcpPassthroughReason(flow dataplane.Flow) (string, bool) {
+	switch flow.RequestMethod() {
+	case http.MethodGet, http.MethodHead, http.MethodDelete:
+		if flow.MCPMethod == "" {
+			return "mcp_transport", true
+		}
+	}
+
+	switch flow.MCPMethod {
+	case "initialize",
+		"notifications/initialized",
+		"ping",
+		"tools/list",
+		"prompts/list",
+		"prompts/get",
+		"resources/list",
+		"resources/templates/list",
+		"resources/subscribe",
+		"resources/unsubscribe",
+		"completion/complete",
+		"logging/setLevel",
+		"notifications/cancelled",
+		"notifications/progress",
+		"notifications/roots/list_changed":
+		return "mcp_lifecycle", true
+	default:
+		return "", false
+	}
+}
+
+func passThroughRuntime(
+	dp dataplane.DataPlane,
+	flow dataplane.Flow,
+	reason string,
+) {
+	log.Printf(
+		"RUNTIME_PASSTHROUGH dst=%s method=%s path=%s mcp_method=%q reason=%s",
+		flow.DstString(),
+		flow.RequestMethod(),
+		flow.RequestPath(),
+		flow.MCPMethod,
+		reason,
+	)
+	if err := dp.PassThrough(flow); err != nil {
+		log.Printf(
+			"RUNTIME_ERROR dst=%s method=%s path=%s operation=passthrough error=%q",
+			flow.DstString(),
+			flow.RequestMethod(),
+			flow.RequestPath(),
+			err,
+		)
+	}
+}
+
+func rejectRuntime(
+	dp dataplane.DataPlane,
+	flow dataplane.Flow,
+	reason string,
+) {
+	log.Printf(
+		"RUNTIME_DENY dst=%s method=%s path=%s mcp_method=%q reason=%q",
+		flow.DstString(),
+		flow.RequestMethod(),
+		flow.RequestPath(),
+		flow.MCPMethod,
+		reason,
+	)
+	_ = dp.Reject(flow, reason)
 }
 
 func (router *runtimeRouter) handleProviderExecutor(
@@ -104,26 +204,26 @@ func (router *runtimeRouter) handleProviderExecutor(
 	route runtimecontract.RuntimeRoute,
 ) {
 	if flow.MetadataError != "" {
-		_ = dp.Reject(flow, "invalid provider request metadata")
+		rejectRuntime(dp, flow, "invalid provider request metadata")
 		return
 	}
 
 	target, body, err := resolveProviderExecutionTarget(route.Provider, flow)
 	if err != nil {
-		_ = dp.Reject(flow, err.Error())
+		rejectRuntime(dp, flow, err.Error())
 		return
 	}
 
 	resource, found := runtimeResourceForProviderTarget(route, target)
 	if !found || resource.ResourceType != target.resourceType {
-		_ = dp.Reject(
-			flow,
+		rejectRuntime(
+			dp, flow,
 			target.providerLabel+" resource is not selected for this session",
 		)
 		return
 	}
 	if resource.Availability != "ready" {
-		_ = dp.Reject(flow, target.providerLabel+" resource is unavailable")
+		rejectRuntime(dp, flow, target.providerLabel+" resource is unavailable")
 		return
 	}
 
@@ -152,12 +252,12 @@ func (router *runtimeRouter) handleProviderExecutor(
 	)
 	if err != nil {
 		log.Printf("runtime provider execution route=%s: %v", route.RouteID, err)
-		_ = dp.Reject(flow, target.providerLabel+" execution unavailable")
+		rejectRuntime(dp, flow, target.providerLabel+" execution unavailable")
 		return
 	}
 	if result.ExecutionStatus == "denied" {
-		_ = dp.Reject(
-			flow,
+		rejectRuntime(
+			dp, flow,
 			target.providerLabel+" request denied: "+result.Decision.ReasonCode,
 		)
 		return
@@ -167,7 +267,7 @@ func (router *runtimeRouter) handleProviderExecutor(
 		if result.ErrorCode != nil {
 			reason += ": " + *result.ErrorCode
 		}
-		_ = dp.Reject(flow, reason)
+		rejectRuntime(dp, flow, reason)
 		return
 	}
 	if err := dp.Respond(flow, *result.ProviderResponse); err != nil {
@@ -272,7 +372,7 @@ func (router *runtimeRouter) handleMCPGateway(
 	if flow.MetadataError != "" ||
 		flow.MCPAction == nil ||
 		len(flow.MCPRequestID) == 0 {
-		_ = dp.Reject(flow, "invalid MCP gateway request metadata")
+		rejectRuntime(dp, flow, "invalid MCP gateway request metadata")
 		return
 	}
 
@@ -284,17 +384,17 @@ func (router *runtimeRouter) handleMCPGateway(
 	if !found ||
 		resource.ResourceType != action.ResourceType ||
 		resource.ExternalID != action.RoutingValue {
-		_ = dp.Reject(flow, "MCP resource is not selected for this session")
+		rejectRuntime(dp, flow, "MCP resource is not selected for this session")
 		return
 	}
 	if resource.Availability != "ready" {
-		_ = dp.Reject(flow, "MCP resource is unavailable")
+		rejectRuntime(dp, flow, "MCP resource is unavailable")
 		return
 	}
 
 	message, err := mcpGatewayMessage(flow)
 	if err != nil {
-		_ = dp.Reject(flow, "invalid MCP gateway request metadata")
+		rejectRuntime(dp, flow, "invalid MCP gateway request metadata")
 		return
 	}
 	ctx, cancel := context.WithTimeout(parent, runtimeCallTimeout)
@@ -315,12 +415,12 @@ func (router *runtimeRouter) handleMCPGateway(
 	)
 	if err != nil {
 		log.Printf("runtime MCP gateway route=%s: %v", route.RouteID, err)
-		_ = dp.Reject(flow, "MCP gateway unavailable")
+		rejectRuntime(dp, flow, "MCP gateway unavailable")
 		return
 	}
 	if result.ExecutionStatus == "denied" {
-		_ = dp.Reject(
-			flow,
+		rejectRuntime(
+			dp, flow,
 			"MCP request denied: "+result.Decision.ReasonCode,
 		)
 		return
@@ -330,12 +430,12 @@ func (router *runtimeRouter) handleMCPGateway(
 		if result.ErrorCode != nil {
 			reason += ": " + *result.ErrorCode
 		}
-		_ = dp.Reject(flow, reason)
+		rejectRuntime(dp, flow, reason)
 		return
 	}
 	body, err := json.Marshal(result.MCPResponse)
 	if err != nil {
-		_ = dp.Reject(flow, "MCP gateway response encoding failed")
+		rejectRuntime(dp, flow, "MCP gateway response encoding failed")
 		return
 	}
 	if err := dp.Respond(flow, runtimecontract.ProviderHTTPResponse{

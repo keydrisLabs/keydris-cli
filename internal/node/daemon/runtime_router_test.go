@@ -133,6 +133,56 @@ func TestRuntimeRouterRelaysModernMCPGatewayResponse(t *testing.T) {
 	}
 }
 
+func TestRuntimeRouterPassesThroughMCPLifecycleAndDiscovery(t *testing.T) {
+	routes := testMCPGatewayRoutes(t)
+	methods := []string{
+		"initialize",
+		"notifications/initialized",
+		"ping",
+		"tools/list",
+		"prompts/list",
+		"resources/list",
+	}
+
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			dp := &fakeDataPlane{}
+			flow := testRoutesFlow(routes)
+			flow.MCPMethod = method
+			flow.MCPAction = nil
+			flow.MCPRequestID = nil
+
+			handled := newRuntimeRouter(
+				http.DefaultClient,
+				"http://keydris.invalid",
+			).handle(context.Background(), dp, flow)
+
+			if !handled || dp.rejected || !dp.passedThrough ||
+				dp.providerResponse != nil {
+				t.Fatalf(
+					"handled=%v rejected=%v passed=%v response=%+v reason=%q",
+					handled,
+					dp.rejected,
+					dp.passedThrough,
+					dp.providerResponse,
+					dp.rejectReason,
+				)
+			}
+		})
+	}
+}
+
+func TestMCPPassthroughReasonKeepsActionsGoverned(t *testing.T) {
+	for _, method := range []string{"tools/call", "resources/read", "unknown/method"} {
+		t.Run(method, func(t *testing.T) {
+			flow := dataplane.Flow{MCPMethod: method}
+			if reason, ok := mcpPassthroughReason(flow); ok {
+				t.Fatalf("method %q passed through as %q", method, reason)
+			}
+		})
+	}
+}
+
 func TestRuntimeRouterFailsClosedOnKitReaderRoute(t *testing.T) {
 	routes := testKitReaderRoutes(t, "/", "ready", nil)
 	dp := &fakeDataPlane{}
