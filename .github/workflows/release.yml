@@ -10,6 +10,10 @@ permissions:
   contents: read
   id-token: write   # OIDC federation to AWS (no long-lived keys)
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -22,15 +26,26 @@ jobs:
         with:
           go-version: '1.22'
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
       - name: Compute channel + version
         id: meta
         run: |
           if [ "${{ github.ref_type }}" = tag ]; then
             echo "channel=stable" >> "$GITHUB_OUTPUT"
             echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "npm_version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
           else
             echo "channel=dev" >> "$GITHUB_OUTPUT"
             echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+            base_version=$(node -p "require('./npm/packages/cli/package.json').version.split('-')[0]")
+            echo "npm_version=${base_version}-dev.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build release matrix
@@ -38,6 +53,15 @@ jobs:
 
       - name: Verify checksums
         run: cd dist && (command -v sha256sum >/dev/null && sha256sum -c SHA256SUMS || shasum -a 256 -c SHA256SUMS)
+
+      - name: Build and verify npm packages
+        working-directory: npm
+        env:
+          NPM_VERSION: ${{ steps.meta.outputs.npm_version }}
+        run: |
+          npm run version:packages -- "$NPM_VERSION"
+          npm run build:native
+          npm test
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -67,3 +91,34 @@ jobs:
           DIST_ID: ${{ vars.KEYDRIS_CLOUDFRONT_DISTRIBUTION_ID }}
           CHANNEL: ${{ steps.meta.outputs.channel }}
         run: aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/keydris-cli/install.sh" "/keydris-cli/$CHANNEL/latest/*"
+
+      - name: Publish native npm packages
+        working-directory: npm
+        env:
+          NPM_CONFIG_PROVENANCE: 'false'
+          NPM_TAG: ${{ steps.meta.outputs.npm_tag }}
+          NPM_VERSION: ${{ steps.meta.outputs.npm_version }}
+        run: |
+          native_packages=(
+            platform-win32-x64
+            platform-win32-arm64
+            platform-darwin-x64
+            platform-darwin-arm64
+            platform-linux-x64
+            platform-linux-arm64
+          )
+          for package in "${native_packages[@]}"; do
+            npm publish "./packages/$package" --access public --tag "$NPM_TAG"
+          done
+          for package in "${native_packages[@]}"; do
+            name=$(node -p "require('./packages/$package/package.json').name")
+            published=$(npm view "$name@$NPM_VERSION" version)
+            test "$published" = "$NPM_VERSION"
+          done
+
+      - name: Publish npm launcher
+        working-directory: npm
+        env:
+          NPM_CONFIG_PROVENANCE: 'false'
+          NPM_TAG: ${{ steps.meta.outputs.npm_tag }}
+        run: npm publish ./packages/cli --access public --tag "$NPM_TAG"

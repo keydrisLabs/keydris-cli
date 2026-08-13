@@ -3,10 +3,8 @@
 The CLI ships as **prebuilt static binaries** on S3, served over CloudFront, and
 installed with a `curl … | bash` one-liner. No Go or checkout required by users.
 
-An npm-backed distribution workspace is also prepared under `npm/`, but npm
-publishing is intentionally manual until the organization, license, trusted
-publisher, and code-signing prerequisites are configured. See
-[npm-distribution.md](npm-distribution.md).
+The same workflow also publishes the native CLI through the public `@keydris`
+npm packages. See [npm-distribution.md](npm-distribution.md).
 
 ## Distribution at a glance
 
@@ -21,7 +19,7 @@ publisher, and code-signing prerequisites are configured. See
 All artifacts live under the `keydris-cli/` bucket prefix, served at the same
 path on CloudFront:
 
-```
+```text
 keydris-cli/install.sh                                https://dev.get.keydris.com/keydris-cli/install.sh
 keydris-cli/<channel>/<version>/keydris-<os>-<arch>    …/keydris-cli/<channel>/<version>/keydris-<os>-<arch>
 keydris-cli/<channel>/<version>/SHA256SUMS             …/keydris-cli/<channel>/<version>/SHA256SUMS
@@ -40,13 +38,15 @@ and `/keydris-cli/<channel>/latest/*` on CloudFront.
 
 [.github/workflows/release.yml](../.github/workflows/release.yml) publishes on:
 
-| Trigger | Channel | Version |
+| Trigger | S3 channel/version | npm version/dist-tag |
 | --- | --- | --- |
-| push tag `v*` | `stable` | the tag (e.g. `v0.1.0`) |
-| push to `main` | `dev` | `git describe` (commit-derived) |
+| push tag `v*` | `stable`, the tag (e.g. `v0.1.0`) | tag without `v`, `latest` |
+| push to `main` | `dev`, `git describe` | `<base>-dev.<run-id>.<attempt>`, `next` |
 
-It builds the matrix, verifies checksums, then syncs to S3 and invalidates
-CloudFront, authenticating to AWS via GitHub OIDC (no static keys).
+It builds and verifies both release formats, syncs to S3, invalidates
+CloudFront, publishes all six native npm packages, verifies their registry
+visibility, and publishes `@keydris/cli` last. AWS and npm both authenticate via
+GitHub OIDC; no static publishing keys are stored.
 
 **Required repo settings** (Settings → Secrets and variables → Actions):
 
@@ -56,6 +56,11 @@ CloudFront, authenticating to AWS via GitHub OIDC (no static keys).
 | Variable | `KEYDRIS_RELEASE_BUCKET` | `keydris-cli-artifacts-dev` |
 | Variable | `KEYDRIS_CLOUDFRONT_DISTRIBUTION_ID` | `E24CJKXKFGBX5Z` |
 | Variable | `AWS_REGION` | the bucket's region (e.g. `us-east-1`) |
+
+On npmjs.com, configure `keydrisLabs/keydris-cli` and workflow filename
+`release.yml` as a trusted publisher for each of the seven `@keydris` packages.
+Enable the `npm publish` action. The repository is private, so CI disables npm
+provenance while retaining OIDC authentication.
 
 To cut a stable release:
 

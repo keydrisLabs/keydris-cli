@@ -76,12 +76,18 @@ Generated executables and test/cache directories are ignored by Git.
 
 ## Version preparation
 
-Checked-in manifests use `0.0.0-development` and must not be published.
-The prepublish guard rejects that placeholder and also rejects `UNLICENSED`
-manifests. All seven packages are `Apache-2.0`; the text lives in the repository
-root [LICENSE](../LICENSE) and is deliberately not copied into the package
-directories, because npm would then add it to every tarball and break the exact
-file-list assertion in `pack-check.mjs`.
+The checked-in launcher version supplies the base version for development
+publishes. The release workflow rewrites all seven manifests before building:
+
+- pushes to `main` publish `<base>-dev.<run-id>.<attempt>` under the `next`
+  dist-tag;
+- tags such as `v0.2.0` publish `0.2.0` under the `latest` dist-tag.
+
+The prepublish guard rejects `0.0.0-development`, invalid SemVer, version
+mismatches, and `UNLICENSED` manifests. All seven packages are `Apache-2.0`; the
+text lives in the repository root [LICENSE](../LICENSE) and is deliberately not
+copied into the package directories, because npm would then add it to every
+tarball and break the exact file-list assertion in `pack-check.mjs`.
 
 ```bash
 cd npm
@@ -95,22 +101,14 @@ updates every manifest plus the launcher's exact optional dependencies.
 
 ## Publishing order
 
-Publishing is intentionally not automated yet. When ready:
+The `release.yml` GitHub Actions workflow builds and verifies all npm artifacts,
+publishes the six native packages, confirms that each native version is visible,
+and publishes `@keydris/cli` last. Publishing the launcher last prevents npm
+clients from observing a launcher whose exact native dependencies are missing.
 
-1. Create or confirm control of the `@keydris` npm organization.
-2. Sign Windows executables and sign/notarize macOS executables.
-3. Prepare a real version, build, and run all verification.
-4. Publish all six native packages with a prerelease dist-tag such as `next`.
-5. Confirm every native version is visible in the registry.
-6. Publish `@keydris/cli` last, with the same dist-tag.
-7. Configure npm trusted publishing for each of the seven packages.
-8. Promote to `latest` with `npm dist-tag add` once the prerelease is proven.
-
-Trusted publishing cannot come first. npm only lets a trusted publisher be
-attached to a package that already exists in the registry, so the first publish
-of each package must authenticate with a granular access token. Trusted
-publishing itself works fine from a private repository; only provenance does
-not.
+Each of the seven existing npm packages must configure this repository and
+`.github/workflows/release.yml` as an npm trusted publisher with `npm publish`
+enabled. The workflow uses GitHub OIDC and stores no npm token.
 
 Provenance is deliberately **not** enabled. npm generates attestations only for
 packages built from a **public** repository, regardless of whether the package
@@ -120,7 +118,7 @@ the repository is ever opened up, restore `"provenance": true` in all seven
 manifests — or simply rely on trusted publishing, which attests by default
 without the flag.
 
-Example commands after those prerequisites are complete:
+Manual publishing remains available for recovery or bootstrap:
 
 ```bash
 cd npm
@@ -135,8 +133,9 @@ npm publish ./packages/cli --access public --tag next
 ```
 
 npm versions are immutable. If a release is only partially published, fix the
-problem and use a new prerelease version rather than attempting to reuse the
-same version.
+problem and push a new commit to generate a new development prerelease instead
+of attempting to reuse the same version. A failed tagged release requires a new
+SemVer tag.
 
 ## Upgrades
 
