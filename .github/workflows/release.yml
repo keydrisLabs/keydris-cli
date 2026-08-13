@@ -119,8 +119,19 @@ jobs:
           done
           for package in "${native_packages[@]}"; do
             name=$(node -p "require('./packages/$package/package.json').name")
-            published=$(npm view "$name@$NPM_VERSION" version)
-            test "$published" = "$NPM_VERSION"
+            published=
+            for attempt in {1..12}; do
+              published=$(npm view "$name@$NPM_VERSION" version 2>/dev/null || true)
+              if [ "$published" = "$NPM_VERSION" ]; then
+                break
+              fi
+              echo "Waiting for $name@$NPM_VERSION to become visible ($attempt/12)"
+              sleep 5
+            done
+            if [ "$published" != "$NPM_VERSION" ]; then
+              echo "::error::$name@$NPM_VERSION was published but is not visible in the registry"
+              exit 1
+            fi
           done
 
       - name: Publish npm launcher
