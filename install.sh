@@ -9,6 +9,7 @@
 #   KEYDRIS_CHANNEL  stable (default) | dev
 #   KEYDRIS_VERSION  version to install (default: latest)
 #   KEYDRIS_BASE_URL base download URL (default: https://get.keydris.dev/keydris-cli)
+#   KEYDRIS_NO_CONFIG=1  keep an existing ~/.keydris.toml instead of overwriting it
 set -euo pipefail
 
 PREFIX="${PREFIX:-/usr/local}"
@@ -53,13 +54,22 @@ echo "==> installing to $BINDIR/keydris"
 $SUDO install -d "$BINDIR"
 $SUDO install -m 0755 "$tmp/$name" "$BINDIR/keydris"
 
-# Create a zero-config ~/.keydris.toml for the installed channel.
-# Never overwrite an existing config.
+# Install channel config, replacing the existing one. Backup is saved as ~/.keydris.toml.bak.
+# Set KEYDRIS_NO_CONFIG=1 to keep the existing config.
 dst="$HOME/.keydris.toml"
-if [ -e "$dst" ]; then
-  echo "==> $dst already exists; leaving it (delete it to pick up $CHANNEL defaults)"
-elif curl -fSL --proto '=https' "$verdir/keydris.toml" -o "$dst" 2>/dev/null; then
-  echo "==> wrote $CHANNEL config to $dst"
+if [ "${KEYDRIS_NO_CONFIG:-0}" = "1" ]; then
+  echo "==> KEYDRIS_NO_CONFIG=1; leaving $dst unchanged"
+elif curl -fSL --proto '=https' "$verdir/keydris.toml" -o "$tmp/keydris.toml" 2>/dev/null; then
+  if [ -e "$dst" ] && cmp -s "$tmp/keydris.toml" "$dst"; then
+    echo "==> $CHANNEL config already up to date at $dst"
+  else
+    if [ -e "$dst" ]; then
+      cp -p "$dst" "$dst.bak"
+      echo "==> backed up existing config to $dst.bak"
+    fi
+    install -m 0644 "$tmp/keydris.toml" "$dst"
+    echo "==> wrote $CHANNEL config to $dst"
+  fi
 fi
 
 echo "==> done: $("$BINDIR/keydris" version 2>/dev/null || echo 'keydris installed')"
