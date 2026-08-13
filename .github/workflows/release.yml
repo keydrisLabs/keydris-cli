@@ -29,8 +29,14 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
+
+      - name: Verify npm trusted-publishing runtime
+        run: |
+          node --version
+          npm_version=$(npm --version)
+          echo "npm $npm_version"
+          node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number); if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) process.exit(1)' "$npm_version"
 
       - name: Compute channel + version
         id: meta
@@ -95,6 +101,7 @@ jobs:
       - name: Publish native npm packages
         working-directory: npm
         env:
+          NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/'
           NPM_CONFIG_PROVENANCE: 'false'
           NPM_TAG: ${{ steps.meta.outputs.npm_tag }}
           NPM_VERSION: ${{ steps.meta.outputs.npm_version }}
@@ -119,6 +126,7 @@ jobs:
       - name: Publish npm launcher
         working-directory: npm
         env:
+          NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/'
           NPM_CONFIG_PROVENANCE: 'false'
           NPM_TAG: ${{ steps.meta.outputs.npm_tag }}
         run: npm publish ./packages/cli --access public --tag "$NPM_TAG"
