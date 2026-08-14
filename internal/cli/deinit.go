@@ -65,12 +65,16 @@ func runDeinit(args []string) int {
 		fmt.Fprintf(os.Stderr, "keydris deinit: clear agent id: %v\n", err)
 		return 1
 	}
+	if err := config.RemoveManagedScope(cfg.DataDir); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris deinit: clear proxy scope: %v\n", err)
+		return 1
+	}
 
 	if changed {
 		fmt.Printf("keydris: removed Keydris config from %s\n", configPath)
 	} else {
 		fmt.Printf("keydris: no Keydris config in %s (nothing to remove)\n", configPath)
 	}
-	fmt.Printf("  cleared agent and legacy policy ids; left the Keydris CA at %s in place\n", cfg.CAPath)
+	fmt.Printf("  cleared agent id, legacy policy id and the detected proxy scope; left the Keydris CA at %s in place\n", cfg.CAPath)
 	return 0
 }

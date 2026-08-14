@@ -44,88 +44,69 @@ func runProxy(args []string) int {
 	}
 }
 
-func runProxyScope(args []string) int {
-	const usage = "usage: keydris proxy scope add <origin>|remove <origin>|list|all"
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, usage)
-		return 1
-	}
-	cfg := config.Load()
+type proxyScopeAction int
 
-	switch args[0] {
-	case "list":
-		if cfg.ManagedScopeError != nil {
-			fmt.Fprintf(os.Stderr, "keydris proxy scope: %v\n", cfg.ManagedScopeError)
-			return 1
-		}
-		scope, err := proxyscope.New(cfg.ManagedMode, cfg.ManagedDestinations)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "keydris proxy scope: %v\n", err)
-			return 1
-		}
-		fmt.Printf("mode: %s\n", scope.Mode())
-		for _, dst := range scope.Destinations() {
-			fmt.Printf("  %s\n", dst)
-		}
-		return 0
-	case "all":
-		if len(args) != 1 {
-			fmt.Fprintln(os.Stderr, usage)
-			return 1
-		}
-		if err := config.SaveManagedScope(cfg.DataDir, proxyscope.ModeAll, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "keydris proxy scope: %v\n", err)
-			return 1
-		}
-		fmt.Println("keydris: all destinations are managed; restart the proxy to apply")
-		return 0
-	case "add", "remove":
-		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, usage)
-			return 1
-		}
-		return updateProxyScope(cfg, args[0], args[1])
-	default:
-		fmt.Fprintln(os.Stderr, usage)
-		return 1
+const (
+	proxyScopeUsage proxyScopeAction = iota
+	proxyScopeList
+	// proxyScopeRetired now explains that scope is policy-derived.
+	proxyScopeRetired
+)
+
+// classifyProxyScopeArgs routes scope commands and identifies retired subcommands.
+func classifyProxyScopeArgs(args []string) (proxyScopeAction, string) {
+	if len(args) == 0 {
+		return proxyScopeUsage, ""
 	}
+	switch args[0] {
+	case "add", "remove", "all":
+		return proxyScopeRetired, args[0]
+	case "list":
+		if len(args) == 1 {
+			return proxyScopeList, "list"
+		}
+	}
+	return proxyScopeUsage, args[0]
 }
 
-func updateProxyScope(cfg *config.Config, action, raw string) int {
-	dst, err := proxyscope.Normalize(raw)
+// runProxyScope shows the policy-derived proxy scope; it is refreshed on each session start.
+func runProxyScope(args []string) int {
+	switch action, subcommand := classifyProxyScopeArgs(args); action {
+	case proxyScopeList:
+	case proxyScopeRetired:
+		fmt.Fprintf(os.Stderr,
+			"keydris proxy scope: %q was removed; scope is detected from the agent's policy\n", subcommand)
+		fmt.Fprintln(os.Stderr,
+			"  run `keydris init <target> <agent-id>` to re-detect it, or `keydris proxy scope list` to view it")
+		return 1
+	default:
+		fmt.Fprintln(os.Stderr, "usage: keydris proxy scope list")
+		return 1
+	}
+
+	cfg := config.Load()
+	if cfg.ManagedScopeError != nil {
+		fmt.Fprintf(os.Stderr, "keydris proxy scope: %v\n", cfg.ManagedScopeError)
+		return 1
+	}
+	scope, err := proxyscope.New(cfg.ManagedMode, cfg.ManagedDestinations)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris proxy scope: %v\n", err)
 		return 1
 	}
+
 	state, err := config.ReadManagedScope(cfg.DataDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "keydris proxy scope: %v\n", err)
-		return 1
-	}
-	if action == "remove" && state.Mode == proxyscope.ModeAll {
-		fmt.Fprintln(os.Stderr, "keydris proxy scope: cannot remove one destination in all mode; add a destination to enter selected mode")
-		return 1
-	}
-	destinations := make(map[string]struct{}, len(state.Destinations)+1)
-	if state.Mode == proxyscope.ModeSelected {
-		for _, existing := range state.Destinations {
-			destinations[existing] = struct{}{}
-		}
-	}
-	if action == "add" {
-		destinations[dst] = struct{}{}
+	if err == nil && state.Source == config.ManagedScopeSourcePolicy {
+		fmt.Printf("mode: %s (detected from policy)\n", scope.Mode())
 	} else {
-		delete(destinations, dst)
+		fmt.Printf("mode: %s\n", scope.Mode())
 	}
-	list := make([]string, 0, len(destinations))
-	for existing := range destinations {
-		list = append(list, existing)
+	for _, dst := range scope.Destinations() {
+		fmt.Printf("  %s\n", dst)
 	}
-	if err := config.SaveManagedScope(cfg.DataDir, proxyscope.ModeSelected, list); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris proxy scope: %v\n", err)
-		return 1
+	if scope.Mode() == proxyscope.ModeAll {
+		fmt.Println("  (policy scope not detected yet — run `keydris init <target> <agent-id>`)")
 	}
-	fmt.Printf("keydris: proxy scope %s %s; restart the proxy to apply\n", action, dst)
 	return 0
 }
 
