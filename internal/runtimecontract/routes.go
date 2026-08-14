@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -296,6 +299,25 @@ func (routes RuntimeRoutes) ManagesOrigin(scheme, host string, port int) bool {
 		}
 	}
 	return false
+}
+
+// ManagedOrigins returns the governed origins as sorted, deduplicated
+// host:port. Origin-only by design: TLS must be terminated for the whole
+// origin before a path is visible, so path prefixes stay in RoutesFor.
+func (routes RuntimeRoutes) ManagedOrigins() []string {
+	seen := make(map[string]struct{})
+	for _, route := range routes.Routes {
+		for _, origin := range route.origins {
+			// Validate already lowercased the host and bounded the port.
+			seen[net.JoinHostPort(origin.Host, strconv.Itoa(origin.Port))] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for origin := range seen {
+		out = append(out, origin)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func pathHasPrefix(path, prefix string) bool {

@@ -69,12 +69,23 @@ wire on allow: the agent never holds the secret, and an unmodified client gets
 a `200` only because the proxy injected it.
 
 Proxy scope controls which exact origins receive that credential-injecting
-treatment. In `all` mode (the backward-compatible default), every ungoverned
-destination is managed this way. In `selected` mode, only configured
-`host:port` origins are TLS-terminated, authorized, and credential-injected;
-all other HTTPS traffic uses an opaque CONNECT tunnel. Selected hostname
-scopes require the explicit `sandbox`/`proxyenv` planes; Linux transparent
-mode can safely scope only exact IP literals.
+treatment, and **you never configure it by hand**. `keydris init` reads the
+origins the agent's policy governs and persists them as the effective scope;
+every session start refreshes them, so a policy change lands without a
+re-init. Only those `host:port` origins are TLS-terminated, authorized, and
+credential-injected — all other HTTPS traffic uses an opaque CONNECT tunnel.
+Inspect the result with `keydris proxy scope list`.
+
+Scope is deliberately origin-only, even though a policy route can also narrow
+a path prefix: the proxy must terminate TLS for the whole origin before it can
+see a path at all. Per-path enforcement still happens per request; scope only
+decides what gets inspected.
+
+If scope was never detected (a fresh install, or an `init` that could not
+reach the control plane), Keydris falls back to `all` mode and manages every
+ungoverned destination — the backward-compatible default. Hostname scopes
+require the `sandbox`/`proxyenv` planes; Linux transparent mode can safely
+scope only exact IP literals.
 
 **Concurrent sessions are isolated.** Each Claude session gets a distinct
 per-session token (carried in `Proxy-Authorization` via Claude Code's
@@ -128,19 +139,18 @@ governing policy is assigned; the CLI never selects or overrides a policy:
 # 1. Configure Claude Code's sandbox: generate the Keydris CA and write the
 #    sandbox block + CA env + SessionStart/SessionEnd/PreToolUse hooks into
 #    ~/.claude/settings.json. If no identity bound to this agent exists yet,
-#    init finishes with a browser sign-in that binds this device to it.
+#    init finishes with a browser sign-in that binds this device to it. It
+#    then detects the origins this agent's policy governs and prints them —
+#    there is no scope to configure by hand.
 keydris init claude-code <agent-id>   # add --trust-store to install the CA system-wide
 
-# 2. Optional: govern only selected origins; everything else passes unchanged.
-keydris proxy scope add api.example.com:443
-
-# 3. Start the brokered egress proxy in the background (no `&` needed).
+# 2. Start the brokered egress proxy in the background (no `&` needed).
 keydris proxy up
 
-# 4. Confirm enforcement state and active proxy scope.
+# 3. Confirm enforcement state and the detected proxy scope.
 keydris status
 
-# 5. Run a real session. Claude Code fires the wired SessionStart hook, which
+# 4. Run a real session. Claude Code fires the wired SessionStart hook, which
 #    mints a runtime session (KIT) and registers it; the proxy attributes the
 #    session's egress to that identity, brokered and secretless, and every
 #    Bash command the agent runs is checked against the policy's command rules.
@@ -160,15 +170,15 @@ therefore owns the lifecycle by wrapping the Codex process:
 
 ```bash
 keydris init codex <agent-id>        # `init openai` is also accepted; binds via browser sign-in
-keydris proxy scope add api.example.com:443
 keydris proxy up
 keydris codex                        # pass normal Codex arguments after this
 ```
 
 The wrapper enables Codex's sandboxed network proxy, chains it through Keydris,
 mints and registers one session before Codex starts, and revokes it when Codex
-exits. Use selected proxy scope so Codex's own model traffic stays an opaque
-tunnel. Launch Codex through `keydris codex`, not directly, when Keydris
+exits. Because scope is detected from the policy, Codex's own model traffic
+stays an opaque tunnel unless the policy governs it. Launch Codex through
+`keydris codex`, not directly, when Keydris
 governance is required. See [docs/codex.md](docs/codex.md).
 
 The sandbox data plane is the default, so you never need to set
@@ -227,9 +237,7 @@ keydris init codex <agent>         Configure OpenAI Codex + CA
 keydris deinit claude-code|codex   Undo init: remove the Keydris config
 keydris proxy up                   Start the brokered egress proxy in the background
 keydris proxy down                 Stop the background proxy
-keydris proxy scope add <origin>   Manage only selected host:port origins
-keydris proxy scope remove <origin>
-keydris proxy scope list|all
+keydris proxy scope list           Show the origins detected from the agent's policy
 keydris run -- <cmd...>            Run a command inside a keydris session
 keydris codex [args...]            Run OpenAI Codex inside a keydris session
 keydris status                     Show config + sandbox enforcement state

@@ -5,7 +5,6 @@ Keydris supports the OpenAI Codex CLI through a lifecycle-owning wrapper:
 ```bash
 keydris login
 keydris init codex <agent-id>
-keydris proxy scope add api.example.com:443
 keydris proxy up
 keydris codex [normal Codex arguments...]
 ```
@@ -31,9 +30,10 @@ also registers Codex's PID plus its OS process-creation identity; after an
 abnormal wrapper/process exit, the daemon withholds renewal and retires the
 session after a short grace period without being fooled by PID reuse.
 
-Use selected Keydris proxy scope for the APIs you intend to govern. Unlisted
-traffic, including Codex's own model connection, then remains an opaque CONNECT
-tunnel and keeps its original credentials.
+`keydris init codex` detects the proxy scope from the agent's policy, so only
+the APIs that policy governs are inspected. Everything else, including Codex's
+own model connection, remains an opaque CONNECT tunnel and keeps its original
+credentials.
 
 Always launch through `keydris codex` when Keydris governance is required.
 Starting `codex` directly does not create a Keydris session.

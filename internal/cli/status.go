@@ -11,6 +11,7 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/config"
 	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
+	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
 )
 
 func runStatus() int {
@@ -27,18 +28,7 @@ func runStatus() int {
 		fmt.Printf("legacy policy: %s\n", cfg.PolicyID)
 	}
 	fmt.Printf("proxy port:   %d\n", cfg.ProxyPort)
-	if cfg.ManagedScopeError != nil {
-		fmt.Printf("proxy scope:  INVALID (%v)\n", cfg.ManagedScopeError)
-	} else {
-		fmt.Printf("proxy scope:  %s", cfg.ManagedMode)
-		if cfg.ManagedMode == "selected" {
-			fmt.Printf(" (%d destinations)", len(cfg.ManagedDestinations))
-		}
-		fmt.Println()
-		for _, dst := range cfg.ManagedDestinations {
-			fmt.Printf("  managed:    %s\n", dst)
-		}
-	}
+	reportProxyScope(cfg)
 	fmt.Printf("backend:      %s (dport %d)\n", cfg.BackendAddr, cfg.BackendPort)
 	fmt.Printf("control url:  %s\n", cfg.ControlURL)
 	fmt.Printf("session sock: %s\n", cfg.SessionSocket)
@@ -61,6 +51,28 @@ func runStatus() int {
 	}
 	fmt.Printf("control:      UP (jwks %s)\n", jresp.Status)
 	return 0
+}
+
+// reportProxyScope shows the policy-derived effective scope, not configurable state.
+func reportProxyScope(cfg *config.Config) {
+	if cfg.ManagedScopeError != nil {
+		fmt.Printf("proxy scope:  INVALID (%v)\n", cfg.ManagedScopeError)
+		return
+	}
+	if cfg.ManagedMode != proxyscope.ModeSelected {
+		fmt.Printf("proxy scope:  %s (policy scope not detected yet — run `keydris init <target> <agent-id>`)\n",
+			cfg.ManagedMode)
+		return
+	}
+	origin := "hand-written"
+	if state, err := config.ReadManagedScope(cfg.DataDir); err == nil &&
+		state.Source == config.ManagedScopeSourcePolicy {
+		origin = "from policy"
+	}
+	fmt.Printf("proxy scope:  selected (%s, %s)\n", origin, pluralOrigins(len(cfg.ManagedDestinations)))
+	for _, dst := range cfg.ManagedDestinations {
+		fmt.Printf("  managed:    %s\n", dst)
+	}
 }
 
 func reportCodex(cfg *config.Config) {

@@ -81,9 +81,7 @@ Usage:
   keydris deinit claude-code|codex   Undo init: remove the Keydris config
   keydris proxy up                   Start the brokered egress proxy in the background
   keydris proxy down                 Stop the background proxy
-  keydris proxy scope add <origin>   Manage only selected host:port origins
-  keydris proxy scope remove <origin>
-  keydris proxy scope list|all
+  keydris proxy scope list           Show the origins detected from the agent's policy
   keydris run -- <cmd...>            Run a command inside a keydris session
   keydris codex [args...]            Run OpenAI Codex inside a keydris session
   keydris status                     Show config + sandbox enforcement state

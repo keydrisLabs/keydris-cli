@@ -111,21 +111,34 @@ shell; Claude continues to use its SessionStart/SessionEnd lifecycle unchanged.
 
 ## Managed destination scope
 
-By default every destination is managed, matching the original proxy behavior.
-For a narrower boundary, configure exact origins:
+Scope is derived from the agent's policy, never hand-maintained. `keydris init`
+opens a short-lived runtime session, reads the origins the policy governs from
+`GET /v1/runtime/routes`, writes them to `managed-destinations.json` under the
+data dir, and revokes the session. Every session start refreshes the same file
+from the routes it already fetches, so a policy change lands without a re-init.
 
 ```bash
-keydris proxy scope add docs.mcp.cloudflare.com:443
-keydris proxy scope list
-keydris proxy down && keydris proxy up
+keydris init claude-code <agent-id>   # detects and prints the governed origins
+keydris proxy scope list              # read-only view of what was detected
 ```
 
-The first `scope add` switches to selected mode. Managed HTTPS origins are
-terminated with the Keydris CA, sent to `POST /agent/authorize`, and optionally
-credential-injected. Unlisted HTTPS origins use an opaque CONNECT tunnel: the
-proxy does not terminate TLS, inspect bodies, call the broker, or mutate
-headers. `keydris proxy scope all` restores the backward-compatible all-managed
-mode.
+```
+mode: selected (detected from policy)
+  keydris-mcp-demo.fly.dev:443
+```
+
+Managed HTTPS origins are terminated with the Keydris CA, matched against the
+session's routes, and governed or credential-injected. Origins outside the
+scope use an opaque CONNECT tunnel: the proxy does not terminate TLS, inspect
+bodies, call the broker, or mutate headers.
+
+Scope is origin-only even when a policy route narrows a path prefix — the proxy
+must terminate TLS for the whole origin before it can see a path. Per-path
+enforcement still happens per request.
+
+If no scope has been detected yet the file is absent, and Keydris falls back to
+managing every destination (the historical default). `keydris deinit` removes
+the file along with the agent id that produced it.
 
 This scope is separate from Claude's `sandbox.network.allowedDomains`: the
 sandbox list controls where Claude may connect, while proxy scope controls

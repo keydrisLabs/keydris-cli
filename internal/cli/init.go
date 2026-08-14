@@ -136,6 +136,11 @@ func runInit(args []string) int {
 		fmt.Println("Configured OpenAI Codex launch integration")
 	}
 	fmt.Printf("  agent id: %s\n", agentID)
+
+	// Derive governed origins from the agent policy
+	origins, detected := detectPolicyScope(cfg, agentID, os.Stdout)
+	printPolicyScope(os.Stdout, origins, detected)
+
 	fmt.Printf("  CA bundle: %s\n", cfg.CABundlePath)
 	if target == "claude-code" {
 		fmt.Printf("  sandbox.enabled=true, network.httpProxyPort=%d, per-session SVID hooks wired\n", cfg.HTTPProxyPort)

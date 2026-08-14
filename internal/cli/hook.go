@@ -151,6 +151,9 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 		return 1
 	}
 
+	// Keep the proxy scope synced with policy changes automatically.
+	refreshPolicyScope(cfg, routes, os.Stderr)
+
 	if err := saveState(cfg, sessionState{
 		SessionID: sid, Handle: handle, ULID: inst.SessionID, SPIFFEID: inst.SPIFFEID, Blueprint: blueprint, ExpiresAt: inst.ExpiresAt, KIT: inst.KIT, Routes: routes,
 	}); err != nil {

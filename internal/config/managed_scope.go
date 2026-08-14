@@ -11,8 +11,13 @@ import (
 
 const managedScopeFilename = "managed-destinations.json"
 
+// ManagedScopeSourcePolicy marks a scope derived from the agent's policy.
+const ManagedScopeSourcePolicy = "policy"
+
 type ManagedScopeState struct {
-	Mode         string   `json:"mode"`
+	Mode string `json:"mode"`
+	// Source is empty on files written before auto-detection.
+	Source       string   `json:"source,omitempty"`
 	Destinations []string `json:"destinations"`
 }
 
@@ -46,16 +51,41 @@ func ReadManagedScope(dataDir string) (ManagedScopeState, error) {
 	if err != nil {
 		return ManagedScopeState{}, err
 	}
-	return ManagedScopeState{Mode: scope.Mode(), Destinations: scope.Destinations()}, nil
+	return ManagedScopeState{
+		Mode:         scope.Mode(),
+		Source:       state.Source,
+		Destinations: scope.Destinations(),
+	}, nil
 }
 
-// SaveManagedScope validates and persists the effective selected origins.
-func SaveManagedScope(dataDir, mode string, destinations []string) error {
+// SaveDerivedManagedScope persists the policy's origins as the effective
+// scope. No origins means selected-with-none (manage nothing), unlike a
+// missing file, which still means manage everything.
+func SaveDerivedManagedScope(dataDir string, destinations []string) error {
+	return saveManagedScope(
+		dataDir, proxyscope.ModeSelected, ManagedScopeSourcePolicy, destinations,
+	)
+}
+
+// RemoveManagedScope deletes the derived scope cache; missing is not an error.
+func RemoveManagedScope(dataDir string) error {
+	if err := os.Remove(managedScopePath(dataDir)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// saveManagedScope validates and atomically writes the scope file.
+func saveManagedScope(dataDir, mode, source string, destinations []string) error {
 	scope, err := proxyscope.New(mode, destinations)
 	if err != nil {
 		return err
 	}
-	state := ManagedScopeState{Mode: scope.Mode(), Destinations: scope.Destinations()}
+	state := ManagedScopeState{
+		Mode:         scope.Mode(),
+		Source:       source,
+		Destinations: scope.Destinations(),
+	}
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
