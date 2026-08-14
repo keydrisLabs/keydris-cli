@@ -52,22 +52,20 @@ type RoutesPolicy struct {
 // Endpoint-path fields are populated per enforcement mode; resources are
 // carried inline (the manifest's separate resource index is gone).
 type RuntimeRoute struct {
-	RouteID          string         `json:"route_id"`
-	DisplayName      string         `json:"display_name"`
-	Provider         string         `json:"provider"`
-	ConnectionID     string         `json:"connection_id"`
-	EnforcementMode  string         `json:"enforcement_mode"`
-	Availability     string         `json:"availability"`
-	StatusReasonCode *string        `json:"status_reason_code"`
-	Matchers         []RouteMatcher `json:"matchers"`
+	RouteID          string          `json:"route_id"`
+	DisplayName      string          `json:"display_name"`
+	Provider         string          `json:"provider"`
+	ConnectionID     string          `json:"connection_id"`
+	EnforcementMode  string          `json:"enforcement_mode"`
+	Availability     string          `json:"availability"`
+	StatusReasonCode *string         `json:"status_reason_code"`
+	Matchers         []RouteMatcher  `json:"matchers"`
 	Resources        []RouteResource `json:"resources"`
 
 	// provider_executor and mcp_gateway routes.
 	RuntimeEndpointPath string `json:"runtime_endpoint_path,omitempty"`
-	// mcp_kit_reader routes (unsupported by this CLI build; kept so a strict
-	// decode of a server that emits them still succeeds).
+	// mcp_kit_reader routes.
 	KitActionTokenEndpointPath string `json:"kit_action_token_endpoint_path,omitempty"`
-	ServerAudience             string `json:"server_audience,omitempty"`
 
 	origins []OriginMatcher
 }
@@ -214,8 +212,7 @@ func (route *RuntimeRoute) validate() error {
 			return fmt.Errorf("invalid runtime endpoint path")
 		}
 	case "mcp_kit_reader":
-		if !validRuntimePath(route.KitActionTokenEndpointPath) ||
-			route.ServerAudience == "" {
+		if !validRuntimePath(route.KitActionTokenEndpointPath) {
 			return fmt.Errorf("invalid kit reader route")
 		}
 	default:

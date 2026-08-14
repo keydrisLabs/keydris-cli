@@ -103,9 +103,12 @@ func (router *runtimeRouter) handle(
 			router.handleMCPGateway(ctx, dp, flow, route)
 		}
 	case "mcp_kit_reader":
-		// The Kit Reader bridge is not part of this CLI build; fail closed
-		// rather than passing governed traffic through unenforced.
-		rejectRuntime(dp, flow, "Kit Reader enforcement is not supported by this CLI")
+		if reason, ok := mcpPassthroughReason(flow); ok {
+			passThroughRuntime(dp, flow, reason)
+		} else {
+			logRuntimeGovern(flow, route)
+			router.handleMCPKitReader(ctx, dp, flow, route)
+		}
 	default:
 		rejectRuntime(dp, flow, "runtime enforcement mode is unsupported")
 	}
@@ -360,6 +363,84 @@ func providerDisplayName(provider string) string {
 		return "Slack"
 	default:
 		return "Provider"
+	}
+}
+
+func (router *runtimeRouter) handleMCPKitReader(
+	parent context.Context,
+	dp dataplane.DataPlane,
+	flow dataplane.Flow,
+	route runtimecontract.RuntimeRoute,
+) {
+	if flow.MetadataError != "" ||
+		flow.MCPAction == nil ||
+		len(flow.MCPRequestID) == 0 {
+		rejectRuntime(dp, flow, "invalid MCP Kit Reader request metadata")
+		return
+	}
+
+	action := flow.MCPAction
+	resource, found := route.ResourceByKey(
+		action.RoutingKeyType,
+		action.RoutingValue,
+	)
+	if !found ||
+		resource.ResourceType != action.ResourceType ||
+		resource.ExternalID != action.RoutingValue {
+		rejectRuntime(dp, flow, "MCP resource is not selected for this session")
+		return
+	}
+	if resource.Availability != "ready" {
+		rejectRuntime(dp, flow, "MCP resource is unavailable")
+		return
+	}
+
+	requestID := newRuntimeRequestID()
+	request, err := runtimecontract.NewMintKitActionTokenRequest(
+		requestID,
+		runtimecontract.MCPActionIntent{
+			Provider:     "mcp",
+			ConnectionID: route.ConnectionID,
+			ActionType:   action.ActionType,
+			ActionName:   action.ActionName,
+			Resource: runtimecontract.MCPActionResource{
+				ResourceType: resource.ResourceType,
+				ResourceID:   resource.ResourceID,
+				ExternalID:   resource.ExternalID,
+			},
+			Parameters: action.Parameters,
+		},
+	)
+	if err != nil {
+		log.Printf("build KIT action token request route=%s: %v", route.RouteID, err)
+		rejectRuntime(dp, flow, "invalid MCP Kit Reader request metadata")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(parent, runtimeCallTimeout)
+	defer cancel()
+	result, err := runtimecontract.MintKitActionToken(
+		ctx,
+		router.client,
+		router.baseURL,
+		flow.SVID,
+		route.KitActionTokenEndpointPath,
+		request,
+	)
+	if err != nil {
+		log.Printf("runtime KIT action token route=%s: %v", route.RouteID, err)
+		rejectRuntime(dp, flow, "MCP Kit Reader authorization unavailable")
+		return
+	}
+	if err := dp.InjectMCPActionToken(flow, result.KitActionToken); err != nil {
+		log.Printf(
+			"RUNTIME_ERROR dst=%s method=%s path=%s operation=kit_reader_forward route=%s error=%q",
+			flow.DstString(),
+			flow.RequestMethod(),
+			flow.RequestPath(),
+			route.RouteID,
+			err,
+		)
 	}
 }
 

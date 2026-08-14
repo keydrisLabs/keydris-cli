@@ -110,7 +110,7 @@ matched against those routes before anything reaches the network.
 | --- | --- |
 | `provider_executor` | The request (GitHub, Slack) is relayed to the control plane's executor endpoint (`POST /v1/runtime/providers/<provider>/execute`) with the stable resource id resolved from the request — GitHub: `owner/repo` from the path → `github.full_name` (case-insensitive); Slack: the request body's `channel` → `slack.channel_id`. The control plane authorizes and executes upstream with the org credential; the agent never holds it. |
 | `mcp_gateway` | JSON-RPC `tools/call` / `resources/read` calls are relayed through `POST /v1/runtime/mcp/gateway`. |
-| `mcp_kit_reader` | Not part of this CLI build — the daemon fails closed rather than pass governed traffic through unenforced. |
+| `mcp_kit_reader` | MCP lifecycle/discovery traffic passes through unchanged. For `tools/call` / `resources/read`, the daemon mints a short-lived, action-bound token through `POST /v1/runtime/mcp/kit-action-tokens`, injects it at `params._meta["keydris/kit_action_token"]`, and forwards the request directly to the managed MCP server. |
 | origin not governed by any route | Falls back to the legacy broker path (`/agent/authorize`) and the proxy-scope rules described above. |
 
 Every decision the CLI makes here is re-enforced server-side at execution

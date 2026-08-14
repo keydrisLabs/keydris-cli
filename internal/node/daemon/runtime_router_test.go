@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/dataplane"
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
@@ -183,18 +184,56 @@ func TestMCPPassthroughReasonKeepsActionsGoverned(t *testing.T) {
 	}
 }
 
-func TestRuntimeRouterFailsClosedOnKitReaderRoute(t *testing.T) {
+func TestRuntimeRouterMintsAndInjectsKitReaderActionToken(t *testing.T) {
 	routes := testKitReaderRoutes(t, "/", "ready", nil)
+	var captured runtimecontract.MintKitActionTokenRequest
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/v1/runtime/mcp/kit-action-tokens" {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Header.Get("Authorization") != "Bearer session-kit" {
+			t.Errorf("authorization = %q", request.Header.Get("Authorization"))
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Errorf("decode mint request: %v", err)
+		}
+		_, _ = fmt.Fprintf(
+			writer,
+			`{"schema_version":1,"kit_action_token":"action-token","expires_at":%q}`,
+			time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+		)
+	}))
+	defer server.Close()
+
 	dp := &fakeDataPlane{}
-	if !newRuntimeRouter(http.DefaultClient, "http://keydris.invalid").handle(
+	flow := testRoutesFlow(routes)
+	flow.MCPRequestID = json.RawMessage(`7`)
+	if !newRuntimeRouter(server.Client(), server.URL).handle(
 		context.Background(),
 		dp,
-		testRoutesFlow(routes),
+		flow,
 	) {
 		t.Fatal("kit reader flow was not handled")
 	}
-	if !dp.rejected || !strings.Contains(dp.rejectReason, "Kit Reader") {
-		t.Fatalf("rejected=%v reason=%q", dp.rejected, dp.rejectReason)
+	if dp.rejected || dp.passedThrough || dp.actionToken != "action-token" {
+		t.Fatalf(
+			"rejected=%v passed=%v action_token=%q reason=%q",
+			dp.rejected,
+			dp.passedThrough,
+			dp.actionToken,
+			dp.rejectReason,
+		)
+	}
+	if captured.Intent.ConnectionID != routes.Routes[0].ConnectionID ||
+		captured.Intent.ActionName != "get_stats" ||
+		captured.Intent.Resource.ResourceID !=
+			"88888888-8888-4888-8888-888888888888" ||
+		captured.RequestHash == "" {
+		t.Fatalf("captured request = %+v", captured)
 	}
 }
 
@@ -372,7 +411,6 @@ func testKitReaderRoutes(
 					"mcp.tool", "get_stats", "Get stats", "mcp.tool_name", "get_stats",
 				)},
 				KitActionTokenEndpointPath: "/v1/runtime/mcp/kit-action-tokens",
-				ServerAudience:             "99999999-9999-4999-8999-999999999999",
 			},
 		},
 	}
@@ -395,7 +433,6 @@ func testProviderRoutes(
 	route.EnforcementMode = "provider_executor"
 	route.RuntimeEndpointPath = "/v1/runtime/providers/" + provider + "/execute"
 	route.KitActionTokenEndpointPath = ""
-	route.ServerAudience = ""
 	route.Resources = resources
 	if err := routes.Validate(); err != nil {
 		t.Fatal(err)
@@ -410,7 +447,6 @@ func testMCPGatewayRoutes(t *testing.T) runtimecontract.RuntimeRoutes {
 	route.EnforcementMode = "mcp_gateway"
 	route.RuntimeEndpointPath = "/v1/runtime/mcp/gateway"
 	route.KitActionTokenEndpointPath = ""
-	route.ServerAudience = ""
 	if err := routes.Validate(); err != nil {
 		t.Fatal(err)
 	}
