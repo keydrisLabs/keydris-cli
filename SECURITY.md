@@ -1,92 +1,82 @@
-# Security — keydris-cli
+# Security Policy
 
-This is an extracted **proof of concept**. It demonstrates the identity + egress
-model; it is **not hardened**. Below are the known issues, tracked from a review
-against production agent-governance practice. Items are scoped to *this* repo
-(the CLI / agent side); a few belong to the separate **control plane** and are
-listed for completeness.
+Keydris is security software: it exists to keep credentials off agent machines
+and to enforce policy on agent egress. We take vulnerabilities in it seriously
+and appreciate coordinated disclosure.
 
-> Threat-model note: the strong guarantee holds only while the OS sandbox
-> (Seatbelt/bubblewrap) or iptables redirect is enabled and routed to the proxy.
-> The `proxyenv` data plane is intentionally bypassable. See
-> [docs/attribution.md](docs/attribution.md).
+## Reporting a vulnerability
 
-## In this repo
+**Please do not report security vulnerabilities through public GitHub issues,
+discussions, or pull requests.**
 
-### Session socket residual trust  (medium)
+Report privately through either channel:
 
-The registration socket is owner-only and every message authenticates with a
-random, owner-only per-install secret. This prevents unrelated local users from
-registering or unregistering sessions. Two production hardening steps remain:
+- **GitHub:** [Report a vulnerability](https://github.com/keydrisLabs/keydris-cli/security/advisories/new)
+  (Security tab → *Report a vulnerability*) — preferred.
+- **Email:** [security@keydris.com](mailto:security@keydris.com)
 
-- Verify the peer with `SO_PEERCRED` (uid/gid/pid) and, for the transparent
-  plane, derive the cgroup handle from the verified peer PID rather than the
-  client-claimed handle.
-- Verify a submitted SVID against the issuer JWKS at registration time. The
-  current secret proves that the caller can access Keydris user state, not that
-  every message field was independently issued by the control plane.
+Include what you can of the following — it speeds up triage significantly:
 
-### P3 — Proxy egress hardening  (medium)
+- The affected component (CLI command, proxy data plane, daemon, hooks,
+  evidence ledger, installer, npm packages) and version (`keydris version`).
+- A proof of concept or reproduction steps.
+- The impact you believe it has, and any suggested remediation.
 
-`internal/node/proxy` dials upstreams on the allow path with no SSRF / infra
-guard. Managed-scope matching canonicalizes case, trailing dots, IP literals,
-and ports, but remains exact-origin matching. Add:
+### What to expect
 
-- DNS resolution/rebinding defenses if policy should treat aliases and resolved
-  IP addresses as the same destination.
-- An SSRF / control-plane-port denylist for the daemon's outbound dial
-  (loopback, RFC1918, link-local `169.254/16`, multicast; Docker `2375/2376`,
-  k8s `6443`, kubelet `10250`) — with an explicit allowlist exception for
-  intended local backends.
-- Fail closed when client process identity is unresolvable (enforce mode).
+- We will acknowledge your report within **3 business days**.
+- We will keep you informed as we triage, and work with you on a coordinated
+  disclosure timeline (typically within **90 days** of the report).
+- With your permission, we will credit you in the release notes for the fix.
 
-### P4 — Make injected secrets un-loggable by type  (low)
+We do not currently run a paid bounty program.
 
-The proxy injects a Bearer token on the wire. Wrap it in a type whose
-`String()`/`MarshalJSON` redacts, so it can never land in the evidence ledger
-payload or a future debug log. (Current code already avoids logging it — this
-makes the guarantee structural rather than a discipline.)
+## Scope
 
-### P5 — Per-session proxy token is a bearer credential  (medium)
+In scope for this repository: the `keydris` binary and everything it installs
+or writes — the CLI, the proxy data planes, the local daemon, the session and
+identity handling, command-gating hooks, the evidence ledger, `install.sh`,
+and the `@keydris` npm packages.
 
-The per-session token (`newProxyToken`) is a bearer credential: presenting it to
-the proxy via `Proxy-Authorization` attributes a connection to that session's
-SVID. The daemon logs only a short handle prefix and stores proxy logs, PIDs,
-session state, and evidence under owner-only paths. One issue remains:
+Vulnerabilities in the **Keydris control plane** or other Keydris services are
+handled through the same channels — report them the same way and we will route
+them.
 
-- **Theft = impersonation.** A co-resident process that reads the token (from the
-  env or `$CLAUDE_ENV_FILE`) can impersonate the session until `session-end`.
-  Mitigations: short token lifetime, tighten `$CLAUDE_ENV_FILE`, and (Tier 2/3
-  in [docs/attribution.md](docs/attribution.md))
-  move to kernel-asserted attribution so identity is observed, not claimed.
+Out of scope: vulnerabilities requiring a compromised machine owner account
+acting against itself, denial of service against your own local proxy, and
+issues in third-party dependencies without a demonstrated impact on Keydris
+(please report those upstream too).
 
-### Verifiable audit on the client
+## Security model
 
-`internal/evidence` is the hash-chained ledger lib used by `keydris logs`. The
-chain is only tamper-*evident* to a verifier that knows the true tip. Have the
-control plane **sign** each record (or the rolling tip) with its Ed25519 key, and
-have `keydris logs` verify the signature — so forging the local ledger requires
-the signing key, not just filesystem write access.
+Read this before relying on Keydris in an adversarial setting — the guarantees
+are specific and worth understanding:
 
-Authorization records intentionally include full MCP arguments and JSON request
-bodies. These may contain application secrets even though Keydris excludes the
-SVID, proxy token, request headers, and injected credential value. Treat
-`.keydris-data/evidence.jsonl` and `proxy.log` as sensitive; they are created
-with `0600` permissions under a `0700` data directory.
+- **Enforcement strength depends on the data plane.** The strong
+  un-bypassability guarantee holds while the harness sandbox
+  (Seatbelt/bubblewrap) or the Linux transparent redirect routes all egress to
+  the proxy. The `proxyenv` data plane is **intentionally bypassable** and
+  provides attribution, not enforcement. See
+  [docs/attribution.md](docs/attribution.md) for the trust-tier ladder.
+- **Fail-closed command gating.** Every error path in command authorization —
+  no session, unreachable control plane, timeout, malformed payload — produces
+  an explicit deny. Client-side decisions are additionally re-enforced
+  server-side at execution time.
+- **Secrets stay off the agent machine.** Governed calls are executed by the
+  control plane; the private key from `keydris login` never leaves your device.
+  The per-session proxy token is a short-lived bearer credential scoped to the
+  session and delivered only through owner-only files.
+- **Local logs can contain application data.** Authorization records in the
+  evidence ledger intentionally include full MCP arguments and JSON request
+  bodies, which may contain application secrets. `~/.keydris-data/` is created
+  `0700` with `0600` files — treat `evidence.jsonl` and `proxy.log` as
+  sensitive.
+- **The evidence ledger is tamper-evident, not tamper-proof.** `keydris logs`
+  verifies the hash chain; a verifier must know the true tip to detect
+  truncation.
 
-## Control plane (separate repo — listed for completeness)
+## Supported versions
 
-- **P1 — Fail-closed, signed audit.** The broker should append the decision to
-  the ledger *before* returning `allow`, deny if the append fails, and sign
-  records (see above). The POC broker appends best-effort and discards the error.
-- **P2 — Fail-closed identity fallback.** With no/invalid SVID the POC broker
-  falls back to the union of *all* grants (destination-only). Default to deny;
-  gate any unattributed mode behind an explicit, narrowly-scoped policy.
-
-## Porting note
-
-`internal/node/login/login_test.go` was dropped during extraction — it exercised
-the client login flow against the control plane's in-process mock IdP
-(`internal/control/authn`), which does not belong in the CLI repo. The remaining
-`exchange_test.go` covers the token-exchange path. Restore equivalent coverage
-with a stubbed OIDC server (`httptest`) that has no control-plane dependency.
+Security fixes are released for the latest release on the `stable` channel.
+Run `keydris upgrade` (or update the `@keydris/cli` npm package) to get the
+current version; older versions are not patched retroactively.
