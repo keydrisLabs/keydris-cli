@@ -1,5 +1,5 @@
 # Keydris stable-channel defaults. The stable installer writes this to ~/.keydris.toml:
-#   curl -fsSL https://get.keydris.com/keydris-cli/install.sh | KEYDRIS_CHANNEL=stable bash
+#   curl -fsSL https://get.keydris.com/keydris-cli/install.sh | bash
 #
 # Lowest-precedence config: override any value with an env var, ./.env, or a
 # project-local ./.keydris.toml. Each key maps to KEYDRIS_<UPPER(KEY)>.
@@ -7,6 +7,9 @@
 # Fill in the <...> placeholders with your deployed stable endpoints before publishing.
 
 [keydris]
+# `keydris upgrade` reads this to stay on the channel this install came from.
+channel = "stable"
+
 # Deployed stable control plane behind the AWS ALB. control_url is the standard-HTTPS
 # side on :443 (/identity/sign, /agent/jwks); control_mtls_url is the mTLS
 # /agent/authorize* listener on :8443. Both present a public TLS server cert, so

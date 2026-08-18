@@ -16,14 +16,19 @@ mTLS — see [Pointing at a control plane](#pointing-at-a-control-plane).
 installs it to `/usr/local/bin`:
 
 ```bash
-curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | bash                     # stable
-curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | KEYDRIS_CHANNEL=dev bash # dev (zero-config)
+curl -fsSL https://get.keydris.com/keydris-cli/install.sh | bash      # stable
+curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | bash  # dev
 ```
 
-- The **dev** channel also drops a `~/.keydris.toml` pointing at the dev control
-  plane + IdP, so it works with **no env vars set**.
-- Override via env: `PREFIX` (install dir), `KEYDRIS_CHANNEL` (`stable`|`dev`),
-  `KEYDRIS_VERSION` (default `latest`), `KEYDRIS_BASE_URL` (download host).
+- **The URL is the channel.** Each host serves its own channel and refuses the
+  other, so there is no channel env var to pass and no way to pull a dev build
+  from the stable host (or the reverse).
+- Both channels drop a `~/.keydris.toml` pointing at that channel's control
+  plane + IdP, so an install works with **no env vars set**. It also records the
+  channel, so `keydris upgrade` stays on it.
+- Override via env: `PREFIX` (install dir), `KEYDRIS_VERSION` (default
+  `latest`), `KEYDRIS_BASE_URL` (download host — for mirrors or local testing),
+  `KEYDRIS_NO_CONFIG=1` (keep an existing `~/.keydris.toml`).
 - `keydris version` reports the installed build.
 
 **npm distribution** (after the packages are published):

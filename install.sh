@@ -1,21 +1,41 @@
 #!/usr/bin/env bash
 # keydris installer — downloads a prebuilt `keydris` binary. No Go, no checkout.
 #
-#   curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | bash                     # stable (zero-config)
-#   curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | KEYDRIS_CHANNEL=dev bash # dev (zero-config)
+# The URL selects the channel; each host serves only its own (zero-config).
+#
+#   curl -fsSL https://get.keydris.com/keydris-cli/install.sh | bash      # stable
+#   curl -fsSL https://dev.get.keydris.com/keydris-cli/install.sh | bash  # dev
 #
 # Env:
 #   PREFIX           install prefix (default /usr/local)  -> $PREFIX/bin/keydris
-#   KEYDRIS_CHANNEL  stable (default) | dev
 #   KEYDRIS_VERSION  version to install (default: latest)
-#   KEYDRIS_BASE_URL base download URL (default: https://get.keydris.dev/keydris-cli)
+#   KEYDRIS_BASE_URL base download URL (default: this installer's channel host)
+#   KEYDRIS_CHANNEL  must match this installer's channel unless KEYDRIS_BASE_URL is set
 #   KEYDRIS_NO_CONFIG=1  keep an existing ~/.keydris.toml instead of overwriting it
 set -euo pipefail
 
+# --- channel binding: rewritten at publish time by scripts/render-install.sh ---
+CHANNEL_DEFAULT="stable"
+BASE_DEFAULT="https://get.keydris.com/keydris-cli"
+# --- end channel binding ---
+
 PREFIX="${PREFIX:-/usr/local}"
-CHANNEL="${KEYDRIS_CHANNEL:-stable}"
 VERSION="${KEYDRIS_VERSION:-latest}"
-BASE="${KEYDRIS_BASE_URL:-https://dev.get.keydris.com/keydris-cli}"
+CHANNEL="${KEYDRIS_CHANNEL:-$CHANNEL_DEFAULT}"
+case "$CHANNEL" in
+  stable|dev) ;;
+  *) echo "error: KEYDRIS_CHANNEL must be stable or dev (got '$CHANNEL')" >&2; exit 1 ;;
+esac
+# A mismatch is a mistake, not a request — unless the base was redirected too.
+if [ "$CHANNEL" != "$CHANNEL_DEFAULT" ] && [ -z "${KEYDRIS_BASE_URL:-}" ]; then
+  echo "error: this installer serves the '$CHANNEL_DEFAULT' channel, not '$CHANNEL'" >&2
+  case "$CHANNEL" in
+    stable) echo "       install stable from https://get.keydris.com/keydris-cli/install.sh" >&2 ;;
+    dev)    echo "       install dev from https://dev.get.keydris.com/keydris-cli/install.sh" >&2 ;;
+  esac
+  exit 1
+fi
+BASE="${KEYDRIS_BASE_URL:-$BASE_DEFAULT}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "error: missing dependency: $1" >&2; exit 1; }; }
 need curl

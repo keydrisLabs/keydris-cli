@@ -82,7 +82,15 @@ jobs:
         run: |
           aws s3 sync dist/ "s3://$BUCKET/keydris-cli/$CHANNEL/$VERSION/"
           aws s3 sync dist/ "s3://$BUCKET/keydris-cli/$CHANNEL/latest/" --cache-control max-age=60
-          aws s3 cp install.sh "s3://$BUCKET/keydris-cli/install.sh" --cache-control max-age=60
+          # Both installer flavors publish every run: the host binds the channel,
+          # not the release. The legacy keydris-cli/install.sh gets the dev
+          # flavor — it is what dev.get.keydris.com serves until the CloudFront
+          # router function is deployed (see docs/releasing.md, Rollout order).
+          scripts/render-install.sh stable > install-stable.sh
+          scripts/render-install.sh dev    > install-dev.sh
+          aws s3 cp install-stable.sh "s3://$BUCKET/keydris-cli/stable/install.sh" --cache-control max-age=60
+          aws s3 cp install-dev.sh    "s3://$BUCKET/keydris-cli/dev/install.sh"    --cache-control max-age=60
+          aws s3 cp install-dev.sh    "s3://$BUCKET/keydris-cli/install.sh" --cache-control max-age=60
           if [ "$CHANNEL" = dev ]; then
             aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/keydris-cli/dev/$VERSION/keydris.toml" --cache-control max-age=60
             aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/keydris-cli/dev/latest/keydris.toml" --cache-control max-age=60
@@ -96,7 +104,12 @@ jobs:
         env:
           DIST_ID: ${{ vars.KEYDRIS_CLOUDFRONT_DISTRIBUTION_ID }}
           CHANNEL: ${{ steps.meta.outputs.channel }}
-        run: aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/keydris-cli/install.sh" "/keydris-cli/$CHANNEL/latest/*"
+        run: |
+          aws cloudfront create-invalidation --distribution-id "$DIST_ID" \
+            --paths "/keydris-cli/install.sh" \
+                    "/keydris-cli/stable/install.sh" \
+                    "/keydris-cli/dev/install.sh" \
+                    "/keydris-cli/$CHANNEL/latest/*"
 
       - name: Publish native npm packages
         working-directory: npm
