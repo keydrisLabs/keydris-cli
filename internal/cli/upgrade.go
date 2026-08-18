@@ -16,16 +16,22 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/keydrisLabs/keydris-cli/internal/config"
 )
 
-// defaultBaseURL is where release artifacts live; it mirrors install.sh and can
-// be overridden with KEYDRIS_BASE_URL or --base-url.
-const defaultBaseURL = "https://dev.get.keydris.com/keydris-cli"
+// channelBaseURL maps a release channel to the only host that serves it,
+// mirroring what scripts/render-install.sh bakes into each published install.sh.
+// Overridden as a whole by KEYDRIS_BASE_URL or --base-url.
+var channelBaseURL = map[string]string{
+	"stable": "https://get.keydris.com/keydris-cli",
+	"dev":    "https://dev.get.keydris.com/keydris-cli",
+}
 
 const (
 	maxUpgradeBinary = 256 << 20
 	maxChecksumFile  = 1 << 20
-	maxDevConfig     = 4 << 20
+	maxChannelConfig = 4 << 20
 )
 
 // runUpgrade downloads the latest `keydris` binary for the selected channel,
@@ -33,17 +39,25 @@ const (
 // place. It is the in-CLI equivalent of re-running install.sh, so an operator
 // can `keydris upgrade` instead of piping curl to bash.
 //
-// On the dev channel it also refreshes ~/.keydris.toml (backing up the old one)
-// so endpoint/client-id changes shipped in the release are actually picked up —
-// install.sh deliberately never clobbers that file, which is why a plain
-// re-install keeps stale config.
+// It also refreshes ~/.keydris.toml (backing up the old one) so endpoint and
+// client-id changes shipped in the release are actually picked up — install.sh
+// deliberately never clobbers that file, which is why a plain re-install keeps
+// stale config.
+//
+// The channel defaults to the one this installation came from: the channel's
+// keydris.toml carries `channel = "..."`, which config.Load maps to
+// KEYDRIS_CHANNEL. Without it a dev install would silently upgrade onto stable —
+// a different binary *and* a different control plane.
 func runUpgrade(args []string) int {
+	config.Load()
+
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	channel := fs.String("channel", envOr("KEYDRIS_CHANNEL", "stable"), "release channel: stable|dev")
 	version := fs.String("version", envOr("KEYDRIS_VERSION", "latest"), "version to install (default: latest)")
-	baseURL := fs.String("base-url", envOr("KEYDRIS_BASE_URL", defaultBaseURL), "download base URL")
-	noConfig := fs.Bool("no-config", false, "do not refresh ~/.keydris.toml on the dev channel")
+	// Resolved after parsing: a flag default cannot depend on another flag.
+	baseURL := fs.String("base-url", envOr("KEYDRIS_BASE_URL", ""), "download base URL (default: the channel's host)")
+	noConfig := fs.Bool("no-config", false, "do not refresh ~/.keydris.toml")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -58,6 +72,7 @@ func runUpgrade(args []string) int {
 		fmt.Fprintf(os.Stderr, "keydris upgrade: invalid version %q\n", *version)
 		return 1
 	}
+	*baseURL = baseURLFor(*channel, *baseURL)
 
 	osName, arch, err := platform()
 	if err != nil {
@@ -104,12 +119,21 @@ func runUpgrade(args []string) int {
 		return 1
 	}
 
-	if strings.EqualFold(*channel, "dev") && !*noConfig {
-		refreshDevConfig(base, *version)
+	if !*noConfig {
+		refreshChannelConfig(base, *channel, *version)
 	}
 
 	fmt.Fprintf(os.Stderr, "==> done (was %s); run `keydris version` to confirm\n", Version)
 	return 0
+}
+
+// baseURLFor resolves the download base for a channel. An explicit override wins
+// so mirrors and local test servers still work.
+func baseURLFor(channel, override string) string {
+	if strings.TrimSpace(override) != "" {
+		return override
+	}
+	return channelBaseURL[channel]
 }
 
 func printNPMUpgradeInstructions(w io.Writer) bool {
@@ -189,11 +213,11 @@ func replaceExecutable(target string, data []byte) error {
 	return nil
 }
 
-// refreshDevConfig re-fetches the dev channel's ~/.keydris.toml so endpoint and
+// refreshChannelConfig re-fetches the channel's ~/.keydris.toml so endpoint and
 // client-id changes land on upgrade, backing up any existing file first. It is
 // best-effort: the binary is already upgraded, so a config hiccup is a warning,
-// not a failure.
-func refreshDevConfig(base, version string) {
+// not a failure. It runs for both channels, as install.sh does.
+func refreshChannelConfig(base, channel, version string) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		fmt.Fprintf(os.Stderr, "==> skipping config refresh: cannot resolve home dir\n")
@@ -201,14 +225,14 @@ func refreshDevConfig(base, version string) {
 	}
 	dst := filepath.Join(home, ".keydris.toml")
 
-	data, err := httpGetLimit(fmt.Sprintf("%s/dev/%s/keydris.toml", base, version), maxDevConfig)
+	data, err := httpGetLimit(fmt.Sprintf("%s/%s/%s/keydris.toml", base, channel, version), maxChannelConfig)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "==> WARNING: could not fetch dev config (%v); left %s unchanged\n", err, dst)
+		fmt.Fprintf(os.Stderr, "==> WARNING: could not fetch %s config (%v); left %s unchanged\n", channel, err, dst)
 		return
 	}
 	if existing, err := os.ReadFile(dst); err == nil {
 		if bytes.Equal(existing, data) {
-			fmt.Fprintf(os.Stderr, "==> dev config already up to date (%s)\n", dst)
+			fmt.Fprintf(os.Stderr, "==> %s config already up to date (%s)\n", channel, dst)
 			return
 		}
 		bak := dst + ".bak"
@@ -222,7 +246,7 @@ func refreshDevConfig(base, version string) {
 		fmt.Fprintf(os.Stderr, "==> WARNING: could not write %s (%v)\n", dst, err)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "==> refreshed dev config at %s\n", dst)
+	fmt.Fprintf(os.Stderr, "==> refreshed %s config at %s\n", channel, dst)
 }
 
 // checksumFor returns the hex checksum for name from an SHA256SUMS body (lines

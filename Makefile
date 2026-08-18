@@ -38,11 +38,19 @@ dist:
 	@echo "  wrote $(DIST)/SHA256SUMS"
 
 # Publish $(DIST) + install.sh (+ per-channel keydris.toml) to S3. Needs S3_BUCKET and AWS creds.
+# Both installer flavors publish every run: the host binds the channel, not the
+# release. The legacy keydris-cli/install.sh gets the dev flavor — it is what
+# dev.get.keydris.com serves until the CloudFront router function is deployed
+# (see docs/releasing.md, Rollout order).
 release: dist
 	@test -n "$(S3_BUCKET)" || { echo "set S3_BUCKET=<your-bucket>"; exit 1; }
 	aws s3 sync $(DIST)/ s3://$(S3_BUCKET)/keydris-cli/$(CHANNEL)/$(VERSION)/
 	aws s3 sync $(DIST)/ s3://$(S3_BUCKET)/keydris-cli/$(CHANNEL)/latest/ --cache-control max-age=60
-	aws s3 cp install.sh s3://$(S3_BUCKET)/keydris-cli/install.sh --cache-control max-age=60
+	scripts/render-install.sh stable > $(DIST)/install-stable.sh
+	scripts/render-install.sh dev    > $(DIST)/install-dev.sh
+	aws s3 cp $(DIST)/install-stable.sh s3://$(S3_BUCKET)/keydris-cli/stable/install.sh --cache-control max-age=60
+	aws s3 cp $(DIST)/install-dev.sh    s3://$(S3_BUCKET)/keydris-cli/dev/install.sh    --cache-control max-age=60
+	aws s3 cp $(DIST)/install-dev.sh     s3://$(S3_BUCKET)/keydris-cli/install.sh --cache-control max-age=60
 	@if [ "$(CHANNEL)" = dev ]; then \
 	  aws s3 cp deploy/dev/keydris.toml s3://$(S3_BUCKET)/keydris-cli/dev/$(VERSION)/keydris.toml --cache-control max-age=60; \
 	  aws s3 cp deploy/dev/keydris.toml s3://$(S3_BUCKET)/keydris-cli/dev/latest/keydris.toml --cache-control max-age=60; \
@@ -51,7 +59,8 @@ release: dist
 	  aws s3 cp deploy/stable/keydris.toml s3://$(S3_BUCKET)/keydris-cli/stable/latest/keydris.toml --cache-control max-age=60; \
 	fi
 	@if [ -n "$(DISTRIBUTION_ID)" ]; then \
-	  aws cloudfront create-invalidation --distribution-id $(DISTRIBUTION_ID) --paths "/keydris-cli/install.sh" "/keydris-cli/$(CHANNEL)/latest/*"; \
+	  aws cloudfront create-invalidation --distribution-id $(DISTRIBUTION_ID) \
+	    --paths "/keydris-cli/install.sh" "/keydris-cli/stable/install.sh" "/keydris-cli/dev/install.sh" "/keydris-cli/$(CHANNEL)/latest/*"; \
 	fi
 
 vet:
