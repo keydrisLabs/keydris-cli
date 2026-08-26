@@ -317,6 +317,64 @@ func (routes RuntimeRoutes) ManagedOrigins() []string {
 	return out
 }
 
+// McpServerEndpoint is a governed MCP server's display name and dial URL,
+// reconstructed from the route's origin matcher.
+type McpServerEndpoint struct {
+	Name string
+	URL  string
+}
+
+// McpServerEndpoints returns the ready mcp_gateway routes as client-dialable
+// endpoints. The client connects to the upstream URL directly — the data plane
+// intercepts it and Keydris injects the credential — so no Keydris host appears.
+func (routes RuntimeRoutes) McpServerEndpoints() []McpServerEndpoint {
+	out := make([]McpServerEndpoint, 0, len(routes.Routes))
+	for _, route := range routes.Routes {
+		if route.EnforcementMode != "mcp_gateway" ||
+			route.Availability != "ready" ||
+			len(route.origins) == 0 {
+			continue
+		}
+		origin := route.origins[0]
+		host := origin.Host
+		if !isDefaultPort(origin.Scheme, origin.Port) {
+			host = net.JoinHostPort(origin.Host, strconv.Itoa(origin.Port))
+		}
+		out = append(out, McpServerEndpoint{
+			Name: mcpServerName(route),
+			URL:  origin.Scheme + "://" + host + origin.PathPrefix,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// A stable, readable config key: the slugified display name, falling back to the
+// connection id so an unnamed connection still gets a unique entry.
+func mcpServerName(route RuntimeRoute) string {
+	var slug strings.Builder
+	previousDash := true
+	for _, r := range strings.ToLower(route.DisplayName) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			slug.WriteRune(r)
+			previousDash = false
+		case !previousDash:
+			slug.WriteByte('-')
+			previousDash = true
+		}
+	}
+	name := strings.Trim(slug.String(), "-")
+	if name == "" {
+		return route.ConnectionID
+	}
+	return name
+}
+
+func isDefaultPort(scheme string, port int) bool {
+	return (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
+}
+
 func pathHasPrefix(path, prefix string) bool {
 	if prefix == "/" {
 		return true
@@ -334,6 +392,17 @@ func (route RuntimeRoute) ResourceByKey(keyType, value string) (*RouteResource, 
 // providers with case-insensitive identifiers (github.full_name).
 func (route RuntimeRoute) ResourceByKeyFold(keyType, value string) (*RouteResource, bool) {
 	return route.resourceByKey(keyType, value, true)
+}
+
+// ResourceByType returns the route's single resource of a type. Discovery names
+// no tool, so it addresses the server resource by type rather than by value.
+func (route RuntimeRoute) ResourceByType(resourceType string) (*RouteResource, bool) {
+	for index := range route.Resources {
+		if route.Resources[index].ResourceType == resourceType {
+			return &route.Resources[index], true
+		}
+	}
+	return nil, false
 }
 
 func (route RuntimeRoute) resourceByKey(

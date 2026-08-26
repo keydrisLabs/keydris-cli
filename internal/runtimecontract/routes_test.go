@@ -119,3 +119,40 @@ func TestManagedOriginsEmptyWhenNoRoutes(t *testing.T) {
 		t.Fatalf("ManagedOrigins() = %#v, want empty", got)
 	}
 }
+
+func TestMcpServerEndpointsRebuildsTheDialURL(t *testing.T) {
+	routes, err := DecodeRuntimeRoutes(routesJSON(mcpRoute(
+		"e6273ae3-c222-4406-baac-02280d542315",
+		originMatcher("https", "api.githubcopilot.com", 443, "/mcp/"),
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := routes.McpServerEndpoints()
+	if len(got) != 1 {
+		t.Fatalf("McpServerEndpoints() = %#v", got)
+	}
+	// The default port is omitted so the URL matches what a user would write.
+	if got[0].URL != "https://api.githubcopilot.com/mcp/" {
+		t.Fatalf("URL = %q", got[0].URL)
+	}
+	if got[0].Name != "github-whoami" {
+		t.Fatalf("Name = %q, want the slugified display name", got[0].Name)
+	}
+}
+
+func TestMcpServerEndpointsKeepsNonDefaultPort(t *testing.T) {
+	routes, err := DecodeRuntimeRoutes(routesJSON(mcpRoute(
+		"e6273ae3-c222-4406-baac-02280d542315",
+		originMatcher("http", "127.0.0.1", 8931, "/mcp"),
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := routes.McpServerEndpoints()
+	if len(got) != 1 || got[0].URL != "http://127.0.0.1:8931/mcp" {
+		t.Fatalf("McpServerEndpoints() = %#v", got)
+	}
+}

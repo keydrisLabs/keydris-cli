@@ -57,6 +57,15 @@ func runDeinit(args []string) int {
 		fmt.Fprintf(os.Stderr, "keydris deinit: %v\n", err)
 		return 1
 	}
+	if target == "claude-code" {
+		// Only the entries Keydris wrote; hand-added servers are left alone.
+		if err := sandbox.RemoveManagedMcpServers(
+			cfg.ClaudeMcpConfigPath,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "keydris deinit: clear MCP servers: %v\n", err)
+			return 1
+		}
+	}
 	if err := config.RemovePolicyID(cfg.DataDir); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris deinit: clear policy id: %v\n", err)
 		return 1

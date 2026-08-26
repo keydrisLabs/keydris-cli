@@ -84,6 +84,21 @@ func applyMCPToolMetadata(f *Flow, body []byte) {
 		if applyMCPResourceRead(f, rpc.Params) {
 			f.MCPRequestID = append(json.RawMessage(nil), rpc.ID...)
 		}
+	case "tools/list":
+		applyMCPToolsList(f)
+		f.MCPRequestID = append(json.RawMessage(nil), rpc.ID...)
+	}
+}
+
+// applyMCPToolsList addresses discovery at the server, not a tool: which tools
+// exist is what the call is asking, so it cannot name one. The routing value is
+// filled in by the router, which knows the connection's server resource.
+func applyMCPToolsList(f *Flow) {
+	f.MCPAction = &MCPAction{
+		ActionType:     "mcp.discovery.tools",
+		ResourceType:   "mcp.server",
+		RoutingKeyType: "mcp.server_id",
+		Parameters:     map[string]any{},
 	}
 }
 

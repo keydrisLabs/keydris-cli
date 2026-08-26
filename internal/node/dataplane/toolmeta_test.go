@@ -72,7 +72,9 @@ func TestApplyRequestMetadataPromotesMCPToolCall(t *testing.T) {
 	}
 }
 
-func TestApplyRequestMetadataKeepsHTTPFallbackForMCPDiscovery(t *testing.T) {
+// Discovery now carries a routing intent so the router can relay it; the HTTP
+// fallback fields stay populated for logging and non-MCP paths.
+func TestApplyRequestMetadataBuildsServerIntentForMCPDiscovery(t *testing.T) {
 	const body = `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`
 	req, err := http.NewRequest(http.MethodPost, "https://mockmcp.io/mcp", strings.NewReader(body))
 	if err != nil {
@@ -90,8 +92,19 @@ func TestApplyRequestMetadataKeepsHTTPFallbackForMCPDiscovery(t *testing.T) {
 	if string(flow.ToolParams) != body {
 		t.Fatalf("ToolParams = %s", flow.ToolParams)
 	}
-	if flow.MCPMethod != "tools/list" || flow.MCPAction != nil {
+	if flow.MCPMethod != "tools/list" || flow.MCPAction == nil {
 		t.Fatalf("discovery metadata = method %q action %+v", flow.MCPMethod, flow.MCPAction)
+	}
+	// Addressed at the server: discovery is asking which tools exist, so it
+	// cannot name one. The router resolves the value from route discovery.
+	if flow.MCPAction.ActionType != "mcp.discovery.tools" ||
+		flow.MCPAction.ResourceType != "mcp.server" ||
+		flow.MCPAction.RoutingKeyType != "mcp.server_id" ||
+		flow.MCPAction.RoutingValue != "" {
+		t.Fatalf("discovery action = %+v", flow.MCPAction)
+	}
+	if len(flow.MCPRequestID) == 0 {
+		t.Fatal("discovery must carry the JSON-RPC id for the relayed response")
 	}
 }
 

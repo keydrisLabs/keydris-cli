@@ -96,7 +96,9 @@ func (router *runtimeRouter) handle(
 		logRuntimeGovern(flow, route)
 		router.handleProviderExecutor(ctx, dp, flow, route)
 	case "mcp_gateway":
-		if reason, ok := mcpPassthroughReason(flow); ok {
+		if flow.MCPMethod == "initialize" {
+			answerMCPInitialize(dp, flow)
+		} else if reason, ok := mcpPassthroughReason(flow); ok {
 			passThroughRuntime(dp, flow, reason)
 		} else {
 			logRuntimeGovern(flow, route)
@@ -113,6 +115,49 @@ func (router *runtimeRouter) handle(
 		rejectRuntime(dp, flow, "runtime enforcement mode is unsupported")
 	}
 	return true
+}
+
+// The MCP revision advertised to the client. Matches the revision Keydris offers
+// upstream (MCP_PREFERRED_STANDARD_PROTOCOL_VERSION in @keydris/contracts).
+const mcpProtocolVersion = "2025-06-18"
+
+// answerMCPInitialize replies to the handshake locally. The upstream server may
+// require auth for it (GitHub's does) and the client holds no credential, but a
+// handshake authorizes nothing — so it is answered here rather than spending a
+// governed call on it. Capabilities advertise tools only; everything else is
+// either relayed or rejected downstream.
+func answerMCPInitialize(dp dataplane.DataPlane, flow dataplane.Flow) {
+	id := flow.MCPRequestID
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result": map[string]any{
+			"protocolVersion": mcpProtocolVersion,
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo": map[string]any{
+				"name":    "keydris-runtime",
+				"version": "1",
+			},
+		},
+	})
+	if err != nil {
+		rejectRuntime(dp, flow, "could not build MCP initialize response")
+		return
+	}
+	log.Printf(
+		"RUNTIME_LOCAL dst=%s mcp_method=initialize reason=handshake",
+		flow.DstString(),
+	)
+	if err := dp.Respond(flow, runtimecontract.ProviderHTTPResponse{
+		Status:  http.StatusOK,
+		Headers: map[string]string{"content-type": "application/json"},
+		Body:    body,
+	}); err != nil {
+		log.Printf("RUNTIME_ERROR operation=initialize error=%q", err)
+	}
 }
 
 func logRuntimeGovern(
@@ -139,10 +184,11 @@ func mcpPassthroughReason(flow dataplane.Flow) (string, bool) {
 	}
 
 	switch flow.MCPMethod {
-	case "initialize",
-		"notifications/initialized",
+	// `initialize` and `tools/list` are deliberately absent: an upstream server
+	// can require auth for both (GitHub's does), and the client holds no
+	// credential. The handshake is answered locally; discovery is relayed.
+	case "notifications/initialized",
 		"ping",
-		"tools/list",
 		"prompts/list",
 		"prompts/get",
 		"resources/list",
@@ -380,15 +426,26 @@ func (router *runtimeRouter) handleMCPKitReader(
 	}
 
 	action := flow.MCPAction
-	resource, found := route.ResourceByKey(
-		action.RoutingKeyType,
-		action.RoutingValue,
-	)
-	if !found ||
-		resource.ResourceType != action.ResourceType ||
-		resource.ExternalID != action.RoutingValue {
-		rejectRuntime(dp, flow, "MCP resource is not selected for this session")
-		return
+	var resource *runtimecontract.RouteResource
+	var found bool
+	if action.RoutingValue == "" {
+		// Discovery names no tool, so it addresses the server resource.
+		resource, found = route.ResourceByType(action.ResourceType)
+		if !found {
+			rejectRuntime(dp, flow, "MCP server resource is not available")
+			return
+		}
+	} else {
+		resource, found = route.ResourceByKey(
+			action.RoutingKeyType,
+			action.RoutingValue,
+		)
+		if !found ||
+			resource.ResourceType != action.ResourceType ||
+			resource.ExternalID != action.RoutingValue {
+			rejectRuntime(dp, flow, "MCP resource is not selected for this session")
+			return
+		}
 	}
 	if resource.Availability != "ready" {
 		rejectRuntime(dp, flow, "MCP resource is unavailable")
@@ -458,15 +515,26 @@ func (router *runtimeRouter) handleMCPGateway(
 	}
 
 	action := flow.MCPAction
-	resource, found := route.ResourceByKey(
-		action.RoutingKeyType,
-		action.RoutingValue,
-	)
-	if !found ||
-		resource.ResourceType != action.ResourceType ||
-		resource.ExternalID != action.RoutingValue {
-		rejectRuntime(dp, flow, "MCP resource is not selected for this session")
-		return
+	var resource *runtimecontract.RouteResource
+	var found bool
+	if action.RoutingValue == "" {
+		// Discovery names no tool, so it addresses the server resource.
+		resource, found = route.ResourceByType(action.ResourceType)
+		if !found {
+			rejectRuntime(dp, flow, "MCP server resource is not available")
+			return
+		}
+	} else {
+		resource, found = route.ResourceByKey(
+			action.RoutingKeyType,
+			action.RoutingValue,
+		)
+		if !found ||
+			resource.ResourceType != action.ResourceType ||
+			resource.ExternalID != action.RoutingValue {
+			rejectRuntime(dp, flow, "MCP resource is not selected for this session")
+			return
+		}
 	}
 	if resource.Availability != "ready" {
 		rejectRuntime(dp, flow, "MCP resource is unavailable")
@@ -542,6 +610,8 @@ func mcpGatewayMessage(flow dataplane.Flow) (runtimecontract.MCPGatewayMessage, 
 			Name:      flow.MCPAction.ActionName,
 			Arguments: flow.MCPAction.Parameters,
 		}
+	case "tools/list":
+		// No params: the request is "what tools exist".
 	case "resources/read":
 		uri, ok := flow.MCPAction.Parameters["uri"].(string)
 		if !ok || uri != flow.MCPAction.ActionName {

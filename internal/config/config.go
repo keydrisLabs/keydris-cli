@@ -111,6 +111,10 @@ type Config struct {
 	// ClaudeSettingsPath is the Claude Code settings file `keydris init` writes
 	// the sandbox block + CA env into (default ~/.claude/settings.json).
 	ClaudeSettingsPath string
+
+	// ClaudeMcpConfigPath is where Claude Code reads MCP servers — a different
+	// file from ClaudeSettingsPath, which holds the sandbox and hooks.
+	ClaudeMcpConfigPath string
 	// CodexHooksPath is the Codex hooks file `keydris init codex` writes the
 	// command-gating hooks into (default $CODEX_HOME/hooks.json, with
 	// CODEX_HOME defaulting to ~/.codex).
@@ -237,6 +241,7 @@ func Load() *Config {
 		CAKeyPath:           env("KEYDRIS_CA_KEY_PATH", filepath.Join(dataDir, "ca.key")),
 		CABundlePath:        env("KEYDRIS_CA_BUNDLE_PATH", filepath.Join(dataDir, "ca-bundle.crt")),
 		ClaudeSettingsPath:  env("KEYDRIS_CLAUDE_SETTINGS", defaultClaudeSettings()),
+		ClaudeMcpConfigPath: env("KEYDRIS_CLAUDE_MCP_CONFIG", defaultClaudeMcpConfig()),
 		CodexHooksPath:      env("KEYDRIS_CODEX_HOOKS", defaultCodexHooks()),
 		HTTPProxyPort:       envInt("KEYDRIS_HTTP_PROXY_PORT", envInt("KEYDRIS_PROXY_PORT", 15001)),
 		AllowedDomains:      envList("KEYDRIS_ALLOWED_DOMAINS"),
@@ -309,6 +314,14 @@ func defaultClaudeSettings() string {
 		return ".claude/settings.json"
 	}
 	return filepath.Join(home, ".claude", "settings.json")
+}
+
+func defaultClaudeMcpConfig() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ".claude.json"
+	}
+	return filepath.Join(home, ".claude.json")
 }
 
 func defaultCodexHooks() string {
