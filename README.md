@@ -115,7 +115,7 @@ npm install --global @keydris/cli
 keydris init
 ```
 
-The launcher selects a prebuilt native binary for Windows, macOS, or Linux; it does not reimplement the security-sensitive Go runtime in JavaScript, and there are no install lifecycle scripts. A global installation is recommended, because npm owns the executable location the background proxy runs from. See [docs/npm-distribution.md](docs/npm-distribution.md).
+The launcher selects a prebuilt native binary for Windows, macOS, or Linux; it does not reimplement the security-sensitive Go runtime in JavaScript. Its config-only postinstall step writes the bundled channel defaults to `~/.keydris.toml`, backing up an existing file as `~/.keydris.toml.bak`; set `KEYDRIS_NO_CONFIG=1` to skip it. A global installation is recommended, because npm owns the executable location the background proxy runs from. See [docs/npm-distribution.md](docs/npm-distribution.md).
 
 ### From source
 

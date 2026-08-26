@@ -35,14 +35,16 @@ export function npmCommand() {
 
 // runNPM executes one npm command with the workspace-local cache and throws
 // on any failure.
-export function runNPM(args, cwd) {
+export function runNPM(args, cwd, options = {}) {
   const npm = npmCommand();
   const result = spawnSync(npm.command, [...npm.prefix, ...args], {
     cwd,
     encoding: "utf8",
     env: {
       ...process.env,
+      ...options.env,
       npm_config_cache:
+        options.env?.npm_config_cache ||
         process.env.npm_config_cache ||
         path.join(workspaceRoot, ".npm-cache")
     },

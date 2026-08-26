@@ -8,12 +8,15 @@
   },
   "files": [
     "bin",
+    "config",
+    "scripts",
     "README.md"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "postinstall": "node scripts/install-config.mjs",
     "prepublishOnly": "node ../../scripts/prepublish-check.mjs"
   },
   "optionalDependencies": {

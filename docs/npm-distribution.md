@@ -25,9 +25,12 @@ launcher does not call that command; its purpose is to make npm apply executable
 permissions to macOS/Linux binaries even if their tarballs were created on
 Windows.
 
-There are no `preinstall`, `install`, or `postinstall` scripts. Installing the
-package does not download another executable, start a daemon, modify a trust
-store, or request privileges.
+The launcher has one `postinstall` script. It copies the bundled channel defaults
+to `~/.keydris.toml` and backs up an existing file as `~/.keydris.toml.bak`.
+Stable package versions select the stable config; prereleases select dev. Set
+`KEYDRIS_NO_CONFIG=1` to keep the existing file. The script performs no network
+requests and does not start a daemon, modify a trust store, or request
+privileges. Installing with npm's `--ignore-scripts` skips the config step.
 
 ## User installation
 
@@ -64,7 +67,7 @@ ARM64. It stamps the launcher package version into each binary.
 `npm test` checks:
 
 - manifest names, versions, platform metadata, and exact dependencies;
-- absence of install lifecycle scripts;
+- the bounded config-only install lifecycle script;
 - PE, Mach-O, and ELF executable signatures;
 - native binary size;
 - launcher execution and exit status on the host platform;
@@ -159,7 +162,8 @@ The S3/`install.sh` distribution keeps the native self-updater.
 - Require two-factor authentication for npm organization maintainers.
 - Preserve exact launcher/native versions.
 - Review `npm pack --dry-run --json` output before publishing.
-- Never add privileged install lifecycle scripts.
+- Keep the install lifecycle script limited to copying the bundled config into
+  the user's home directory; do not add network, executable, or privileged work.
 
 Official references:
 

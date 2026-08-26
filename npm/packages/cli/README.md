@@ -15,6 +15,10 @@ implementation remains in the native binary.
 Do not install with `--omit=optional`; that omits the platform binary. A global
 installation is recommended when using the long-running `keydris proxy`.
 
-This package performs no privileged work during installation. Trust-store
-changes happen only when explicitly requested through
-`keydris init --trust-store`.
+The install writes the channel defaults to `~/.keydris.toml`, backing up an
+existing file as `~/.keydris.toml.bak`. Stable releases use the stable config;
+prereleases use the dev config. Set `KEYDRIS_NO_CONFIG=1` to leave an existing
+config unchanged. npm's `--ignore-scripts` option skips this config step.
+
+The package performs no privileged work during installation. Trust-store changes
+happen only when explicitly requested through `keydris init --trust-store`.

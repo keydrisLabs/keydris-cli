@@ -23,6 +23,36 @@ const cliManifest = JSON.parse(
 );
 const expectedVersion = cliManifest.version;
 
+if (
+  cliManifest.scripts?.postinstall !== "node scripts/install-config.mjs"
+) {
+  throw new Error("@keydris/cli: config postinstall script is missing");
+}
+
+function effectiveToml(data) {
+  return data
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .join("\n");
+}
+
+for (const channel of ["stable", "dev"]) {
+  const bundled = await readFile(
+    path.join(cliDirectory, "config", `${channel}.toml`),
+    "utf8"
+  );
+  const deployed = await readFile(
+    path.join(workspaceRoot, "..", "deploy", channel, "keydris.toml"),
+    "utf8"
+  );
+  if (effectiveToml(bundled) !== effectiveToml(deployed)) {
+    throw new Error(
+      `@keydris/cli: bundled ${channel} config differs from deploy/${channel}/keydris.toml`
+    );
+  }
+}
+
 for (const platform of platforms) {
   const directory = packageDirectory(platform);
   const manifest = JSON.parse(

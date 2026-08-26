@@ -8,7 +8,14 @@ const cliDirectory = path.join(workspaceRoot, "packages", "cli");
 const packages = [
   {
     directory: cliDirectory,
-    expected: new Set(["README.md", "bin/keydris.js", "package.json"])
+    expected: new Set([
+      "README.md",
+      "bin/keydris.js",
+      "config/dev.toml",
+      "config/stable.toml",
+      "package.json",
+      "scripts/install-config.mjs"
+    ])
   },
   ...platforms.map((platform) => ({
     directory: packageDirectory(platform),
