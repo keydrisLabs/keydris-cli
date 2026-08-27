@@ -498,3 +498,40 @@ func testMCPGatewayRoutes(t *testing.T) runtimecontract.RuntimeRoutes {
 	}
 	return routes
 }
+
+// The paths Claude Code actually probes, taken from proxy.log. It sends these
+// BEFORE any MCP request, so answering 403 made it abandon the server without
+// ever reaching initialize — which is why 404 is the fix, not a nicety.
+//
+// Only the decision is asserted here: dataplane.Flow keeps its parsed request
+// private with no test seam, so a flow with a specific path cannot be built from
+// this package. The wiring is covered by the end-to-end check in the PR.
+func TestIsOAuthDiscoveryPath(t *testing.T) {
+	for _, path := range []string{
+		"/.well-known/oauth-protected-resource",
+		"/.well-known/oauth-protected-resource/mcp",
+		"/.well-known/oauth-authorization-server",
+		"/.well-known/oauth-authorization-server/mcp",
+		"/.well-known/openid-configuration",
+		"/.well-known/openid-configuration/mcp",
+		"/register",
+		"/oauth/register",
+	} {
+		if !isOAuthDiscoveryPath(path) {
+			t.Errorf("isOAuthDiscoveryPath(%q) = false, want true", path)
+		}
+	}
+	// A genuinely ungoverned path must still reject: softening the blanket would
+	// lose the signal that Keydris deliberately blocked something.
+	for _, path := range []string{
+		"/mcp/",
+		"/graphql",
+		"/.well-known/acme-challenge",
+		"/registered-users",
+		"/",
+	} {
+		if isOAuthDiscoveryPath(path) {
+			t.Errorf("isOAuthDiscoveryPath(%q) = true, want false", path)
+		}
+	}
+}
