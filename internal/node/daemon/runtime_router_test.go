@@ -134,13 +134,14 @@ func TestRuntimeRouterRelaysModernMCPGatewayResponse(t *testing.T) {
 	}
 }
 
-func TestRuntimeRouterPassesThroughMCPLifecycleAndDiscovery(t *testing.T) {
+func TestRuntimeRouterPassesThroughMCPLifecycle(t *testing.T) {
 	routes := testMCPGatewayRoutes(t)
+	// `initialize` and `tools/list` are deliberately absent: the upstream server
+	// can require auth for both, so the handshake is answered locally and
+	// discovery is relayed through the gateway.
 	methods := []string{
-		"initialize",
 		"notifications/initialized",
 		"ping",
-		"tools/list",
 		"prompts/list",
 		"resources/list",
 	}
@@ -173,8 +174,53 @@ func TestRuntimeRouterPassesThroughMCPLifecycleAndDiscovery(t *testing.T) {
 	}
 }
 
+// The handshake authorizes nothing, so it is answered locally rather than
+// relayed — the upstream 401s it without a credential the client does not hold.
+func TestRuntimeRouterAnswersMCPInitializeLocally(t *testing.T) {
+	dp := &fakeDataPlane{}
+	flow := testRoutesFlow(testMCPGatewayRoutes(t))
+	flow.MCPMethod = "initialize"
+	flow.MCPRequestID = json.RawMessage("7")
+
+	handled := newRuntimeRouter(
+		http.DefaultClient,
+		"http://keydris.invalid",
+	).handle(context.Background(), dp, flow)
+
+	if !handled || dp.rejected || dp.passedThrough {
+		t.Fatalf(
+			"handled=%v rejected=%v passed=%v reason=%q",
+			handled, dp.rejected, dp.passedThrough, dp.rejectReason,
+		)
+	}
+	if dp.providerResponse == nil || dp.providerResponse.Status != http.StatusOK {
+		t.Fatalf("no local response: %+v", dp.providerResponse)
+	}
+	var payload struct {
+		ID     json.RawMessage `json:"id"`
+		Result struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(dp.providerResponse.Body, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(payload.ID) != "7" {
+		t.Fatalf("response id = %s, want the request id", payload.ID)
+	}
+	if payload.Result.ProtocolVersion != mcpProtocolVersion {
+		t.Fatalf("protocolVersion = %q", payload.Result.ProtocolVersion)
+	}
+}
+
 func TestMCPPassthroughReasonKeepsActionsGoverned(t *testing.T) {
-	for _, method := range []string{"tools/call", "resources/read", "unknown/method"} {
+	for _, method := range []string{
+		"tools/call",
+		"resources/read",
+		"initialize",
+		"tools/list",
+		"unknown/method",
+	} {
 		t.Run(method, func(t *testing.T) {
 			flow := dataplane.Flow{MCPMethod: method}
 			if reason, ok := mcpPassthroughReason(flow); ok {

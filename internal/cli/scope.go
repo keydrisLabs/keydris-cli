@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
 
@@ -73,6 +74,33 @@ func refreshPolicyScope(cfg *config.Config, routes *runtimecontract.RuntimeRoute
 	}
 	if err := config.SaveDerivedManagedScope(cfg.DataDir, routes.ManagedOrigins()); err != nil {
 		fmt.Fprintf(w, "keydris session: could not refresh the proxy scope cache: %v\n", err)
+	}
+}
+
+// refreshMcpServers rewrites Claude Code's MCP server list from the session's
+// governed routes, so a policy change is reflected without re-running init.
+// Best-effort: a session must still start if the config cannot be written.
+func refreshMcpServers(
+	cfg *config.Config,
+	routes *runtimecontract.RuntimeRoutes,
+	w io.Writer,
+) {
+	if routes == nil {
+		return
+	}
+	endpoints := routes.McpServerEndpoints()
+	servers := make([]sandbox.McpServer, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		servers = append(servers, sandbox.McpServer{
+			Name: endpoint.Name,
+			URL:  endpoint.URL,
+		})
+	}
+	if err := sandbox.ConfigureMcpServers(
+		cfg.ClaudeMcpConfigPath,
+		servers,
+	); err != nil {
+		fmt.Fprintf(w, "keydris session: could not write MCP servers: %v\n", err)
 	}
 }
 
