@@ -61,7 +61,11 @@ func (router *runtimeRouter) handle(
 	switch len(matches) {
 	case 0:
 		if routes.ManagesOrigin(flow.Scheme(), flow.DstHost(), flow.DstPort()) {
-			rejectRuntime(dp, flow, "runtime routes have no route for this path")
+			if isOAuthDiscoveryPath(flow.RequestPath()) {
+				answerNoOAuth(dp, flow)
+			} else {
+				rejectRuntime(dp, flow, "runtime routes have no route for this path")
+			}
 		} else {
 			passThroughRuntime(dp, flow, "unmanaged_origin")
 		}
@@ -115,6 +119,43 @@ func (router *runtimeRouter) handle(
 		rejectRuntime(dp, flow, "runtime enforcement mode is unsupported")
 	}
 	return true
+}
+
+// isOAuthDiscoveryPath reports whether a path is an MCP/OAuth metadata or client
+// registration probe. Clients send these BEFORE attempting the MCP connection, so
+// answering 403 makes them abandon the server entirely rather than fall back.
+func isOAuthDiscoveryPath(path string) bool {
+	if strings.HasPrefix(path, "/.well-known/oauth-") ||
+		strings.HasPrefix(path, "/.well-known/openid-configuration") {
+		return true
+	}
+	// Dynamic Client Registration, wherever the metadata document points it.
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "register" {
+			return true
+		}
+	}
+	return false
+}
+
+// answerNoOAuth replies 404 so the client concludes the server offers no OAuth
+// and connects unauthenticated — which is the governed path, with Keydris
+// injecting the credential upstream. A 403 reads as "auth required but refused"
+// and stops the client dead.
+func answerNoOAuth(dp dataplane.DataPlane, flow dataplane.Flow) {
+	log.Printf(
+		"RUNTIME_NO_OAUTH dst=%s method=%s path=%s",
+		flow.DstString(),
+		flow.RequestMethod(),
+		flow.RequestPath(),
+	)
+	if err := dp.Respond(flow, runtimecontract.ProviderHTTPResponse{
+		Status:  http.StatusNotFound,
+		Headers: map[string]string{"content-type": "application/json"},
+		Body:    json.RawMessage(`{"error":"not_found"}`),
+	}); err != nil {
+		log.Printf("RUNTIME_ERROR operation=no_oauth error=%q", err)
+	}
 }
 
 // The MCP revision advertised to the client. Matches the revision Keydris offers
