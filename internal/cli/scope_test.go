@@ -27,7 +27,8 @@ func decodedTestRoutes(t *testing.T, agentID string, hosts ...string) *runtimeco
 			"status_reason_code": null,
 			"matchers": [{"matcher_type":"http.origin","attributes":{"scheme":"https","host":%q,"port":443,"path_prefix":"/mcp"}}],
 			"resources": [],
-			"runtime_endpoint_path": "/v1/runtime/mcp/gateway"
+			"runtime_endpoint_path": "/v1/runtime/mcp/gateway",
+			"session_endpoint_path": "/v1/runtime/mcp/session"
 		}`, i, host))
 	}
 	body := fmt.Sprintf(`{

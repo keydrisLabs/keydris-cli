@@ -67,6 +67,10 @@ type RuntimeRoute struct {
 
 	// provider_executor and mcp_gateway routes.
 	RuntimeEndpointPath string `json:"runtime_endpoint_path,omitempty"`
+	// mcp_gateway routes. When RequiresUpstreamAuth is set nothing may pass
+	// through: the handshake and listing go to SessionEndpointPath instead.
+	RequiresUpstreamAuth bool   `json:"requires_upstream_auth,omitempty"`
+	SessionEndpointPath  string `json:"session_endpoint_path,omitempty"`
 	// mcp_kit_reader routes.
 	KitActionTokenEndpointPath string `json:"kit_action_token_endpoint_path,omitempty"`
 
@@ -210,9 +214,18 @@ func (route *RuntimeRoute) validate() error {
 		return fmt.Errorf("route has no HTTP origin matcher")
 	}
 	switch route.EnforcementMode {
-	case "provider_executor", "mcp_gateway":
+	case "provider_executor":
 		if !validRuntimePath(route.RuntimeEndpointPath) {
 			return fmt.Errorf("invalid runtime endpoint path")
+		}
+	case "mcp_gateway":
+		if !validRuntimePath(route.RuntimeEndpointPath) {
+			return fmt.Errorf("invalid runtime endpoint path")
+		}
+		// Required: without it an auth-requiring route would silently fall back
+		// to passing bare requests upstream.
+		if !validRuntimePath(route.SessionEndpointPath) {
+			return fmt.Errorf("invalid MCP session endpoint path")
 		}
 	case "mcp_kit_reader":
 		if !validRuntimePath(route.KitActionTokenEndpointPath) {
@@ -392,17 +405,6 @@ func (route RuntimeRoute) ResourceByKey(keyType, value string) (*RouteResource, 
 // providers with case-insensitive identifiers (github.full_name).
 func (route RuntimeRoute) ResourceByKeyFold(keyType, value string) (*RouteResource, bool) {
 	return route.resourceByKey(keyType, value, true)
-}
-
-// ResourceByType returns the route's single resource of a type. Discovery names
-// no tool, so it addresses the server resource by type rather than by value.
-func (route RuntimeRoute) ResourceByType(resourceType string) (*RouteResource, bool) {
-	for index := range route.Resources {
-		if route.Resources[index].ResourceType == resourceType {
-			return &route.Resources[index], true
-		}
-	}
-	return nil, false
 }
 
 func (route RuntimeRoute) resourceByKey(

@@ -72,39 +72,51 @@ func TestApplyRequestMetadataPromotesMCPToolCall(t *testing.T) {
 	}
 }
 
-// Discovery now carries a routing intent so the router can relay it; the HTTP
-// fallback fields stay populated for logging and non-MCP paths.
-func TestApplyRequestMetadataBuildsServerIntentForMCPDiscovery(t *testing.T) {
-	const body = `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`
-	req, err := http.NewRequest(http.MethodPost, "https://mockmcp.io/mcp", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+// Relayed methods carry the id and raw params but no routing intent: the relay
+// addresses the connection, not a resource.
+func TestApplyRequestMetadataCarriesSessionMethodsWithoutAnAction(t *testing.T) {
+	for _, method := range []string{
+		"initialize",
+		"server/discover",
+		"tools/list",
+		"resources/list",
+		"prompts/list",
+		"ping",
+	} {
+		t.Run(method, func(t *testing.T) {
+			body := `{"jsonrpc":"2.0","id":2,"method":"` + method +
+				`","params":{"protocolVersion":"2025-06-18"}}`
+			req, err := http.NewRequest(
+				http.MethodPost,
+				"https://mockmcp.io/mcp",
+				strings.NewReader(body),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
 
-	var flow Flow
-	if err := applyRequestMetadata(&flow, req); err != nil {
-		t.Fatal(err)
-	}
-	if flow.ToolCall != "POST /mcp" {
-		t.Fatalf("ToolCall = %q", flow.ToolCall)
-	}
-	if string(flow.ToolParams) != body {
-		t.Fatalf("ToolParams = %s", flow.ToolParams)
-	}
-	if flow.MCPMethod != "tools/list" || flow.MCPAction == nil {
-		t.Fatalf("discovery metadata = method %q action %+v", flow.MCPMethod, flow.MCPAction)
-	}
-	// Addressed at the server: discovery is asking which tools exist, so it
-	// cannot name one. The router resolves the value from route discovery.
-	if flow.MCPAction.ActionType != "mcp.discovery.tools" ||
-		flow.MCPAction.ResourceType != "mcp.server" ||
-		flow.MCPAction.RoutingKeyType != "mcp.server_id" ||
-		flow.MCPAction.RoutingValue != "" {
-		t.Fatalf("discovery action = %+v", flow.MCPAction)
-	}
-	if len(flow.MCPRequestID) == 0 {
-		t.Fatal("discovery must carry the JSON-RPC id for the relayed response")
+			var flow Flow
+			if err := applyRequestMetadata(&flow, req); err != nil {
+				t.Fatal(err)
+			}
+			if flow.MCPMethod != method {
+				t.Fatalf("MCPMethod = %q", flow.MCPMethod)
+			}
+			if flow.MCPAction != nil {
+				t.Fatalf("MCPAction = %+v, want none", flow.MCPAction)
+			}
+			if string(flow.MCPRequestID) != "2" {
+				t.Fatalf("MCPRequestID = %s", flow.MCPRequestID)
+			}
+			if string(flow.MCPParams) != `{"protocolVersion":"2025-06-18"}` {
+				t.Fatalf("MCPParams = %s", flow.MCPParams)
+			}
+			// The HTTP fallback fields stay populated for logging.
+			if flow.ToolCall != "POST /mcp" {
+				t.Fatalf("ToolCall = %q", flow.ToolCall)
+			}
+		})
 	}
 }
 

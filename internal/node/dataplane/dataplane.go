@@ -43,6 +43,7 @@ type Flow struct {
 	MetadataError string          // local request-metadata validation failure; reject before broker
 	MCPMethod     string          // validated JSON-RPC method for MCP traffic
 	MCPRequestID  json.RawMessage // immutable JSON-RPC request identity for gateway relaying
+	MCPParams     json.RawMessage // raw JSON-RPC params, forwarded verbatim by the session relay
 	MCPAction     *MCPAction      // governed MCP action, nil for lifecycle/discovery traffic
 	Routes        *runtimecontract.RuntimeRoutes
 

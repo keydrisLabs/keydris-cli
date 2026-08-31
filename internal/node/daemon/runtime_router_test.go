@@ -136,10 +136,11 @@ func TestRuntimeRouterRelaysModernMCPGatewayResponse(t *testing.T) {
 
 func TestRuntimeRouterPassesThroughMCPLifecycle(t *testing.T) {
 	routes := testMCPGatewayRoutes(t)
-	// `initialize` and `tools/list` are deliberately absent: the upstream server
-	// can require auth for both, so the handshake is answered locally and
-	// discovery is relayed through the gateway.
+	// This upstream answers the handshake and discovery bare.
 	methods := []string{
+		"initialize",
+		"server/discover",
+		"tools/list",
 		"notifications/initialized",
 		"ping",
 		"prompts/list",
@@ -174,13 +175,69 @@ func TestRuntimeRouterPassesThroughMCPLifecycle(t *testing.T) {
 	}
 }
 
-// The handshake authorizes nothing, so it is answered locally rather than
-// relayed — the upstream 401s it without a credential the client does not hold.
-func TestRuntimeRouterAnswersMCPInitializeLocally(t *testing.T) {
+// Relayed with the credential injected, so the client gets the server's real
+// capabilities rather than a fabricated local answer.
+func TestRuntimeRouterRelaysMCPHandshakeWhenUpstreamNeedsAuth(t *testing.T) {
+	var captured runtimecontract.MCPSessionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/v1/runtime/mcp/session" {
+			t.Errorf("relay path = %s", request.URL.Path)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Errorf("decode relay request: %v", err)
+		}
+		writer.Header().Set("content-type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"schema_version": 1,
+			"request_id": "` + captured.RequestID + `",
+			"status": "succeeded",
+			"error_code": null,
+			"mcp_response": {
+				"jsonrpc": "2.0",
+				"id": 7,
+				"result": {"protocolVersion": "2025-06-18"}
+			}
+		}`))
+	}))
+	defer server.Close()
+
 	dp := &fakeDataPlane{}
-	flow := testRoutesFlow(testMCPGatewayRoutes(t))
+	flow := testRoutesFlow(testAuthRequiringMCPRoutes(t))
 	flow.MCPMethod = "initialize"
 	flow.MCPRequestID = json.RawMessage("7")
+	flow.MCPParams = json.RawMessage(`{"protocolVersion":"2025-06-18"}`)
+
+	handled := newRuntimeRouter(server.Client(), server.URL).
+		handle(context.Background(), dp, flow)
+
+	if !handled || dp.rejected || dp.passedThrough {
+		t.Fatalf(
+			"handled=%v rejected=%v passed=%v reason=%q",
+			handled, dp.rejected, dp.passedThrough, dp.rejectReason,
+		)
+	}
+	if dp.providerResponse == nil || dp.providerResponse.Status != http.StatusOK {
+		t.Fatalf("no relayed response: %+v", dp.providerResponse)
+	}
+	if captured.Message.Method != "initialize" ||
+		string(captured.Message.ID) != "7" ||
+		string(captured.Message.Params) != `{"protocolVersion":"2025-06-18"}` {
+		t.Fatalf("captured relay message = %+v", captured.Message)
+	}
+	if captured.ConnectionID == "" {
+		t.Fatal("relay request carried no connection id")
+	}
+}
+
+// A bare verb cannot be relayed, and forwarding it 401s into the OAuth dance.
+func TestRuntimeRouterAnswers405ForBareTransportWhenUpstreamNeedsAuth(t *testing.T) {
+	dp := &fakeDataPlane{}
+	flow := testRoutesFlow(testAuthRequiringMCPRoutes(t))
+	flow.MCPMethod = ""
+	flow.MCPAction = nil
 
 	handled := newRuntimeRouter(
 		http.DefaultClient,
@@ -193,37 +250,43 @@ func TestRuntimeRouterAnswersMCPInitializeLocally(t *testing.T) {
 			handled, dp.rejected, dp.passedThrough, dp.rejectReason,
 		)
 	}
-	if dp.providerResponse == nil || dp.providerResponse.Status != http.StatusOK {
-		t.Fatalf("no local response: %+v", dp.providerResponse)
+	if dp.providerResponse == nil ||
+		dp.providerResponse.Status != http.StatusMethodNotAllowed {
+		t.Fatalf("response = %+v, want 405", dp.providerResponse)
 	}
-	var payload struct {
-		ID     json.RawMessage `json:"id"`
-		Result struct {
-			ProtocolVersion string `json:"protocolVersion"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(dp.providerResponse.Body, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if string(payload.ID) != "7" {
-		t.Fatalf("response id = %s, want the request id", payload.ID)
-	}
-	if payload.Result.ProtocolVersion != mcpProtocolVersion {
-		t.Fatalf("protocolVersion = %q", payload.Result.ProtocolVersion)
+}
+
+// Nothing passes through on an auth-requiring route.
+func TestMCPPassthroughReasonBlocksAuthRequiringRoutes(t *testing.T) {
+	route := testAuthRequiringMCPRoutes(t).Routes[0]
+	for _, method := range []string{
+		"initialize",
+		"server/discover",
+		"tools/list",
+		"notifications/initialized",
+		"ping",
+		"resources/list",
+		"",
+	} {
+		t.Run(method, func(t *testing.T) {
+			flow := dataplane.Flow{MCPMethod: method}
+			if reason, ok := mcpPassthroughReason(flow, route); ok {
+				t.Fatalf("method %q passed through as %q", method, reason)
+			}
+		})
 	}
 }
 
 func TestMCPPassthroughReasonKeepsActionsGoverned(t *testing.T) {
+	route := testMCPGatewayRoutes(t).Routes[0]
 	for _, method := range []string{
 		"tools/call",
 		"resources/read",
-		"initialize",
-		"tools/list",
 		"unknown/method",
 	} {
 		t.Run(method, func(t *testing.T) {
 			flow := dataplane.Flow{MCPMethod: method}
-			if reason, ok := mcpPassthroughReason(flow); ok {
+			if reason, ok := mcpPassthroughReason(flow, route); ok {
 				t.Fatalf("method %q passed through as %q", method, reason)
 			}
 		})
@@ -492,7 +555,19 @@ func testMCPGatewayRoutes(t *testing.T) runtimecontract.RuntimeRoutes {
 	route := &routes.Routes[0]
 	route.EnforcementMode = "mcp_gateway"
 	route.RuntimeEndpointPath = "/v1/runtime/mcp/gateway"
+	route.SessionEndpointPath = "/v1/runtime/mcp/session"
 	route.KitActionTokenEndpointPath = ""
+	if err := routes.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return routes
+}
+
+// A route whose upstream needs auth — GitHub's hosted MCP server.
+func testAuthRequiringMCPRoutes(t *testing.T) runtimecontract.RuntimeRoutes {
+	t.Helper()
+	routes := testMCPGatewayRoutes(t)
+	routes.Routes[0].RequiresUpstreamAuth = true
 	if err := routes.Validate(); err != nil {
 		t.Fatal(err)
 	}

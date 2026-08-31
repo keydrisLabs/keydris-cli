@@ -44,7 +44,8 @@ func mcpRoute(routeID string, matchers ...string) string {
 			"status_reason_code": null,
 			"routing_keys": [{"key_type": "mcp.server_id", "value": "mcp:github-whoami"}]
 		}],
-		"runtime_endpoint_path": "/v1/runtime/mcp/gateway"
+		"runtime_endpoint_path": "/v1/runtime/mcp/gateway",
+		"session_endpoint_path": "/v1/runtime/mcp/session"
 	}`, routeID, strings.Join(matchers, ","))
 }
 
@@ -154,5 +155,51 @@ func TestMcpServerEndpointsKeepsNonDefaultPort(t *testing.T) {
 	got := routes.McpServerEndpoints()
 	if len(got) != 1 || got[0].URL != "http://127.0.0.1:8931/mcp" {
 		t.Fatalf("McpServerEndpoints() = %#v", got)
+	}
+}
+
+// Rejected rather than accepted empty: an auth-requiring route would otherwise
+// fall back to passing bare requests upstream.
+func TestDecodeRejectsMCPGatewayWithoutASessionPath(t *testing.T) {
+	route := strings.Replace(
+		mcpRoute("e6273ae3-c222-4406-baac-02280d542310",
+			originMatcher("https", "api.githubcopilot.com", 443, "/mcp")),
+		`,
+		"session_endpoint_path": "/v1/runtime/mcp/session"`,
+		"",
+		1,
+	)
+	if _, err := DecodeRuntimeRoutes(routesJSON(route)); err == nil {
+		t.Fatal("expected a route with no session endpoint path to be rejected")
+	}
+}
+
+// Defaults to false so a credential-less server keeps passing through.
+func TestDecodeCarriesRequiresUpstreamAuth(t *testing.T) {
+	route := mcpRoute("e6273ae3-c222-4406-baac-02280d542310",
+		originMatcher("https", "api.githubcopilot.com", 443, "/mcp"))
+	decoded, err := DecodeRuntimeRoutes(routesJSON(route))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Routes[0].RequiresUpstreamAuth {
+		t.Fatal("RequiresUpstreamAuth = true, want false when absent")
+	}
+
+	flagged := strings.Replace(
+		route,
+		`"runtime_endpoint_path"`,
+		`"requires_upstream_auth": true, "runtime_endpoint_path"`,
+		1,
+	)
+	decoded, err = DecodeRuntimeRoutes(routesJSON(flagged))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Routes[0].RequiresUpstreamAuth {
+		t.Fatal("RequiresUpstreamAuth = false, want true")
+	}
+	if decoded.Routes[0].SessionEndpointPath != "/v1/runtime/mcp/session" {
+		t.Fatalf("SessionEndpointPath = %q", decoded.Routes[0].SessionEndpointPath)
 	}
 }

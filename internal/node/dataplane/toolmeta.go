@@ -75,30 +75,20 @@ func applyMCPToolMetadata(f *Flow, body []byte) {
 	}
 	f.MCPMethod = rpc.Method
 
-	switch rpc.Method {
-	case "tools/call":
+	switch {
+	case rpc.Method == "tools/call":
 		if applyMCPToolCall(f, rpc.Params) {
 			f.MCPRequestID = append(json.RawMessage(nil), rpc.ID...)
 		}
-	case "resources/read":
+	case rpc.Method == "resources/read":
 		if applyMCPResourceRead(f, rpc.Params) {
 			f.MCPRequestID = append(json.RawMessage(nil), rpc.ID...)
 		}
-	case "tools/list":
-		applyMCPToolsList(f)
+	case runtimecontract.IsMCPSessionMethod(rpc.Method):
+		// No MCPAction: the relay addresses the connection, not a resource —
+		// discovery cannot name a tool. Only the id and params are forwarded.
 		f.MCPRequestID = append(json.RawMessage(nil), rpc.ID...)
-	}
-}
-
-// applyMCPToolsList addresses discovery at the server, not a tool: which tools
-// exist is what the call is asking, so it cannot name one. The routing value is
-// filled in by the router, which knows the connection's server resource.
-func applyMCPToolsList(f *Flow) {
-	f.MCPAction = &MCPAction{
-		ActionType:     "mcp.discovery.tools",
-		ResourceType:   "mcp.server",
-		RoutingKeyType: "mcp.server_id",
-		Parameters:     map[string]any{},
+		f.MCPParams = append(json.RawMessage(nil), rpc.Params...)
 	}
 }
 
