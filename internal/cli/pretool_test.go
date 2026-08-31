@@ -58,6 +58,7 @@ func TestClaudeApprovalDecisionRemainsAsk(t *testing.T) {
 	verdict, reason := commandVerdict(
 		runtimecontract.DecisionApprovalRequired,
 		"keydris_approval_required",
+		"npm publish",
 	)
 	if verdict != "ask" || !strings.Contains(reason, "requires approval") {
 		t.Fatalf("approval verdict = %q, reason = %q", verdict, reason)
@@ -77,6 +78,39 @@ func TestClaudeApprovalDecisionRemainsAsk(t *testing.T) {
 	if decoded.HookSpecificOutput.HookEventName != "PreToolUse" ||
 		decoded.HookSpecificOutput.Decision != "ask" {
 		t.Fatalf("Claude hook output changed: %s", output.String())
+	}
+}
+
+func TestCommandVerdictFormatsPolicyDenialAsBox(t *testing.T) {
+	verdict, reason := commandVerdict(
+		runtimecontract.DecisionDeny,
+		"keydris_policy_denied",
+		"git status",
+	)
+	if verdict != "deny" {
+		t.Fatalf("verdict = %q, want deny", verdict)
+	}
+	for _, want := range []string{"╔", "╚", "COMMAND DENIED", "git status", "keydris_policy_denied"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason %q missing %q", reason, want)
+		}
+	}
+}
+
+func TestCommandVerdictKeepsPlainMessageForInfraDenials(t *testing.T) {
+	verdict, reason := commandVerdict(
+		runtimecontract.DecisionDeny,
+		"keydris_policy_unavailable",
+		"git status",
+	)
+	if verdict != "deny" {
+		t.Fatalf("verdict = %q, want deny", verdict)
+	}
+	if strings.Contains(reason, "╔") {
+		t.Fatalf("infra denial unexpectedly boxed: %q", reason)
+	}
+	if reason != "keydris: denied by policy (keydris_policy_unavailable)" {
+		t.Fatalf("unexpected reason: %q", reason)
 	}
 }
 
