@@ -423,6 +423,7 @@ keydris status                     Show config + sandbox enforcement state
 keydris logs                       Print and verify the hash-chained evidence ledger
 keydris upgrade                    Download & replace the binary with the latest release
                                      [--channel stable|dev] [--version <v>] [--no-config]
+keydris telemetry [status|on|off]  Show or change anonymous install telemetry
 keydris version                    Print the version
 keydris help                       Show this help
 ```
@@ -609,6 +610,22 @@ No, and that is by design. The CLI governs *which requests reach an upstream and
 ### Can I use it commercially?
 
 Yes. Apache License 2.0 covers commercial and private use, with a patent grant. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+---
+
+## Telemetry
+
+Official release binaries send **anonymous install telemetry** to PostHog so we can see adoption: one `cli_installed` event on the first run, and one `cli_upgraded` event after a version change. Each event carries a random install ID (a UUID generated locally, derived from nothing about you or your machine), the CLI version, OS, architecture, release channel, and install method (npm or binary) — never code, commands, prompts, file paths, or personal data. The hook entrypoints and the proxy never send telemetry, so nothing is added to the agent's path.
+
+The first run prints a notice with these details. Opt out at any time:
+
+```sh
+keydris telemetry off        # persisted under ~/.keydris-data (survives upgrades)
+```
+
+or set `DO_NOT_TRACK=1` or `KEYDRIS_TELEMETRY=off` in the environment. Check the effective state with `keydris telemetry status`.
+
+Building from source produces a telemetry-free binary: the PostHog key is stamped only at release time and is not in this repository.
 
 ---
 

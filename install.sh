@@ -92,4 +92,6 @@ elif curl -fSL --proto '=https' "$verdir/keydris.toml" -o "$tmp/keydris.toml" 2>
   fi
 fi
 
-echo "==> done: $("$BINDIR/keydris" version 2>/dev/null || echo 'keydris installed')"
+# stderr stays attached: the binary's first run prints its one-time telemetry
+# disclosure (opt out with `keydris telemetry off` or DO_NOT_TRACK=1).
+echo "==> done: $("$BINDIR/keydris" version || echo 'keydris installed')"

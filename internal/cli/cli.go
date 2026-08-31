@@ -20,6 +20,11 @@ func Execute() int {
 		return 1
 	}
 
+	// Anonymous install/upgrade telemetry. Reports before dispatch so
+	// long-running commands (`run`, `codex`) are still counted; after the
+	// first run and outside upgrades this is a no-op.
+	recordTelemetry(args[0])
+
 	switch args[0] {
 	case "proxy":
 		return runProxy(args[1:])
@@ -52,6 +57,8 @@ func Execute() int {
 		return runLogs()
 	case "upgrade":
 		return runUpgrade(args[1:])
+	case "telemetry":
+		return runTelemetry(args[1:])
 	case "version", "--version":
 		fmt.Printf("keydris %s\n", Version)
 		return 0
@@ -88,6 +95,7 @@ Usage:
   keydris logs                       Print and verify the hash-chained evidence ledger
   keydris upgrade                    Download & replace the binary with the latest release
                                        [--channel stable|dev] [--version <v>] [--no-config]
+  keydris telemetry [status|on|off]  Show or change anonymous install telemetry
   keydris version                    Print the version
   keydris help                       Show this help
 `)
