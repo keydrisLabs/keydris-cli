@@ -4,7 +4,20 @@ DIST ?= dist
 PREFIX ?= /usr/local
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
+# PostHog install telemetry: the project API key (public, write-only) and an
+# optional endpoint override are stamped only when set, so local and source
+# builds never send telemetry. Release builds get the key from CI secrets.
+POSTHOG_API_KEYSL ?=
+POSTHOG_ENDPOINT ?=
+
 LDFLAGS := -s -w -X github.com/keydrisLabs/keydris-cli/internal/cli.Version=$(VERSION)
+ifneq ($(strip $(POSTHOG_API_KEYSL)),)
+LDFLAGS += -X github.com/keydrisLabs/keydris-cli/internal/telemetry.PostHogKey=$(POSTHOG_API_KEYSL)
+endif
+ifneq ($(strip $(POSTHOG_ENDPOINT)),)
+LDFLAGS += -X github.com/keydrisLabs/keydris-cli/internal/telemetry.PostHogEndpoint=$(POSTHOG_ENDPOINT)
+endif
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
 # Release distribution: which S3 bucket + channel to publish to, and the

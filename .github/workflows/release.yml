@@ -55,6 +55,10 @@ jobs:
           fi
 
       - name: Build release matrix
+        env:
+          # Public write-only PostHog project key for install telemetry;
+          # unset (e.g. on forks) simply builds telemetry-free binaries.
+          POSTHOG_API_KEYSL: ${{ secrets.POSTHOG_API_KEYSL }}
         run: make dist VERSION=${{ steps.meta.outputs.version }}
 
       - name: Verify checksums
@@ -64,6 +68,7 @@ jobs:
         working-directory: npm
         env:
           NPM_VERSION: ${{ steps.meta.outputs.npm_version }}
+          POSTHOG_API_KEYSL: ${{ secrets.POSTHOG_API_KEYSL }}
         run: |
           npm run version:packages -- "$NPM_VERSION"
           npm run build:native

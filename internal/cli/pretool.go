@@ -141,10 +141,10 @@ func decidePreToolUse(stdin io.Reader, harness hookHarness) (string, string) {
 	if err != nil {
 		return "deny", "keydris: command authorization unavailable: " + err.Error()
 	}
-	return commandVerdict(decision, reason)
+	return commandVerdict(decision, reason, input.ToolInput.Command)
 }
 
-func commandVerdict(decision runtimecontract.NormalizedDecision, reason string) (string, string) {
+func commandVerdict(decision runtimecontract.NormalizedDecision, reason, command string) (string, string) {
 	switch decision {
 	case runtimecontract.DecisionAllow:
 		return "allow", "keydris: allowed by policy"
@@ -153,6 +153,9 @@ func commandVerdict(decision runtimecontract.NormalizedDecision, reason string) 
 	default:
 		if reason == "" {
 			reason = string(decision)
+		}
+		if reason == denialBoxReasonCode {
+			return "deny", formatPolicyDenialBox(command, reason)
 		}
 		return "deny", "keydris: denied by policy (" + reason + ")"
 	}

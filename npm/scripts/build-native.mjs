@@ -47,6 +47,20 @@ const goExecutable = process.env.GO || "go";
 const buildCache = process.env.GOCACHE || path.join(repositoryRoot, ".gobuild");
 const versionSymbol =
   "github.com/keydrisLabs/keydris-cli/internal/cli.Version";
+const telemetryKeySymbol =
+  "github.com/keydrisLabs/keydris-cli/internal/telemetry.PostHogKey";
+const telemetryEndpointSymbol =
+  "github.com/keydrisLabs/keydris-cli/internal/telemetry.PostHogEndpoint";
+
+// The PostHog key is public/write-only and stamped only when the release
+// environment provides it; local builds stay telemetry-free.
+let ldflags = `-s -w -X ${versionSymbol}=${version}`;
+if (process.env.POSTHOG_API_KEYSL) {
+  ldflags += ` -X ${telemetryKeySymbol}=${process.env.POSTHOG_API_KEYSL}`;
+}
+if (process.env.POSTHOG_ENDPOINT) {
+  ldflags += ` -X ${telemetryEndpointSymbol}=${process.env.POSTHOG_ENDPOINT}`;
+}
 
 for (const platform of selected) {
   const output = binaryPath(platform);
@@ -61,7 +75,7 @@ for (const platform of selected) {
       "build",
       "-trimpath",
       "-ldflags",
-      `-s -w -X ${versionSymbol}=${version}`,
+      ldflags,
       "-o",
       output,
       "./cmd/keydris"
