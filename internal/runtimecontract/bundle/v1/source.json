@@ -1,0 +1,33 @@
+{
+  "contract_bundle_version": "1.2.0",
+  "runtime_schema_version": 1,
+  "source_repository": "contract-source",
+  "source_paths": {
+    "fixture": "packages/contracts/fixtures/v1/valid/kit-session-response.json",
+    "schema": "packages/contracts/schemas/v1/kit-session-response.schema.json",
+    "decision_response_fixture": "packages/contracts/fixtures/v1/valid/decision-approval-required.json",
+    "decision_response_schema": "packages/contracts/schemas/v1/decision-response.schema.json",
+    "provider_execution_request_fixture": "packages/contracts/fixtures/v1/valid/provider-execution-request.json",
+    "provider_execution_response_fixture": "packages/contracts/fixtures/v1/valid/provider-execution-response.json",
+    "provider_execution_request_schema": "packages/contracts/schemas/v1/provider-execution-request.schema.json",
+    "provider_execution_response_schema": "packages/contracts/schemas/v1/provider-execution-response.schema.json",
+    "mcp_gateway_request_fixture": "packages/contracts/fixtures/v1/valid/mcp-gateway-request.json",
+    "mcp_gateway_response_fixture": "packages/contracts/fixtures/v1/valid/mcp-gateway-response.json",
+    "mcp_gateway_request_schema": "packages/contracts/schemas/v1/mcp-gateway-request.schema.json",
+    "mcp_gateway_response_schema": "packages/contracts/schemas/v1/mcp-gateway-response.schema.json"
+  },
+  "sha256": {
+    "fixture": "b720b30ad7b4a63f491d4fa777a16ff7b76a4b3532c8ec3d0a665757387bf5cd",
+    "schema": "32f2645f758018bc93ce5e6f89d61a1e20c58839f0ece16b5924db5edc9f631d",
+    "decision_response_fixture": "06d5c612260357ddc6dc7cc600d180f5e600076843bdf90d3f2b02477bb6c7bb",
+    "decision_response_schema": "c7a741013c59ab7c70ac0ace846b9bf8bcaaafaca1fcc3a4c99cb60930cbcb1a",
+    "provider_execution_request_fixture": "1d39bfc8441deeed3a40ca85014a1e09c9d869928c73136c880c446675001c4d",
+    "provider_execution_response_fixture": "e6c58ea9e3cdedd80b4d0f40b072387cff997fdbe278e67ed93b72ee1973dfaa",
+    "provider_execution_request_schema": "d1a0d1842227a8cf7dff364c5e9d00349126693d6a328c84167e82dbf3d14454",
+    "provider_execution_response_schema": "b5bf9233bbed2ab01e9ff89306337a87b64f1ada57804f97d34f3f48f6d6e977",
+    "mcp_gateway_request_fixture": "b31cab43a1683b2b56d3c602a45edf5bc298aa8af0a5c03daf7f508d7d61162e",
+    "mcp_gateway_response_fixture": "ca494f356f717a3b9feba232f22e33f2b43fa96a110a326fe83075ae9ecb46be",
+    "mcp_gateway_request_schema": "884aa102945dec4dfa3148fe5ff804332aa16f4b392418700e3637a08ec4f586",
+    "mcp_gateway_response_schema": "fb20e7ca1b6d5f8b644ab4811945b07e7c56a2f637a144ace85566fed7544ef2"
+  }
+}

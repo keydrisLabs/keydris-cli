@@ -1,0 +1,19 @@
+# Keydris layered config (normally copy to ~/.keydris.toml).
+# Precedence: process env > ~/.keydris.toml > opted-in project files > defaults.
+# Project .env/.keydris.toml files are ignored unless the process environment
+# explicitly contains KEYDRIS_TRUST_PROJECT_CONFIG=1.
+# Each key maps to KEYDRIS_<UPPER(KEY)>.
+
+[keydris]
+trust_domain = "keydris.local"
+control_url  = "http://127.0.0.1:8081"
+dataplane    = "sandbox"       # default; "transparent" is Linux/root only
+blueprint    = "repo-tools"
+proxy_port   = "15001"
+# Escape hatch only. The managed-destination file is derived from the agent's
+# policy by `keydris init` and refreshed on every session start; setting these
+# overrides that detection, so prefer leaving them unset.
+# managed_mode = "selected"
+# managed_destinations = "api.example.com:443,docs.mcp.cloudflare.com:443"
+backend_port = "8080"
+svid_ttl_seconds = "900"

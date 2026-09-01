@@ -1,0 +1,22 @@
+# Codex uses config.toml rather than settings.json.
+#
+# Copy this file to either:
+#   ~/.codex/config.toml          personal default
+#   <project>/.codex/config.toml  trusted-project setting
+#
+# Keydris still owns the identity lifecycle through `keydris codex`; this file
+# does not replace the wrapper.
+
+sandbox_mode = "workspace-write"
+# "untrusted" makes Codex ask before running commands, which is what lets a
+# Keydris policy's "require approval" command rules land on the interactive
+# prompt: the Keydris PermissionRequest hook auto-allows policy-allowed
+# commands and stays silent for approval-required ones, so only those reach
+# the human. Policy-denied commands are blocked earlier by the PreToolUse hook.
+approval_policy = "untrusted"
+
+[sandbox_workspace_write]
+# Permit sandboxed commands to reach the authenticated Keydris proxy inherited
+# from `keydris codex`. Keep the Codex sandbox enabled; do not use
+# danger-full-access for this integration.
+network_access = true

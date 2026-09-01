@@ -1,0 +1,158 @@
+name: release
+
+# Tag push (v*) -> stable channel; push to main -> dev channel.
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write   # OIDC federation to AWS (no long-lived keys)
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs tags/history
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Verify npm trusted-publishing runtime
+        run: |
+          node --version
+          npm_version=$(npm --version)
+          echo "npm $npm_version"
+          node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number); if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) process.exit(1)' "$npm_version"
+
+      - name: Compute channel + version
+        id: meta
+        run: |
+          if [ "${{ github.ref_type }}" = tag ]; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "npm_version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=dev" >> "$GITHUB_OUTPUT"
+            echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+            base_version=$(node -p "require('./npm/packages/cli/package.json').version.split('-')[0]")
+            echo "npm_version=${base_version}-dev.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release matrix
+        env:
+          # Public write-only PostHog project key for install telemetry;
+          # unset (e.g. on forks) simply builds telemetry-free binaries.
+          POSTHOG_API_KEYSL: ${{ secrets.POSTHOG_API_KEYSL }}
+        run: make dist VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Verify checksums
+        run: cd dist && (command -v sha256sum >/dev/null && sha256sum -c SHA256SUMS || shasum -a 256 -c SHA256SUMS)
+
+      - name: Build and verify npm packages
+        working-directory: npm
+        env:
+          NPM_VERSION: ${{ steps.meta.outputs.npm_version }}
+          POSTHOG_API_KEYSL: ${{ secrets.POSTHOG_API_KEYSL }}
+        run: |
+          npm run version:packages -- "$NPM_VERSION"
+          npm run build:native
+          npm test
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Publish to S3
+        env:
+          BUCKET: ${{ vars.KEYDRIS_RELEASE_BUCKET }}
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          aws s3 sync dist/ "s3://$BUCKET/keydris-cli/$CHANNEL/$VERSION/"
+          aws s3 sync dist/ "s3://$BUCKET/keydris-cli/$CHANNEL/latest/" --cache-control max-age=60
+          # Publish both channel-specific installers and the legacy dev-compatible path.
+          scripts/render-install.sh stable > install-stable.sh
+          scripts/render-install.sh dev    > install-dev.sh
+          aws s3 cp install-stable.sh "s3://$BUCKET/keydris-cli/stable/install.sh" --cache-control max-age=60
+          aws s3 cp install-dev.sh    "s3://$BUCKET/keydris-cli/dev/install.sh"    --cache-control max-age=60
+          aws s3 cp install-dev.sh    "s3://$BUCKET/keydris-cli/install.sh" --cache-control max-age=60
+          if [ "$CHANNEL" = dev ]; then
+            aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/keydris-cli/dev/$VERSION/keydris.toml" --cache-control max-age=60
+            aws s3 cp deploy/dev/keydris.toml "s3://$BUCKET/keydris-cli/dev/latest/keydris.toml" --cache-control max-age=60
+          elif [ "$CHANNEL" = stable ]; then
+            aws s3 cp deploy/stable/keydris.toml "s3://$BUCKET/keydris-cli/stable/$VERSION/keydris.toml" --cache-control max-age=60
+            aws s3 cp deploy/stable/keydris.toml "s3://$BUCKET/keydris-cli/stable/latest/keydris.toml" --cache-control max-age=60
+          fi
+
+      - name: Invalidate CloudFront
+        if: ${{ vars.KEYDRIS_CLOUDFRONT_DISTRIBUTION_ID != '' }}
+        env:
+          DIST_ID: ${{ vars.KEYDRIS_CLOUDFRONT_DISTRIBUTION_ID }}
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+        run: |
+          aws cloudfront create-invalidation --distribution-id "$DIST_ID" \
+            --paths "/keydris-cli/install.sh" \
+                    "/keydris-cli/stable/install.sh" \
+                    "/keydris-cli/dev/install.sh" \
+                    "/keydris-cli/$CHANNEL/latest/*"
+
+      - name: Publish native npm packages
+        working-directory: npm
+        env:
+          NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/'
+          NPM_CONFIG_PROVENANCE: 'false'
+          NPM_TAG: ${{ steps.meta.outputs.npm_tag }}
+          NPM_VERSION: ${{ steps.meta.outputs.npm_version }}
+        run: |
+          native_packages=(
+            platform-win32-x64
+            platform-win32-arm64
+            platform-darwin-x64
+            platform-darwin-arm64
+            platform-linux-x64
+            platform-linux-arm64
+          )
+          for package in "${native_packages[@]}"; do
+            npm publish "./packages/$package" --access public --tag "$NPM_TAG"
+          done
+          for package in "${native_packages[@]}"; do
+            name=$(node -p "require('./packages/$package/package.json').name")
+            published=
+            for attempt in {1..12}; do
+              published=$(npm view "$name@$NPM_VERSION" version 2>/dev/null || true)
+              if [ "$published" = "$NPM_VERSION" ]; then
+                break
+              fi
+              echo "Waiting for $name@$NPM_VERSION to become visible ($attempt/12)"
+              sleep 5
+            done
+            if [ "$published" != "$NPM_VERSION" ]; then
+              echo "::error::$name@$NPM_VERSION was published but is not visible in the registry"
+              exit 1
+            fi
+          done
+
+      - name: Publish npm launcher
+        working-directory: npm
+        env:
+          NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/'
+          NPM_CONFIG_PROVENANCE: 'false'
+          NPM_TAG: ${{ steps.meta.outputs.npm_tag }}
+        run: npm publish ./packages/cli --access public --tag "$NPM_TAG"

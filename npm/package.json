@@ -1,0 +1,17 @@
+{
+  "name": "keydris-npm-workspace",
+  "version": "0.1.0-next.2",
+  "private": true,
+  "workspaces": [
+    "packages/cli"
+  ],
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build:native": "node scripts/build-native.mjs",
+    "version:packages": "node scripts/set-version.mjs",
+    "verify": "node scripts/verify.mjs",
+    "pack:check": "node scripts/pack-check.mjs",
+    "install:check": "node scripts/install-check.mjs",
+    "test": "node scripts/verify.mjs && node scripts/pack-check.mjs && node scripts/install-check.mjs"
+  }
+}

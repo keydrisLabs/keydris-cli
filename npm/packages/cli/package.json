@@ -1,0 +1,52 @@
+{
+  "name": "@keydris/cli",
+  "version": "0.1.0-next.2",
+  "description": "Governed, per-session identity and brokered egress for AI agents",
+  "type": "module",
+  "bin": {
+    "keydris": "bin/keydris.js"
+  },
+  "files": [
+    "bin",
+    "config",
+    "scripts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install-config.mjs",
+    "prepublishOnly": "node ../../scripts/prepublish-check.mjs"
+  },
+  "optionalDependencies": {
+    "@keydris/cli-win32-x64": "0.1.0-next.2",
+    "@keydris/cli-win32-arm64": "0.1.0-next.2",
+    "@keydris/cli-darwin-x64": "0.1.0-next.2",
+    "@keydris/cli-darwin-arm64": "0.1.0-next.2",
+    "@keydris/cli-linux-x64": "0.1.0-next.2",
+    "@keydris/cli-linux-arm64": "0.1.0-next.2"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "codex",
+    "claude",
+    "security",
+    "spiffe"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keydrisLabs/keydris-cli.git",
+    "directory": "npm/packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/keydrisLabs/keydris-cli/issues"
+  },
+  "homepage": "https://github.com/keydrisLabs/keydris-cli#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}

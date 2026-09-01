@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "decision_id": "Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H7",
+  "request_id": "logical-action-001",
+  "attempt_id": "01K1X4Y5Z6A7B8C9D0E1F2G3H5",
+  "correlation_id": "01K1X4Y5Z6A7B8C9D0E1F2G3H6",
+  "decided_at": "2026-07-28T12:00:00.125Z",
+  "decision": "approval_required",
+  "reason_code": "keydris_approval_required",
+  "obligations": []
+}

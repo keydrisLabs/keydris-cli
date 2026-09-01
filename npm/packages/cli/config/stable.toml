@@ -1,0 +1,19 @@
+# Keydris stable-channel defaults. npm installs this to ~/.keydris.toml.
+#
+# Lowest-precedence config: override any value with an environment variable.
+# Project-local .env/.keydris.toml files require KEYDRIS_TRUST_PROJECT_CONFIG=1.
+# Each key maps to KEYDRIS_<UPPER(KEY)>.
+
+[keydris]
+# `keydris upgrade` reads this to stay on the channel this install came from.
+channel = "stable"
+
+control_url      = "https://api.keydris.com"
+control_mtls_url = "https://api.keydris.com:8443"
+trust_domain     = "keydris.local"
+
+oidc_issuer        = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_ft2ArrhS7"
+cognito_domain     = "https://auth.keydris.com"
+oauth_client_id    = "6rll39d1l5hq1irjag9o4cu8m2"
+oauth_scopes       = "openid email"
+oauth_redirect_url = "http://localhost:3000/callback"
