@@ -119,6 +119,10 @@ type Config struct {
 	// command-gating hooks into (default $CODEX_HOME/hooks.json, with
 	// CODEX_HOME defaulting to ~/.codex).
 	CodexHooksPath string
+	// CodexConfigPath is where Codex reads MCP servers — a different file from
+	// CodexHooksPath, and one the user owns, so Keydris edits only the table
+	// sections it wrote (default $CODEX_HOME/config.toml).
+	CodexConfigPath string
 	// HTTPProxyPort is the port the Claude Code sandbox routes egress to
 	// (sandbox.network.httpProxyPort). Defaults to ProxyPort.
 	HTTPProxyPort int
@@ -243,6 +247,7 @@ func Load() *Config {
 		ClaudeSettingsPath:  env("KEYDRIS_CLAUDE_SETTINGS", defaultClaudeSettings()),
 		ClaudeMcpConfigPath: env("KEYDRIS_CLAUDE_MCP_CONFIG", defaultClaudeMcpConfig()),
 		CodexHooksPath:      env("KEYDRIS_CODEX_HOOKS", defaultCodexHooks()),
+		CodexConfigPath:     env("KEYDRIS_CODEX_CONFIG", defaultCodexConfig()),
 		HTTPProxyPort:       envInt("KEYDRIS_HTTP_PROXY_PORT", envInt("KEYDRIS_PROXY_PORT", 15001)),
 		AllowedDomains:      envList("KEYDRIS_ALLOWED_DOMAINS"),
 		ManagedMode:         managed.Mode,
@@ -324,20 +329,25 @@ func defaultClaudeMcpConfig() string {
 	return filepath.Join(home, ".claude.json")
 }
 
-func defaultCodexHooks() string {
+func defaultCodexHooks() string { return codexHomeFile("hooks.json") }
+
+func defaultCodexConfig() string { return codexHomeFile("config.toml") }
+
+// codexHomeFile resolves a file under $CODEX_HOME, expanding `~`, else ~/.codex.
+func codexHomeFile(name string) string {
 	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
 		if codexHome == "~" || strings.HasPrefix(codexHome, "~/") || strings.HasPrefix(codexHome, `~\`) {
 			if home, err := os.UserHomeDir(); err == nil && home != "" {
 				codexHome = filepath.Join(home, strings.TrimLeft(codexHome[1:], `/\`))
 			}
 		}
-		return filepath.Join(codexHome, "hooks.json")
+		return filepath.Join(codexHome, name)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return ".codex/hooks.json"
+		return filepath.Join(".codex", name)
 	}
-	return filepath.Join(home, ".codex", "hooks.json")
+	return filepath.Join(home, ".codex", name)
 }
 
 // envList parses a comma-separated environment variable into a trimmed slice.

@@ -77,9 +77,11 @@ func refreshPolicyScope(cfg *config.Config, routes *runtimecontract.RuntimeRoute
 	}
 }
 
-// refreshMcpServers rewrites Claude Code's MCP server list from the session's
-// governed routes, so a policy change is reflected without re-running init.
-// Best-effort: a session must still start if the config cannot be written.
+// refreshMcpServers rewrites the MCP server list from the session's governed
+// routes, so a policy change lands without re-running init. Both harness configs
+// are written every time — one session hook serves `keydris codex` and Claude's
+// SessionStart, and which is in use is not known here. Best-effort: a failure on
+// one harness must not stop the session or skip the other.
 func refreshMcpServers(
 	cfg *config.Config,
 	routes *runtimecontract.RuntimeRoutes,
@@ -101,6 +103,16 @@ func refreshMcpServers(
 		servers,
 	); err != nil {
 		fmt.Fprintf(w, "keydris session: could not write MCP servers: %v\n", err)
+	}
+	if err := sandbox.ConfigureCodexMcpServers(
+		cfg.CodexConfigPath,
+		servers,
+	); err != nil {
+		fmt.Fprintf(
+			w,
+			"keydris session: could not write Codex MCP servers: %v\n",
+			err,
+		)
 	}
 }
 
