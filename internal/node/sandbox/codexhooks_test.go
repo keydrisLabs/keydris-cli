@@ -13,6 +13,9 @@ func TestCodexHooksRoundTrip(t *testing.T) {
 	// A pre-existing user hook must survive configure and deconfigure.
 	seed := map[string]any{
 		"hooks": map[string]any{
+			"SessionStart": []any{map[string]any{"hooks": []any{map[string]any{
+				"type": "command", "command": "custom-context",
+			}}}},
 			"PreToolUse": []any{
 				map[string]any{"hooks": []any{map[string]any{
 					"type": "command", "command": "custom-linter",
@@ -31,6 +34,7 @@ func TestCodexHooksRoundTrip(t *testing.T) {
 	opt := CodexHookOptions{
 		PreToolUseHook:        "keydris __pretool-use --codex",
 		PermissionRequestHook: "keydris __permission-request",
+		SessionStartHook:      "keydris __agent-context",
 	}
 	if err := ConfigureCodexHooks(path, opt); err != nil {
 		t.Fatal(err)
@@ -49,6 +53,13 @@ func TestCodexHooksRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	hooks := settings["hooks"].(map[string]any)
+	starts := hooks["SessionStart"].([]any)
+	if len(starts) != 2 {
+		t.Fatalf("expected user context and one Keydris briefing, got %d", len(starts))
+	}
+	if !eventHasMatcherCommand(starts, "", opt.SessionStartHook) {
+		t.Fatal("briefing must apply to startup, resume, clear and compact")
+	}
 	preTool := hooks["PreToolUse"].([]any)
 	if len(preTool) != 2 {
 		t.Fatalf("PreToolUse should hold the user hook plus one Keydris entry, got %d", len(preTool))
@@ -75,6 +86,9 @@ func TestCodexHooksRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	hooks = settings["hooks"].(map[string]any)
+	if starts := hooks["SessionStart"].([]any); len(starts) != 1 {
+		t.Fatal("deinit must preserve only user context")
+	}
 	if entries := hooks["PreToolUse"].([]any); len(entries) != 1 {
 		t.Fatalf("user PreToolUse hook was not preserved: %v", entries)
 	}

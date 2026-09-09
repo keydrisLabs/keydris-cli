@@ -27,7 +27,7 @@ func (s Status) OK() bool {
 
 // Verify inspects the settings file and reports the sandbox enforcement state
 // against the expected proxy port.
-func Verify(path string, expectedPort int) (Status, error) {
+func Verify(path string, expectedPort int, expected ...Options) (Status, error) {
 	st := Status{}
 	settings, err := readSettings(path)
 	if err != nil {
@@ -67,10 +67,14 @@ func Verify(path string, expectedPort int) (Status, error) {
 	}
 
 	if hooks, ok := settings["hooks"].(map[string]any); ok {
-		hasStart := eventHasCommand(hooks["SessionStart"], "keydris __session-start")
-		hasEnd := eventHasCommand(hooks["SessionEnd"], "keydris __session-end")
+		start, end, pre := "keydris __session-start", "keydris __session-end", "keydris __pretool-use"
+		if len(expected) > 0 {
+			start, end, pre = expected[0].SessionStartHook, expected[0].SessionEndHook, expected[0].PreToolUseHook
+		}
+		hasStart := eventHasCommand(hooks["SessionStart"], start)
+		hasEnd := eventHasCommand(hooks["SessionEnd"], end)
 		st.HooksWired = hasStart && hasEnd
-		st.CommandGate = eventHasCommand(hooks["PreToolUse"], "keydris __pretool-use")
+		st.CommandGate = eventHasCommand(hooks["PreToolUse"], pre)
 	}
 	if !st.HooksWired {
 		st.Warnings = append(st.Warnings, "SessionStart/SessionEnd hooks not wired: sessions get no per-session SVID (re-run `keydris init claude-code <agent-id>`)")
@@ -89,7 +93,9 @@ func eventHasCommand(value any, want string) bool {
 		handlers, _ := group["hooks"].([]any)
 		for _, handler := range handlers {
 			hook, _ := handler.(map[string]any)
-			if command, _ := hook["command"].(string); command == want {
+			kind, _ := hook["type"].(string)
+			async, _ := hook["async"].(bool)
+			if command, _ := hook["command"].(string); want != "" && command == want && kind == "command" && !async {
 				return true
 			}
 		}

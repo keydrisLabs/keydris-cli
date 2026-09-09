@@ -2,8 +2,9 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,8 @@ import (
 // foreground, so the parent can return after backgrounding it.
 const daemonEnv = "KEYDRIS_PROXY_DAEMON"
 
+var errProcessNotRunning = errors.New("process is not running")
+
 type proxyProcessRecord struct {
 	PID      int    `json:"pid"`
 	Identity string `json:"identity"`
@@ -27,8 +30,26 @@ type proxyProcessRecord struct {
 
 // runProxy dispatches `keydris proxy <subcommand>`.
 func runProxy(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: keydris proxy up|down|scope")
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
+		fmt.Fprintln(os.Stdout, "Usage: keydris proxy up|down|restart|status|logs|scope list")
+		if len(args) == 0 {
+			return 2
+		}
+		return 0
+	}
+	if args[0] == "scope" {
+		return runProxyScope(args[1:])
+	}
+	if args[0] == "logs" {
+		return runProxyLogs(args[1:])
+	}
+	fs := flag.NewFlagSet("proxy "+args[0], flag.ContinueOnError)
+	if code := parseFlags(fs, args[1:]); code >= 0 {
+		return code
+	}
+	cfg := config.Load()
+	if err := cfg.ValidatePaths(); err != nil {
+		newUI(os.Stderr).row("error", "Paths", err.Error())
 		return 1
 	}
 	switch args[0] {
@@ -36,11 +57,21 @@ func runProxy(args []string) int {
 		return runProxyUp()
 	case "down":
 		return runProxyDown()
-	case "scope":
-		return runProxyScope(args[1:])
+	case "restart":
+		if code := runProxyDown(); code != 0 {
+			return code
+		}
+		return runProxyUp()
+	case "status":
+		health := inspectProxy(cfg)
+		newUI(os.Stdout).row(health.state, "Proxy", health.detail)
+		if health.state != "ok" {
+			return 1
+		}
+		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "keydris proxy: unknown subcommand %q (want up|down|scope)\n", args[0])
-		return 1
+		fmt.Fprintf(os.Stderr, "keydris proxy: unknown subcommand %q\n", args[0])
+		return 2
 	}
 }
 
@@ -120,13 +151,29 @@ func runProxyDown() int {
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Println("keydris: no proxy pidfile; nothing to stop")
+			newUI(os.Stdout).row("inactive", "Proxy", "Already stopped (no PID file)")
 			return 0
 		}
 		fmt.Fprintf(os.Stderr, "keydris proxy down: %v\n", err)
 		return 1
 	}
 	var record proxyProcessRecord
+	unlock, lockErr := lockProxyFile(filepath.Join(cfg.DataDir, "proxy.lock"))
+	if lockErr != nil {
+		newUI(os.Stderr).row("error", "Proxy", lockErr.Error())
+		return 1
+	}
+	defer unlock()
+	// Read again after taking the lifecycle lock.
+	data, err = os.ReadFile(pidPath)
+	if os.IsNotExist(err) {
+		newUI(os.Stdout).row("inactive", "Proxy", "Already stopped")
+		return 0
+	}
+	if err != nil {
+		newUI(os.Stderr).row("error", "Proxy", err.Error())
+		return 1
+	}
 	if err := json.Unmarshal(data, &record); err != nil {
 		// Older releases wrote a bare PID. Refuse to signal it because a reused
 		// PID could now belong to an unrelated process.
@@ -144,8 +191,12 @@ func runProxyDown() int {
 
 	identity, err := processIdentity(record.PID)
 	if err != nil {
+		if !errors.Is(err, errProcessNotRunning) {
+			newUI(os.Stderr).row("error", "Proxy", "Cannot verify the saved process: "+err.Error())
+			return 1
+		}
 		_ = os.Remove(pidPath)
-		fmt.Printf("keydris: proxy not running (removed stale pidfile, pid=%d)\n", record.PID)
+		newUI(os.Stdout).row("inactive", "Proxy", "Stopped; removed stale PID file")
 		return 0
 	}
 	if identity != record.Identity {
@@ -162,13 +213,14 @@ func runProxyDown() int {
 		fmt.Fprintf(os.Stderr, "keydris proxy down: stop pid %d: %v\n", record.PID, err)
 		return 1
 	}
+	_ = proc.Release()
 
 	// Wait up to ~3s for a clean exit. Keep the pidfile when the process does
 	// not stop so a subsequent command can retry rather than reporting success.
 	for i := 0; i < 30; i++ {
-		if current, identityErr := processIdentity(record.PID); identityErr != nil || current != record.Identity {
+		if current, identityErr := processIdentity(record.PID); errors.Is(identityErr, errProcessNotRunning) || (identityErr == nil && current != record.Identity) {
 			_ = os.Remove(pidPath)
-			fmt.Printf("keydris: proxy stopped (pid=%d)\n", record.PID)
+			newUI(os.Stdout).row("ok", "Proxy", fmt.Sprintf("Stopped (PID %d)", record.PID))
 			return 0
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -183,6 +235,10 @@ func runProxyDown() int {
 // set and runs the daemon in the foreground until interrupted.
 func runProxyUp() int {
 	cfg := config.Load()
+	if err := checkResetInProgress(cfg); err != nil {
+		newUI(os.Stderr).row("error", "Proxy", err.Error())
+		return 1
+	}
 
 	// Child: run the daemon (blocking) until signaled.
 	if os.Getenv(daemonEnv) == "1" {
@@ -193,12 +249,33 @@ func runProxyUp() int {
 		return 0
 	}
 
-	// Refuse to start a second proxy (and keep the readiness check below
-	// meaningful): if the listen port already accepts connections, bail.
-	addr := fmt.Sprintf("127.0.0.1:%d", proxyListenPort(cfg))
-	if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
-		_ = c.Close()
-		fmt.Fprintf(os.Stderr, "keydris proxy up: %s already in use (is the proxy already running?)\n", addr)
+	ui := newUI(os.Stdout)
+	if err := cfg.ValidatePaths(); err != nil {
+		ui.row("error", "Paths", err.Error())
+		return 1
+	}
+	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
+		ui.row("error", "Proxy", err.Error())
+		return 1
+	}
+	unlock, lockErr := lockProxyFile(filepath.Join(cfg.DataDir, "proxy.lock"))
+	if lockErr != nil {
+		ui.row("warning", "Proxy", lockErr.Error())
+		return 1
+	}
+	defer unlock()
+	if err := checkResetInProgress(cfg); err != nil {
+		ui.row("error", "Proxy", err.Error())
+		return 1
+	}
+	health := inspectProxy(cfg)
+	if health.state == "ok" {
+		ui.row("ok", "Proxy", "Already running; "+health.detail)
+		return 0
+	}
+	if health.state == "error" {
+		ui.row("error", "Proxy", health.detail)
+		ui.next("keydris proxy logs")
 		return 1
 	}
 
@@ -261,7 +338,14 @@ func runProxyUp() int {
 	exited := make(chan error, 1)
 	go func() { exited <- child.Wait() }()
 
-	deadline := time.Now().Add(2 * time.Second)
+	finishProgress := ui.progress("Starting proxy")
+	ready := false
+	defer func() {
+		if !ready {
+			finishProgress(fmt.Errorf("startup did not complete; run keydris proxy logs"))
+		}
+	}()
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
 		case werr := <-exited:
@@ -270,10 +354,11 @@ func runProxyUp() int {
 			return 1
 		default:
 		}
-		if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
-			_ = c.Close()
-			fmt.Printf("keydris: proxy up (dataplane=%s, pid=%d, port=%d)\n", cfg.DataPlane, pid, proxyListenPort(cfg))
-			fmt.Printf("  logs: %s    stop: keydris proxy down\n", logPath)
+		if health := inspectProxy(cfg); health.state == "ok" && health.pid == pid {
+			ready = true
+			finishProgress(nil)
+			ui.row("ok", "Proxy", health.detail)
+			ui.next("keydris status")
 			return 0
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -286,8 +371,8 @@ func runProxyUp() int {
 		fmt.Fprintf(os.Stderr, "keydris proxy up: daemon exited on startup (%s); see %s\n", exitReason(werr), logPath)
 		return 1
 	default:
-		fmt.Printf("keydris: proxy starting (pid=%d); see %s\n", pid, logPath)
-		return 0
+		fmt.Fprintf(os.Stderr, "keydris proxy up: readiness timed out (PID %d); process retained for inspection; see %s\n", pid, logPath)
+		return 1
 	}
 }
 

@@ -29,6 +29,8 @@ func formatPolicyDenialBox(command, reasonCode string) string {
 		"Policy  : " + reasonCode,
 		"Source  : Keydris policy service",
 		"Result  : blocked before execution",
+		"Next    : report the reason; continue permitted work",
+		"          Do not retry the denied effect through another route.",
 	}
 
 	width := denialBoxMinContentWidth

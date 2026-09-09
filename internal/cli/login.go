@@ -31,6 +31,10 @@ func runLogin(args []string) int {
 // is bound to cfg.AgentID when one is configured (`keydris init`), replacing
 // the removed one-time enrollment token as the agent-binding step.
 func browserLogin(cfg *config.Config, loginHint string, noBrowser bool) int {
+	if err := cfg.ValidatePaths(); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris login: %v\n", err)
+		return 1
+	}
 	opt := login.Options{
 		ControlURL:  cfg.ControlURL,
 		IdentityDir: cfg.IdentityDir,

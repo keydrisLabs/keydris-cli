@@ -127,6 +127,11 @@ func Run(cfg *config.Config) error {
 		policy = "(none)"
 	}
 	log.Printf("keydris daemon running (dataplane=%s, policy=%s, scope=%s, control=%s)", cfg.DataPlane, policy, scope.Mode(), cfg.ControlMTLSURL)
+	listenPort := cfg.ProxyPort
+	if cfg.DataPlane == "sandbox" || cfg.DataPlane == "claude-code" {
+		listenPort = cfg.HTTPProxyPort
+	}
+	sock.MarkReady(listenPort, cfg.DataPlane, cfg.AgentID)
 	for flow := range dp.Flows() {
 		go handleFlow(ctx, cfg, authClient, router, dp, scope, ledger, flow)
 	}

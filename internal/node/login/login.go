@@ -36,6 +36,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/keydrisLabs/keydris-cli/internal/platform"
 )
 
 // Options drives Run.
@@ -121,11 +123,13 @@ func Run(opt Options) (*Identity, error) {
 	go func() { _ = srv.Serve(ln) }()
 	defer srv.Close()
 
-	fmt.Fprintln(os.Stderr, "keydris: opening your browser to sign in...")
 	if opt.NoBrowser {
 		fmt.Fprintf(os.Stderr, "keydris: open this URL to continue:\n  %s\n", authURL)
-	} else if err := opt.Open(authURL); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris: could not open a browser (%v); open this URL manually:\n  %s\n", err, authURL)
+	} else {
+		fmt.Fprintln(os.Stderr, "keydris: opening your browser to sign in...")
+		if err := opt.Open(authURL); err != nil {
+			fmt.Fprintf(os.Stderr, "keydris: could not open a browser (%v); open this URL manually:\n  %s\n", err, authURL)
+		}
 	}
 
 	var code string
@@ -136,6 +140,9 @@ func Run(opt Options) (*Identity, error) {
 		}
 		code = res.code
 	case <-time.After(opt.Timeout):
+		if platform.Current().WSL != "" {
+			return nil, fmt.Errorf("timed out waiting for browser login after %s; check Windows-to-WSL localhost forwarding and the callback port, then retry with --no-browser", opt.Timeout)
+		}
 		return nil, fmt.Errorf("timed out waiting for browser login after %s", opt.Timeout)
 	}
 
@@ -228,11 +235,22 @@ func (o *Options) listen() (ln net.Listener, redirectURI, path string, err error
 	if err != nil {
 		return nil, "", "", fmt.Errorf("bad redirect URL %q: %w", o.RedirectURL, err)
 	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	if u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Port() == "" || (host != "localhost" && (ip == nil || !ip.IsLoopback())) {
+		return nil, "", "", fmt.Errorf("redirect URL must be an HTTP loopback URL with an explicit port")
+	}
+	listenHost := host
+	if host == "localhost" {
+		// Keep the registered redirect URI, but choose IPv4 for Windows-to-WSL
+		// localhost forwarding rather than relying on /etc/hosts address order.
+		listenHost = "127.0.0.1"
+	}
 	path = u.Path
 	if path == "" {
 		path = "/"
 	}
-	l, err := net.Listen("tcp", u.Host)
+	l, err := net.Listen("tcp", net.JoinHostPort(listenHost, u.Port()))
 	if err != nil {
 		return nil, "", "", fmt.Errorf("bind callback %s (is the port free, and registered in the provider?): %w", u.Host, err)
 	}

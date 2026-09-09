@@ -11,6 +11,7 @@ package sandbox
 type CodexHookOptions struct {
 	PreToolUseHook        string
 	PermissionRequestHook string
+	SessionStartHook      string
 }
 
 const codexShellMatcher = "^Bash$"
@@ -27,23 +28,27 @@ func ConfigureCodexHooks(path string, opt CodexHookOptions) error {
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	merge := func(event, command string) {
+	merge := func(event, matcher, command string) {
 		existing, _ := hooks[event].([]any)
 		kept := make([]any, 0, len(existing)+1)
 		for _, candidate := range existing {
-			if !entryReferencesKeydris(candidate) {
-				kept = append(kept, candidate)
+			filtered, changed := stripKeydrisHandlers(candidate)
+			if !changed || filtered != nil {
+				kept = append(kept, filtered)
 			}
 		}
 		hooks[event] = append(kept, map[string]any{
-			"matcher": codexShellMatcher,
+			"matcher": matcher,
 			"hooks": []any{map[string]any{
 				"type": "command", "command": command, "timeout": 30,
 			}},
 		})
 	}
-	merge("PreToolUse", opt.PreToolUseHook)
-	merge("PermissionRequest", opt.PermissionRequestHook)
+	merge("PreToolUse", codexShellMatcher, opt.PreToolUseHook)
+	merge("PermissionRequest", codexShellMatcher, opt.PermissionRequestHook)
+	if opt.SessionStartHook != "" {
+		merge("SessionStart", "", opt.SessionStartHook)
+	}
 	settings["hooks"] = hooks
 	return writeSettings(path, settings)
 }
@@ -64,18 +69,20 @@ func DeconfigureCodexHooks(path string) (bool, error) {
 		return false, nil
 	}
 	changed := false
-	for _, event := range []string{"PreToolUse", "PermissionRequest"} {
+	for _, event := range []string{"PreToolUse", "PermissionRequest", "SessionStart"} {
 		entries, ok := hooks[event].([]any)
 		if !ok {
 			continue
 		}
 		var kept []any
 		for _, entry := range entries {
-			if entryReferencesKeydris(entry) {
+			filtered, removed := stripKeydrisHandlers(entry)
+			if removed {
 				changed = true
-				continue
 			}
-			kept = append(kept, entry)
+			if !removed || filtered != nil {
+				kept = append(kept, filtered)
+			}
 		}
 		if len(kept) == 0 {
 			if changed {
@@ -103,6 +110,9 @@ func VerifyCodexHooks(path string, opt CodexHookOptions) (bool, error) {
 	}
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
+		return false, nil
+	}
+	if opt.SessionStartHook != "" && !eventHasMatcherCommand(hooks["SessionStart"], "", opt.SessionStartHook) {
 		return false, nil
 	}
 	return eventHasMatcherCommand(hooks["PreToolUse"], codexShellMatcher, opt.PreToolUseHook) &&

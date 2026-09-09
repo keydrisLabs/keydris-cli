@@ -40,7 +40,7 @@ func loadToml(path string) {
 		}
 		envKey := "KEYDRIS_" + strings.ToUpper(key)
 		if os.Getenv(envKey) == "" {
-			_ = os.Setenv(envKey, val)
+			_ = os.Setenv(envKey, filePathValue(envKey, val, path))
 		}
 	}
 }

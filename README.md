@@ -1,4 +1,6 @@
-# keydris-cli: Secretless, Per-Session Egress for Unmodified Agents
+# keydris-cli: Authority before action
+
+Keydris provides authority infrastructure for the autonomous economy.
 
 **`keydris` is the command-line client that gives a coding agent a fresh cryptographic identity per session and routes its egress through a local proxy. The agent holds no API key, no PAT, no secret of any kind: for every origin its policy governs, the control plane authorizes the call and either executes it upstream itself or injects the credential on the wire. Claude Code and OpenAI Codex run unmodified.**
 
@@ -44,7 +46,7 @@ An agent that talks to GitHub, Slack, or an MCP server normally holds that servi
 - **No secret at rest on the agent side.** A compromised laptop yields nothing between requests; an attacker has to be present *during* an authorized call, on an origin the policy already governs.
 - **The credential's blast radius is one call.** Not one process, not one session: one HTTP request or one `tools/call`, with its real arguments, evaluated against policy before anything reaches the network.
 - **Authorization is bound to the actual request.** The method, path, resource id, and body travel with the decision, so the control plane decides against the call that is really about to happen — and re-enforces that decision server-side at execution time.
-- **The agent is unmodified.** Claude Code runs `claude`; Codex runs through `keydris codex`. Neither knows Keydris exists beyond the hooks `keydris init` wires up.
+- **The agent is unmodified.** Claude Code runs `claude`; Codex runs through `keydris codex`. Onboarding installs a bundled skill and wires a short session briefing so agents understand their delegated authority and how to handle denials.
 - **Failures deny.** No session, control plane unreachable, request timeout, malformed payload: every error path is an explicit deny, never a silent allow.
 - **One static binary, one Go dependency.** `CGO_ENABLED=0`, stdlib plus a JSON canonicalizer. No runtime, no daemon manager, no kernel module required on the default plane.
 
@@ -110,11 +112,13 @@ The installer verifies the download against `SHA256SUMS` before installing. `key
 ### npm
 
 ```bash
-npm install --global @keydris/cli
+npm install --global @keydris/cli --foreground-scripts
 keydris init
 ```
 
 The launcher selects a prebuilt native binary for Windows, macOS, or Linux; it does not reimplement the security-sensitive Go runtime in JavaScript. Its config-only postinstall step writes the bundled channel defaults to `~/.keydris.toml`, backing up an existing file as `~/.keydris.toml.bak`; set `KEYDRIS_NO_CONFIG=1` to skip it. A global installation is recommended, because npm owns the executable location the background proxy runs from.
+
+To show the installation checks, use the [npm foreground-scripts option](https://docs.npmjs.com/cli/v11/using-npm/config/#foreground-scripts). npm controls package download progress. Keydris reports actual binary/configuration checks and provides guided progress during `keydris init`. If install scripts were disabled, `init` prepares missing configuration without replacing an existing file.
 
 ### From source
 
@@ -134,6 +138,107 @@ go build -o bin\keydris.exe .\cmd\keydris
 
 ## Getting Started
 
+### Windows with WSL2
+
+Run the Linux CLI, agent and proxy in the **same WSL2 distribution and user
+account**. Use Linux Node/npm inside that distribution; a Windows npm install is
+a separate native Windows installation. WSL1 cannot provide the required Linux
+sandbox. Keydris rejects detected WSL1, mixed Windows executables, and Windows
+mounts used for runtime state or agent configuration, including linked paths.
+
+From Windows, `wsl.exe --list --verbose` shows the distribution version. Inside
+your WSL2 terminal, install the chosen agent and Linux Node/npm, then:
+
+```bash
+node -p 'process.platform'             # must print linux
+command -v node npm claude codex       # inspect the tools you installed
+# Claude Code's Linux sandbox needs these packages (Ubuntu/Debian):
+sudo apt-get install bubblewrap socat
+npm install --global @keydris/cli --foreground-scripts
+keydris init
+keydris doctor
+```
+
+Keep `~/.keydris-data`, agent settings and skill directories in the Linux home.
+Do not share certificate or identity directories with native Windows or another
+distribution. Path overrides must be absolute Linux paths. Projects can remain
+on Windows mounts, but Linux-home projects generally perform better.
+
+Sign-in tries `wslview`, the Windows browser handler, then `xdg-open`; if none
+works, it prints the URL. `keydris init --help` describes `--no-browser` for a
+manual browser flow. The Windows browser must be able to reach the CLI's
+localhost callback in WSL. Check localhost forwarding and callback-port conflicts
+if sign-in times out; the CLI keeps the callback on loopback.
+
+After `wsl.exe --shutdown` or a distribution restart, run `keydris proxy up`
+before reopening agent sessions. If another Windows or WSL process owns the
+proxy port, status reports the conflict instead of assuming it is Keydris.
+`doctor` checks Claude's Linux dependencies and probes namespace creation;
+it does not certify every sandbox behavior or policy decision.
+
+See [Microsoft's WSL networking documentation](https://learn.microsoft.com/en-us/windows/wsl/networking)
+and [Claude's sandbox requirements](https://code.claude.com/docs/en/sandboxing).
+
+### VS Code integrated terminals
+
+Use the same commands in a VS Code terminal as in a standalone terminal:
+`claude` after Claude onboarding, or `keydris codex` after Codex onboarding.
+Hooks use absolute executable paths, so opening another project does not change
+which CLI or certificates they use. Keep the same home, `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`, and any `KEYDRIS_*` overrides in the setup and session terminals.
+After installing or changing PATH, reopen the terminal; restart VS Code if it
+still inherits the old environment.
+
+For Windows/WSL work, use **WSL: Reopen Folder in WSL** through the
+[VS Code WSL extension](https://code.visualstudio.com/docs/remote/wsl), then run
+setup and the agent inside that Linux terminal. Selecting a WSL shell alone
+does not move a Windows-hosted AI extension into WSL.
+
+Status identifies VS Code terminals when `TERM_PROGRAM=vscode`. Local readiness
+is a setup check, not proof that every terminal, conversation or editor tool is
+governed. Claude Code and Codex **sidebar integrations are a separate deliverable**.
+Wrapping `code .` in `keydris run` is not a per-conversation integration.
+
+### Agent skill and session briefing
+
+`init` installs the bundled `keydris-authority` skill for the selected agent:
+
+| Agent | Skill location |
+| --- | --- |
+| Claude Code | `~/.claude/skills/keydris-authority/SKILL.md`; follows the configured Claude settings directory |
+| Codex | `~/.agents/skills/keydris-authority/SKILL.md`, independent of `CODEX_HOME` |
+
+`CLAUDE_CONFIG_DIR` selects Claude's settings directory when set; its default
+settings and MCP config paths follow that directory. An explicit
+`KEYDRIS_CLAUDE_SETTINGS` or `KEYDRIS_CLAUDE_MCP_CONFIG` override takes precedence.
+
+The skill explains delegated authority, CLI diagnostics, approvals, denials,
+and authorized administration. The `SessionStart` hooks add a short, secret-free
+briefing for startup, resume, clear and compaction. Claude uses its existing
+session hook. Codex uses a context-only hook: the `keydris codex` wrapper still
+owns identity and cleanup. Use a Codex release supporting these hooks, and review
+the updated commands in `/hooks` after rerunning `keydris init codex`.
+
+```bash
+keydris skill                        # read the bundled skill offline
+keydris skill --brief                # read the session briefing
+keydris status --verbose             # inspect installation and resolved paths
+```
+
+Guidance ships inside the binary, so npm and standalone installs need no extra
+download. Rerun `init` after a CLI upgrade to refresh the installed skill and
+absolute hooks. An unchanged Keydris-managed skill can be updated or removed;
+existing or user-edited content is retained and reported. `deinit` removes only
+the selected agent's unchanged skill. Reset lists unchanged managed skill files
+in its preview and refuses to delete one edited after that preview. Other skills,
+`AGENTS.md`, `CLAUDE.md`, and user instruction settings are preserved.
+
+A skill is behavioral guidance, not a security boundary. Runtime authorization,
+hooks, proxy routing and sandbox enforcement still determine what may execute.
+See [Codex skills](https://learn.chatgpt.com/docs/build-skills),
+[Codex hooks](https://learn.chatgpt.com/docs/hooks), and
+[Claude hooks](https://code.claude.com/docs/en/hooks).
+
 ### Prerequisites
 
 - **A reachable Keydris control plane.** The CLI is the agent/client half; the issuer, broker, and grant store are a separate service it reaches over mTLS. See [Pointing at a control plane](#pointing-at-a-control-plane).
@@ -151,7 +256,7 @@ go build -o bin\keydris.exe .\cmd\keydris
 #    is no scope to configure by hand.
 keydris init claude-code <agent-id>   # add --trust-store to install the CA system-wide
 
-# 2. Start the brokered egress proxy in the background (no `&` needed).
+# 2. Start again later if needed; init already started it (no `&` needed).
 keydris proxy up
 
 # 3. Confirm enforcement state and the detected proxy scope.
@@ -168,7 +273,7 @@ claude
 
 ### Quickstart — OpenAI Codex
 
-Codex does not currently expose a reliable end-of-session hook, so Keydris owns the lifecycle by wrapping the process:
+Keydris wraps the Codex process so its session is revoked when that terminal process exits, independently of Codex's thread lifecycle:
 
 ```bash
 keydris init codex <agent-id>        # `init openai` is also accepted
@@ -409,22 +514,33 @@ keydris whoami                     Show the locally stored identity
 keydris logout                     Remove the locally stored identity
 keydris init                       Interactive agent setup
 keydris init claude-code <agent>   Configure Claude Code sandbox + CA
-                                     [--strict] [--trust-store]
+                                     [--strict=false] [--trust-store] [--no-start] [--no-browser]
 keydris init codex <agent>         Configure OpenAI Codex + CA
-                                     [--trust-store]
+                                     [--trust-store] [--no-start] [--no-browser]
 keydris deinit claude-code|codex   Undo init: remove the Keydris config
 keydris proxy up                   Start the brokered egress proxy in the background
 keydris proxy down                 Stop the background proxy
+keydris proxy restart              Stop and start the verified Keydris proxy
+keydris proxy status               Check the local proxy process and health
+keydris proxy logs [--follow]       Read recent proxy output [--lines 50]
 keydris proxy scope list           Show the origins detected from the agent's policy
 keydris run -- <cmd...>            Run a command inside a keydris session
 keydris codex [args...]            Run OpenAI Codex inside a keydris session
-keydris status                     Show config + sandbox enforcement state
+keydris status                     Check identity, proxy, integrations and control plane
+                                     [--json] [--verbose] [--offline] [--target codex|claude-code]
+  keydris doctor                     Detailed read-only status and recovery guidance
+  keydris skill [--brief]            Read the bundled agent skill or session briefing
+keydris reset                      Preview and confirm removal of local setup and certificates
+                                     [--dry-run] [--all] [--yes] [--keep-trust]
 keydris logs                       Print and verify the hash-chained evidence ledger
 keydris upgrade                    Download & replace the binary with the latest release
                                      [--channel stable|dev] [--version <v>] [--no-config]
 keydris telemetry [status|on|off]  Show or change anonymous install telemetry
 keydris version                    Print the version
 keydris help                       Show this help
+
+Output: keydris --color auto|always|never <command> (auto respects NO_COLOR).
+Status exits 0 when its checks pass, 1 when attention is needed, 2 for invalid arguments.
 ```
 
 `<agent>` is the agent id (a UUID) created for this integration in the Keydris console; the policy that governs it is assigned there, not on the command line.
@@ -432,6 +548,97 @@ keydris help                       Show this help
 The `__session-start`, `__session-end`, `__pretool-use`, and `__permission-request` entrypoints are internal — `keydris init` wires them into the harness's settings, and they are not meant to be run by hand.
 
 ---
+
+### Status and recovery
+
+The welcome screen and setup banner use **Authority before action**. Running
+`keydris` shows setup guidance on a fresh install, or status once an agent is
+configured. `init` guides sign-in, certificate setup, hook configuration, policy
+scope detection and proxy startup. Invalid interactive entries can be retried.
+A failed sign-in, scope lookup or requested trust-store installation exits with
+an error. Use `--no-start` to finish configuration without starting the proxy.
+
+`keydris status` checks the certificate/key pair, matching CA bundle, verified
+proxy process and authenticated local health response, configured integrations,
+cached policy scope and control-plane connectivity. Unconfigured integrations
+are muted. These checks describe local readiness; they do not prove that a
+running harness has accepted its hooks or that every request will be allowed.
+
+```bash
+keydris status --target codex
+keydris status --json                 # JSON only, even with --color always
+keydris doctor                       # detailed status with absolute file paths
+keydris status --offline              # skip remote connectivity
+keydris proxy status
+keydris proxy restart
+keydris proxy logs --lines 100
+keydris proxy logs --follow           # Ctrl+C to stop following
+```
+
+Green means a check passed, yellow needs attention, red failed, and muted means
+inactive. Color is automatic on supported terminals; redirected output stays
+plain. Set `NO_COLOR` or use `keydris --color never <command>` to disable colors;
+`--color always` forces them. Status exits `0` when its checks pass, `1` when
+attention is needed, or `2` for invalid arguments. `status` and `doctor` do not
+renew identity, mint sessions or record telemetry.
+
+Interactive welcome/setup banners render the ASCII logo in `#F8F7F4` on
+true-color terminals. `KEYDRIS_LOGO_COLOR=default` uses the terminal foreground
+for light themes; reported light backgrounds also use that fallback. Redirected
+output omits the artwork unless `--color always` is explicitly requested.
+`NO_COLOR` and `--color never` disable logo color too. Hook output, `skill`, and
+status JSON never include the banner or ANSI colors.
+
+`proxy up` succeeds when the verified proxy is already healthy. Startup only
+succeeds after the daemon confirms its data plane is ready. A foreign process
+on the port is reported as a conflict. Older daemons without the health protocol
+need `keydris proxy restart` after upgrading.
+
+### Reset local setup
+
+Close running agent sessions, then preview or perform a reset:
+
+```bash
+keydris reset --dry-run               # inspect exact paths; no changes
+keydris reset                         # preview, then type reset to confirm
+keydris reset --all --dry-run         # include logs and other data contents
+keydris reset --all --yes             # perform the complete reset
+```
+
+Default reset removes local identity, session state, certificates, keys, cached
+scope and Keydris integration entries. It keeps logs, evidence, the CLI binary,
+`~/.keydris.toml` and telemetry preferences. `--all` also removes logs, evidence
+and other contents of the configured data directory; telemetry preferences
+remain. Known files configured outside that directory are listed in the preview.
+Custom identity directories are never recursively deleted.
+
+Reset stops only a proxy whose saved process identity can be verified. It revokes
+unexpired saved sessions before deleting credentials. If revocation fails, it
+keeps credentials for retry. OS trust cleanup identifies the exact local CA by
+its fingerprint. If permission is unavailable, remove trust manually or explicitly
+choose `--keep-trust`. Keep the original CA file until manual cleanup is complete.
+Windows cleanup targets the current-user Root store; macOS targets the login
+keychain; Linux targets the certificate file installed by Keydris.
+
+Reset refuses filesystem roots, home/working directories and their ancestors,
+symlinks, Windows junctions, and paths overlapping shared settings. Deletions are
+limited to the reviewed file list; new contents cause reset to stop. An interrupted
+reset may leave `.reset-in-progress` in the data directory. Verify that no reset is
+running before manually removing that marker and retrying.
+
+`deinit claude-code|codex` removes only that integration. Shared agent and policy
+state remain while another integration still has Keydris hooks.
+
+### Paths that work across projects
+
+Generated Claude Code and Codex hooks use a quoted absolute executable path.
+CA paths in generated settings are absolute too. Relative paths in
+`~/.keydris.toml` resolve against that file's directory, and opted-in project
+configuration resolves against its own file. Environment path overrides must
+be absolute; setup reports an actionable error instead of using a different
+data directory in each project. Windows hook paths use forward slashes to work
+with paths containing spaces. Shell-expanding characters in a Windows executable
+path are rejected with an explicit error.
 
 ## Project Structure
 

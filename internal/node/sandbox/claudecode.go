@@ -90,8 +90,9 @@ func mergeHooks(settings map[string]any, startCmd, endCmd string) {
 		existing, _ := hooks[event].([]any)
 		kept := make([]any, 0, len(existing)+1)
 		for _, candidate := range existing {
-			if !entryReferencesKeydris(candidate) {
-				kept = append(kept, candidate)
+			filtered, changed := stripKeydrisHandlers(candidate)
+			if !changed || filtered != nil {
+				kept = append(kept, filtered)
 			}
 		}
 		hooks[event] = append(kept, entry(command))
@@ -117,8 +118,9 @@ func mergePreToolUseHook(settings map[string]any, command string) {
 	existing, _ := hooks["PreToolUse"].([]any)
 	kept := make([]any, 0, len(existing)+1)
 	for _, candidate := range existing {
-		if !entryReferencesKeydris(candidate) {
-			kept = append(kept, candidate)
+		filtered, changed := stripKeydrisHandlers(candidate)
+		if !changed || filtered != nil {
+			kept = append(kept, filtered)
 		}
 	}
 	hooks["PreToolUse"] = append(kept, map[string]any{

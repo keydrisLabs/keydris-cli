@@ -100,6 +100,10 @@ func updateSessionOwner(cfg *config.Config, sid string, pid int, managed bool) {
 }
 
 func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
+	if err := checkResetInProgress(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	if err := validateSessionID(sid); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris session: %v\n", err)
 		return 1
@@ -151,6 +155,12 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 		return 1
 	}
 
+	if err := checkResetInProgress(cfg); err != nil {
+		_ = revokeSessionInstance(cfg, inst.SessionID)
+		unbindSessionForMode(cfg, handle)
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	// Keep the proxy scope synced with policy changes automatically.
 	refreshPolicyScope(cfg, routes, os.Stderr)
 	refreshMcpServers(cfg, routes, os.Stderr)

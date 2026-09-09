@@ -30,25 +30,33 @@ const (
 )
 
 func codexHookOptions() (sandbox.CodexHookOptions, error) {
+	quoted, err := hookExecutable()
+	if err != nil {
+		return sandbox.CodexHookOptions{}, err
+	}
+	return sandbox.CodexHookOptions{PreToolUseHook: quoted + " __pretool-use --codex", PermissionRequestHook: quoted + " __permission-request", SessionStartHook: quoted + " __agent-context"}, nil
+}
+
+func hookExecutable() (string, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return sandbox.CodexHookOptions{}, fmt.Errorf("resolve keydris executable: %w", err)
+		return "", fmt.Errorf("resolve keydris executable: %w", err)
 	}
 	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
 		executable = resolved
 	}
 	executable, err = filepath.Abs(executable)
 	if err != nil {
-		return sandbox.CodexHookOptions{}, fmt.Errorf("resolve absolute keydris executable: %w", err)
+		return "", fmt.Errorf("resolve absolute keydris executable: %w", err)
 	}
 	quoted := shellQuote(executable)
 	if runtime.GOOS == "windows" {
-		quoted = `"` + executable + `"`
+		if strings.ContainsAny(executable, "%!$\x60\r\n\"") {
+			return "", fmt.Errorf("hook executable path contains unsupported shell characters: %s", executable)
+		}
+		quoted = `"` + filepath.ToSlash(executable) + `"`
 	}
-	return sandbox.CodexHookOptions{
-		PreToolUseHook:        quoted + " __pretool-use --codex",
-		PermissionRequestHook: quoted + " __permission-request",
-	}, nil
+	return quoted, nil
 }
 
 // proxyAuthURL builds the local proxy URL a session points its HTTP(S)_PROXY at.
@@ -71,6 +79,10 @@ func runInternalSessionHook(phase string, args []string) int {
 		return 1
 	}
 	cfg := config.Load()
+	if err := cfg.ValidatePaths(); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris session: %v\n", err)
+		return 1
+	}
 	switch phase {
 	case "start":
 		sid := sessionID(*session, true)
@@ -86,7 +98,7 @@ func runInternalSessionHook(phase string, args []string) int {
 			// `keydris run` records the exact child PID after Start. Do not
 			// overwrite it with this hook's potentially short-lived shell parent.
 			writeClaudeProxyEnv(cfg, sid)
-			return 0
+			return claudeSessionBriefing()
 		}
 		if code := hookSessionStart(cfg, *blueprint, sid); code != 0 {
 			return code
@@ -99,7 +111,7 @@ func runInternalSessionHook(phase string, args []string) int {
 		// every Bash subprocess routes egress through Keydris carrying the token
 		// in Proxy-Authorization. This is what isolates concurrent sessions.
 		writeClaudeProxyEnv(cfg, sid)
-		return 0
+		return claudeSessionBriefing()
 	case "end":
 		if os.Getenv(sessionOwnerEnv) == sessionOwnerRun {
 			return 0
@@ -109,6 +121,13 @@ func runInternalSessionHook(phase string, args []string) int {
 		fmt.Fprintf(os.Stderr, "keydris: unknown internal hook %q\n", phase)
 		return 1
 	}
+}
+
+func claudeSessionBriefing() int {
+	if err := writeAgentBriefing(os.Stdout, "Claude terminal sessions use Keydris lifecycle hooks. VS Code sidebar integration is separate."); err != nil {
+		return 1
+	}
+	return 0
 }
 
 // writeClaudeProxyEnv appends the session's per-session proxy URL (carrying its
