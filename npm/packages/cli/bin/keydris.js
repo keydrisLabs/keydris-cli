@@ -6,6 +6,11 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
+if (process.platform === "win32" && (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP)) {
+  console.error("keydris: Windows Node.js is running inside WSL. Install Linux Node/npm and @keydris/cli inside your WSL2 distribution, then retry.");
+  process.exit(1);
+}
+
 const nativePackages = new Map([
   ["win32-x64", "@keydris/cli-win32-x64"],
   ["win32-arm64", "@keydris/cli-win32-arm64"],
@@ -45,6 +50,21 @@ function launch() {
       KEYDRIS_DISTRIBUTION: "npm"
     }
   });
+}
+
+// Explicit onboarding repairs a missing config when npm lifecycle scripts were
+// disabled. Existing user config is never overwritten by this fallback.
+const setupArgs = process.argv.slice(2);
+if (setupArgs[0] === "--color") setupArgs.splice(0, 2);
+else if (setupArgs[0]?.startsWith("--color=")) setupArgs.shift();
+if (setupArgs[0] === "init" && !setupArgs.includes("--help") && !setupArgs.includes("-h")) {
+  try {
+    const { installConfig } = await import("../scripts/install-config.mjs");
+    await installConfig({ onlyIfMissing: true });
+  } catch (error) {
+    console.error("keydris: setup could not prepare configuration:", error.message);
+    process.exit(1);
+  }
 }
 
 let result = launch();

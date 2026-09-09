@@ -114,11 +114,13 @@ func unmergeKeydrisHooks(settings map[string]any) bool {
 		}
 		var kept []any
 		for _, e := range entries {
-			if entryReferencesKeydris(e) {
+			filtered, removed := stripKeydrisHandlers(e)
+			if removed {
 				changed = true
-				continue
 			}
-			kept = append(kept, e)
+			if !removed || filtered != nil {
+				kept = append(kept, filtered)
+			}
 		}
 		if len(kept) == 0 {
 			if _, present := hooks[event]; present && changed {
@@ -153,19 +155,39 @@ func entryReferencesKeydris(entry any) bool {
 
 func isKeydrisCommand(command string) bool {
 	command = strings.TrimSpace(command)
-	if command == "" {
+	var executable strings.Builder
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		if quote == 0 && (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+			break
+		}
+		if c == '\'' || c == '"' {
+			if quote == 0 {
+				quote = c
+				continue
+			}
+			if quote == c {
+				quote = 0
+				continue
+			}
+		}
+		if c == '\\' && quote != '\'' && i+1 < len(command) {
+			next := command[i+1]
+			if next == '\'' || next == '"' || next == '\\' || next == ' ' {
+				executable.WriteByte(next)
+				i++
+				continue
+			}
+		}
+		executable.WriteByte(c)
+	}
+	if quote != 0 {
 		return false
 	}
-	executable := command
-	if command[0] == '\'' || command[0] == '"' {
-		quote := command[0]
-		if end := strings.IndexByte(command[1:], quote); end >= 0 {
-			executable = command[1 : end+1]
-		}
-	} else if end := strings.IndexAny(command, " \t\r\n"); end >= 0 {
-		executable = command[:end]
-	}
-	base := strings.ToLower(filepath.Base(executable))
+	// Normalize Windows separators even when inspecting a fixture on Unix.
+	normalized := strings.ReplaceAll(executable.String(), "\\", "/")
+	base := strings.ToLower(filepath.Base(normalized))
 	return base == "keydris" || base == "keydris.exe"
 }
 

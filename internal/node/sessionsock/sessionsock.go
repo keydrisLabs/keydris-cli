@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
@@ -32,6 +33,7 @@ const (
 	ActionUnregister  = "unregister"
 	ActionUpdateOwner = "update-owner" // set OwnerPID on an existing session
 	ActionLookup      = "lookup"
+	ActionHealth      = "health"
 )
 
 // Message is one line-delimited JSON request on the socket.
@@ -76,14 +78,42 @@ type response struct {
 	OK      bool             `json:"ok"`
 	Error   string           `json:"error,omitempty"`
 	Session *SessionSnapshot `json:"session,omitempty"`
+	Health  *Health          `json:"health,omitempty"`
+}
+
+// Health contains operational metadata only: never bearer tokens or handles.
+type Health struct {
+	PID       int    `json:"pid"`
+	Sessions  int    `json:"sessions"`
+	Ready     bool   `json:"ready"`
+	Port      int    `json:"port"`
+	DataPlane string `json:"dataplane"`
+	AgentID   string `json:"agent_id"`
 }
 
 // Server accepts registration messages and applies them to a SessionRegistry.
 type Server struct {
-	ln     net.Listener
-	reg    *attest.SessionRegistry
-	secret string
-	logf   func(string, ...any)
+	ln       net.Listener
+	reg      *attest.SessionRegistry
+	secret   string
+	logf     func(string, ...any)
+	healthMu sync.RWMutex
+	health   Health
+}
+
+// MarkReady is called only after the data plane has bound its listener and
+// completed setup, so an available registration socket alone is not readiness.
+func (s *Server) MarkReady(port int, plane, agent string) {
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	s.health = Health{Ready: true, Port: port, DataPlane: plane, AgentID: agent}
+}
+func (s *Server) inspect() *Health {
+	s.healthMu.RLock()
+	health := s.health
+	s.healthMu.RUnlock()
+	health.PID, health.Sessions = os.Getpid(), len(s.reg.Snapshot())
+	return &health
 }
 
 // Serve starts a registration server on the unix socket at path. The socket is
@@ -141,6 +171,14 @@ func (s *Server) handle(conn net.Conn) {
 			continue
 		}
 		var snapshot *SessionSnapshot
+		if m.Action == ActionHealth {
+			if err := json.NewEncoder(conn).Encode(response{
+				OK: true, Health: s.inspect(),
+			}); err != nil {
+				return
+			}
+			continue
+		}
 		switch m.Action {
 		case ActionRegister:
 			s.reg.Register(attest.Session{
@@ -192,6 +230,9 @@ func snapshotSession(session attest.Session) SessionSnapshot {
 }
 
 func validateMessage(m Message) error {
+	if m.Action == ActionHealth {
+		return nil
+	}
 	if m.Handle == "" || len(m.Handle) > 4096 {
 		return fmt.Errorf("invalid handle")
 	}
@@ -244,11 +285,32 @@ func Send(path string, m Message) error {
 // Exchange sends a message and returns the current session snapshot for lookup
 // and unregister actions.
 func Exchange(path string, m Message) (*SessionSnapshot, error) {
+	ack, err := exchange(path, m)
+	if err != nil {
+		return nil, err
+	}
+	return ack.Session, nil
+}
+
+// Inspect authenticates against an existing socket without creating any files.
+func Inspect(path, auth string) (*Health, error) {
+	ack, err := exchange(path, Message{Auth: auth, Action: ActionHealth})
+	if err != nil {
+		return nil, err
+	}
+	if ack.Health == nil || ack.Health.PID <= 0 || ack.Health.Sessions < 0 {
+		return nil, fmt.Errorf("daemon does not support health inspection; restart it after upgrading")
+	}
+	return ack.Health, nil
+}
+
+func exchange(path string, m Message) (*response, error) {
 	conn, err := net.DialTimeout("unix", path, 2*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("dial daemon socket %s: %w", path, err)
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 
 	body, err := json.Marshal(m)
 	if err != nil {
@@ -260,6 +322,7 @@ func Exchange(path string, m Message) (*SessionSnapshot, error) {
 
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	sc := bufio.NewScanner(conn)
+	sc.Buffer(make([]byte, 4096), (3<<20)+8192)
 	if !sc.Scan() {
 		return nil, fmt.Errorf("no ack from daemon socket")
 	}
@@ -270,7 +333,7 @@ func Exchange(path string, m Message) (*SessionSnapshot, error) {
 	if !ack.OK {
 		return nil, fmt.Errorf("daemon rejected: %s", ack.Error)
 	}
-	return ack.Session, nil
+	return &ack, nil
 }
 
 // LoadOrCreateSecret returns the per-install authentication secret used by the

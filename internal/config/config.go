@@ -309,6 +309,9 @@ func (c *Config) LoginUsesExternalIDP() bool {
 // defaultClaudeSettings returns ~/.claude/settings.json, falling back to a
 // relative path if the home directory cannot be determined.
 func defaultClaudeSettings() string {
+	if directory := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); directory != "" {
+		return filepath.Join(directory, "settings.json")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ".claude/settings.json"
@@ -317,6 +320,9 @@ func defaultClaudeSettings() string {
 }
 
 func defaultClaudeMcpConfig() string {
+	if directory := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); directory != "" {
+		return filepath.Join(directory, ".claude.json")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ".claude.json"
@@ -494,7 +500,7 @@ func loadDotEnv(path string) {
 		key = strings.TrimSpace(key)
 		val = strings.Trim(strings.TrimSpace(val), `"'`)
 		if key != "" && os.Getenv(key) == "" {
-			_ = os.Setenv(key, val)
+			_ = os.Setenv(key, filePathValue(key, val, path))
 		}
 	}
 }

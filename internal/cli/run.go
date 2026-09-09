@@ -12,6 +12,7 @@ import (
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
+	hostenv "github.com/keydrisLabs/keydris-cli/internal/platform"
 )
 
 // runRun implements `keydris run [--blueprint B] -- <command...>`: it opens a
@@ -31,6 +32,15 @@ func runRun(args []string) int {
 	}
 
 	cfg := config.Load()
+	if err := cfg.ValidatePaths(); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris run: %v\n", err)
+		return 1
+	}
+	executable, err := hostenv.ResolveCommand(cmd[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "keydris run: %v\n", err)
+		return 1
+	}
 	sid := "run-" + newProxyToken()
 
 	if code := hookSessionStart(cfg, *blueprint, sid); code != 0 {
@@ -63,7 +73,7 @@ func runRun(args []string) int {
 	}
 	token := st.Handle
 
-	child := exec.Command(cmd[0], cmd[1:]...)
+	child := exec.Command(executable, cmd[1:]...)
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
 	child.Env = append(os.Environ(),
 		"KEYDRIS_SESSION="+sid,
@@ -132,11 +142,12 @@ func runRun(args []string) int {
 }
 
 // runCodex launches the OpenAI Codex CLI inside a Keydris-owned session. Codex
-// currently has no reliable SessionEnd hook, so the wrapper is the lifecycle
-// boundary that guarantees normal-exit revocation.
+// thread lifecycle can outlive client connections, so the wrapper remains the
+// lifecycle boundary that guarantees terminal-process-exit revocation.
 func runCodex(args []string) int {
-	if _, err := exec.LookPath("codex"); err != nil {
-		fmt.Fprintln(os.Stderr, "keydris codex: `codex` was not found in PATH")
+	executable, err := hostenv.ResolveCommand("codex")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "keydris codex: %v\n", err)
 		return 1
 	}
 	if err := validateCodexHookArgs(args); err != nil {
@@ -155,13 +166,13 @@ func runCodex(args []string) int {
 		return 1
 	}
 	if !wired {
-		fmt.Fprintln(os.Stderr, "keydris codex: required Bash hooks are not wired; run `keydris init codex <agent-id>`")
+		fmt.Fprintln(os.Stderr, "keydris codex: command or session-briefing hooks need updating; run `keydris init codex <agent-id>` and review /hooks")
 		return 1
 	}
 	// Enable Codex's own sandboxed-network proxy and let it honor the Keydris
 	// upstream proxy inherited below. The public wildcard is constrained again
 	// by Keydris; explicit loopback entries permit the local upstream endpoint.
-	wrapped := append([]string{"--", "codex"}, codexCommandArgs(args)...)
+	wrapped := append([]string{"--", executable}, codexCommandArgs(args)...)
 	return runRun(wrapped)
 }
 

@@ -42,6 +42,9 @@ func stopProcess(proc *os.Process) error {
 func processIdentity(pid int) (string, error) {
 	handle, _, openErr := openProcess.Call(processQueryLimitedInfo, 0, uintptr(pid))
 	if handle == 0 {
+		if openErr == syscall.Errno(87) {
+			return "", fmt.Errorf("%w: pid %d", errProcessNotRunning, pid)
+		}
 		return "", fmt.Errorf("open pid %d: %v", pid, openErr)
 	}
 	defer closeProcess.Call(handle)
@@ -56,6 +59,9 @@ func processIdentity(pid int) (string, error) {
 	)
 	if ok == 0 {
 		return "", fmt.Errorf("query pid %d creation time: %v", pid, timesErr)
+	}
+	if exited.LowDateTime != 0 || exited.HighDateTime != 0 {
+		return "", fmt.Errorf("%w: pid %d", errProcessNotRunning, pid)
 	}
 	return fmt.Sprintf("windows-start:%08x%08x", created.HighDateTime, created.LowDateTime), nil
 }

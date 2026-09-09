@@ -2,29 +2,32 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
-	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
+	hostenv "github.com/keydrisLabs/keydris-cli/internal/platform"
 )
 
-// runInit implements one-command onboarding for Claude Code and OpenAI Codex.
-// Claude uses its native sandbox and lifecycle hooks; Codex is launched through
-// `keydris codex` so Keydris can reliably clean up when the process exits.
-func runInit(args []string) int {
-	const usage = "usage: keydris init <claude-code|codex> [agent-id] [--strict] [--trust-store]"
+var agentUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-	interactive := false
-	if len(args) == 0 {
-		interactive = true
+func runInit(args []string) int {
+	const usage = "Usage: keydris init [claude-code|codex] [agent-id] [--strict=false] [--trust-store] [--no-start] [--no-browser]"
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Fprintln(os.Stdout, usage)
+		return 0
+	}
+	interactive := len(args) == 0
+	if interactive {
 		var ok bool
 		args, ok = promptInit()
 		if !ok {
@@ -32,190 +35,266 @@ func runInit(args []string) int {
 			return 1
 		}
 	}
-	if args[0] == "" || args[0][0] == '-' {
-		fmt.Fprintln(os.Stderr, usage)
-		return 1
-	}
 	target := args[0]
 	if target == "openai" {
 		target = "codex"
 	}
 	if target != "claude-code" && target != "codex" {
-		fmt.Fprintf(os.Stderr, "keydris init: unknown target %q (want claude-code or codex)\n", target)
+		fmt.Fprintln(os.Stderr, usage)
+		return 2
+	}
+	cfg := config.Load()
+	if err := checkResetInProgress(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-
-	cfg := config.Load()
-
-	// The explicit positional value wins; an earlier `keydris init` has already
-	// persisted the common case so users need not enter it twice.
+	ui := newUI(os.Stdout)
+	if err := cfg.ValidatePaths(); err != nil {
+		ui.row("error", "Paths", err.Error())
+		return 1
+	}
 	rest := args[1:]
 	agentID := cfg.AgentID
-	if len(rest) > 0 && rest[0] != "" && rest[0][0] != '-' {
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
 		agentID = rest[0]
 		rest = rest[1:]
 	}
-	if agentID == "" {
-		fmt.Fprintf(os.Stderr, "keydris init %s: missing required <agent-id>\n", target)
-		fmt.Fprintln(os.Stderr, usage)
-		return 1
-	}
-
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	strict := fs.Bool("strict", true, "lock the sandbox as a hard gate (failIfUnavailable + no unsandboxed escape)")
-	trustStore := fs.Bool("trust-store", false, "also install the Keydris CA into the OS trust store (may need sudo)")
-	if err := fs.Parse(rest); err != nil {
+	strict := fs.Bool("strict", true, "require the Claude sandbox and disable unsandboxed escape")
+	trust := fs.Bool("trust-store", false, "also install the CA in the OS trust store")
+	noStart := fs.Bool("no-start", false, "configure without starting the proxy")
+	noBrowser := fs.Bool("no-browser", false, "print the sign-in URL without opening a browser")
+	if code := parseFlags(fs, rest); code >= 0 {
+		return code
+	}
+	if !agentUUID.MatchString(agentID) {
+		ui.row("error", "Agent", "Enter the agent UUID from the Keydris dashboard")
+		return 2
+	}
+	ui = newUI(os.Stdout)
+	environmentTarget := target
+	if !*strict {
+		environmentTarget = ""
+	}
+	if err := checkInitEnvironment(environmentTarget); err != nil {
+		ui.row("error", "Environment", err.Error())
 		return 1
 	}
-
-	// Persist only the agent identity. The assigned policy is control-plane
-	// state and is never selected or trusted from this local configuration.
-	if err := config.SaveAgentID(cfg.DataDir, agentID); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris init: save agent id: %v\n", err)
-		return 1
-	}
-	cfg.AgentID = agentID
-
-	// Generate-and-persist the CA so the daemon loads the same root that the
-	// sandbox is told to trust below.
-	if _, err := proxy.LoadOrCreateCA(cfg.CAPath, cfg.CAKeyPath, "Keydris CA", 825*24*time.Hour); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris init: CA: %v\n", err)
-		return 1
-	}
-	if err := sandbox.BuildCABundle(cfg.CAPath, cfg.CABundlePath); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris init: CA bundle: %v\n", err)
-		return 1
-	}
-
-	if target == "claude-code" {
-		if err := sandbox.Configure(cfg.ClaudeSettingsPath, sandbox.Options{
-			HTTPProxyPort:    cfg.HTTPProxyPort,
-			AllowedDomains:   cfg.AllowedDomains,
-			CAPath:           cfg.CABundlePath,
-			Strict:           *strict,
-			SessionStartHook: internalSessionStartCmd,
-			SessionEndHook:   internalSessionEndCmd,
-			PreToolUseHook:   internalPreToolUseCmd,
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "keydris init: configure sandbox: %v\n", err)
+	if hostenv.Current().WSL != "" {
+		command := "claude"
+		if target == "codex" {
+			command = "codex"
+		}
+		if _, err := hostenv.ResolveCommand(command); err != nil {
+			ui.row("error", "Agent runtime", err.Error())
 			return 1
 		}
 	}
-	if target == "codex" {
-		hookOptions, err := codexHookOptions()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "keydris init: configure Codex hooks: %v\n", err)
-			return 1
-		}
-		if err := sandbox.ConfigureCodexHooks(cfg.CodexHooksPath, hookOptions); err != nil {
-			fmt.Fprintf(os.Stderr, "keydris init: configure Codex hooks: %v\n", err)
-			return 1
-		}
-	}
-	if _, err := sessionsock.LoadOrCreateSecret(cfg.SessionAuthFile); err != nil {
-		fmt.Fprintf(os.Stderr, "keydris init: session socket auth: %v\n", err)
+	// Resolve the executable before writing any configuration.
+	claudeOptions, err := claudeHookOptions(cfg, *strict)
+	if err != nil {
+		ui.row("error", "Hook executable", err.Error())
 		return 1
 	}
-
-	// The daemon needs a device certificate bound to this agent; the browser
-	// sign-in is the enrollment step now that one-time tokens are gone. A valid
-	// identity already bound to this agent is reused as-is.
-	if id, err := login.Load(cfg.IdentityDir); err != nil || id.Expired() || id.AgentID != agentID {
-		fmt.Println("Sign in with your browser to bind this device to the agent…")
-		if code := browserLogin(cfg, defaultLoginHint(), false); code != 0 {
-			fmt.Fprintln(os.Stderr, "keydris init: sign-in incomplete — run `keydris login` before `keydris proxy up`")
-		}
+	codexOptions, err := codexHookOptions()
+	if err != nil {
+		ui.row("error", "Hook executable", err.Error())
+		return 1
 	}
-
 	if !interactive {
 		printInitBanner(os.Stdout)
 	}
-	if target == "claude-code" {
-		fmt.Printf("Configured Claude Code sandbox in %s\n", cfg.ClaudeSettingsPath)
-	} else {
-		fmt.Println("Configured OpenAI Codex launch integration")
+	if cfg.AgentID != "" && cfg.AgentID != agentID && inspectProxy(cfg).pid != 0 {
+		ui.row("error", "Agent", "Stop the proxy before switching agents")
+		ui.next("keydris proxy down")
+		return 1
 	}
-	fmt.Printf("  agent id: %s\n", agentID)
-
-	// Derive governed origins from the agent policy
-	origins, detected := detectPolicyScope(cfg, agentID, os.Stdout)
-	printPolicyScope(os.Stdout, origins, detected)
-
-	fmt.Printf("  CA bundle: %s\n", cfg.CABundlePath)
-	if target == "claude-code" {
-		fmt.Printf("  sandbox.enabled=true, network.httpProxyPort=%d, per-session SVID hooks wired\n", cfg.HTTPProxyPort)
+	if err := config.SaveAgentID(cfg.DataDir, agentID); err != nil {
+		ui.row("error", "Agent", err.Error())
+		return 1
 	}
-	if target == "claude-code" && *strict {
-		fmt.Printf("  strict: failIfUnavailable=true, allowUnsandboxedCommands=false\n")
-	}
-
-	if *trustStore {
-		if err := sandbox.InstallTrustStore(cfg.CAPath); err != nil {
-			fmt.Fprintf(os.Stderr, "keydris init: OS trust-store install failed (env vars still apply): %v\n", err)
-		} else {
-			fmt.Printf("  CA installed into the OS trust store\n")
+	cfg.AgentID = agentID
+	ui.row("ok", "Agent", agentID)
+	if _, err := identityReady(cfg); err != nil {
+		ui.row("working", "Sign in", "Bind this device to your agent in the browser")
+		if code := browserLogin(cfg, defaultLoginHint(), *noBrowser); code != 0 {
+			ui.row("error", "Setup incomplete", "Sign-in did not complete; rerun keydris init")
+			return code
 		}
 	}
-
+	if _, err := identityReady(cfg); err != nil {
+		ui.row("error", "Identity", err.Error())
+		return 1
+	}
+	ui.row("ok", "Identity", "Device is signed in")
+	finish := ui.progress("Preparing certificates")
+	_, err = proxy.LoadOrCreateCA(cfg.CAPath, cfg.CAKeyPath, "Keydris CA", 825*24*time.Hour)
+	if err == nil {
+		err = sandbox.BuildCABundle(cfg.CAPath, cfg.CABundlePath)
+	}
+	if err == nil {
+		_, err = sessionsock.LoadOrCreateSecret(cfg.SessionAuthFile)
+	}
+	finish(err)
+	if err != nil {
+		return 1
+	}
+	finish = ui.progress("Configuring " + target)
 	if target == "claude-code" {
-		fmt.Printf("\nNext: keydris proxy up\n      claude\n")
+		err = sandbox.Configure(cfg.ClaudeSettingsPath, claudeOptions)
 	} else {
-		fmt.Printf("  command hooks: %s\n", cfg.CodexHooksPath)
-		fmt.Printf("\nNext: keydris proxy up\n      keydris codex\n")
-		fmt.Println("Codex is wrapped so the Keydris session is revoked when Codex exits.")
-		fmt.Println("Run `/hooks` once inside Codex to trust the Keydris command hooks.")
+		err = sandbox.ConfigureCodexHooks(cfg.CodexHooksPath, codexOptions)
+	}
+	finish(err)
+	if err != nil {
+		return 1
+	}
+	if path, pathErr := agentSkillPath(cfg, target); pathErr != nil {
+		ui.row("warning", "Agent skill", pathErr.Error())
+	} else if err := installAgentSkill(path); err != nil {
+		ui.row("warning", "Agent skill", err.Error()+"; keydris skill remains available")
+	} else {
+		ui.row("ok", "Agent skill", path)
+	}
+	finish = ui.progress("Reading policy scope")
+	var scopeOutput bytes.Buffer
+	origins, detected := detectPolicyScope(cfg, agentID, &scopeOutput)
+	if !detected {
+		finish(fmt.Errorf("could not load the assigned policy scope"))
+		ui.row("warning", "Setup incomplete", scopeOutput.String())
+		ui.next("keydris init " + target)
+		return 1
+	}
+	finish(nil)
+	ui.row("ok", "Policy scope", pluralOrigins(len(origins))+" cached; refreshed at session start")
+	if scopeOutput.Len() > 0 {
+		ui.row("warning", "Policy scope", scopeOutput.String())
+	}
+	if *trust {
+		finish = ui.progress("Installing OS trust")
+		err = sandbox.InstallTrustStore(cfg.CAPath)
+		finish(err)
+		if err != nil {
+			ui.row("warning", "Setup incomplete", "OS trust was requested but could not be installed")
+			return 1
+		}
+	}
+	if !*noStart {
+		if code := runProxyUp(); code != 0 {
+			ui.row("error", "Setup incomplete", "Proxy did not become ready")
+			return code
+		}
+	}
+	if target == "claude-code" {
+		verified, err := sandbox.Verify(cfg.ClaudeSettingsPath, cfg.HTTPProxyPort, claudeOptions)
+		if err != nil || (!verified.OK() && *strict) {
+			ui.row("error", "Verification", "Claude configuration needs attention")
+			return 1
+		}
+		if !*strict {
+			ui.row("warning", "Sandbox", "Non-strict mode permits unsandboxed commands")
+		}
+	} else {
+		verified, err := sandbox.VerifyCodexHooks(cfg.CodexHooksPath, codexOptions)
+		if err != nil || !verified {
+			ui.row("error", "Verification", "Codex hooks need attention")
+			return 1
+		}
+	}
+	ui.row("ok", "Setup", "Configuration verified")
+	if *noStart {
+		ui.next("keydris proxy up")
+	} else if target == "claude-code" {
+		ui.next("claude")
+	} else {
+		ui.next("keydris codex")
+	}
+	if target == "codex" {
+		ui.row("inactive", "Codex", "Use /hooks once inside Codex to trust the Keydris hooks")
 	}
 	return 0
 }
 
 func promptInit() ([]string, bool) {
-	info, err := os.Stdin.Stat()
-	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+	if !terminalFile(os.Stdin) {
 		return nil, false
 	}
 	printInitBanner(os.Stdout)
-	fmt.Fprintln(os.Stdout, "Choose an agent integration:")
-	fmt.Fprintln(os.Stdout, "  1) Claude Code")
-	fmt.Fprintln(os.Stdout, "  2) OpenAI Codex")
-	fmt.Fprintln(os.Stdout)
-	fmt.Fprint(os.Stdout, "Selection [1-2]: ")
-
 	reader := bufio.NewReader(os.Stdin)
-	choice, err := reader.ReadString('\n')
-	if err != nil {
-		return nil, false
+	fmt.Fprintln(os.Stdout, "Choose an integration:\n  1) Claude Code\n  2) OpenAI Codex")
+	target := ""
+	for target == "" {
+		fmt.Fprint(os.Stdout, "Selection [1-2]: ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, false
+		}
+		switch strings.TrimSpace(input) {
+		case "1", "claude", "claude-code":
+			target = "claude-code"
+		case "2", "codex", "openai":
+			target = "codex"
+		default:
+			newUI(os.Stdout).row("warning", "Selection", "Enter 1 or 2 (Ctrl+C to cancel)")
+		}
 	}
-	var target string
-	switch strings.TrimSpace(choice) {
-	case "1", "claude", "claude-code":
-		target = "claude-code"
-	case "2", "codex", "openai":
-		target = "codex"
-	default:
-		fmt.Fprintln(os.Stderr, "keydris init: invalid selection")
-		return nil, false
+	existing := config.Load().AgentID
+	for {
+		prompt := "Agent UUID from your dashboard"
+		if existing != "" {
+			prompt += " [" + existing + "]"
+		}
+		fmt.Fprint(os.Stdout, prompt+": ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, false
+		}
+		agent := strings.TrimSpace(input)
+		if agent == "" {
+			agent = existing
+		}
+		if agentUUID.MatchString(agent) {
+			return []string{target, agent}, true
+		}
+		newUI(os.Stdout).row("warning", "Agent", "Enter a UUID such as 12345678-1234-1234-1234-123456789abc")
 	}
-
-	fmt.Fprint(os.Stdout, "Agent id: ")
-	agent, err := reader.ReadString('\n')
-	if err != nil {
-		return nil, false
+}
+func printInitBanner(w io.Writer) {
+	u := newUI(w)
+	// Keep redirected output compact; forced color also enables banner previews.
+	if u.terminal || colorMode == "always" {
+		code := "38;2;248;247;244"
+		if os.Getenv("KEYDRIS_LOGO_COLOR") == "default" || lightTerminalBackground() {
+			code = "39"
+		}
+		for _, line := range strings.Split(strings.Trim(asciiLogo, "\n"), "\n") {
+			fmt.Fprintln(w, u.style(code, line))
+		}
 	}
-	agent = strings.TrimSpace(agent)
-	if agent == "" {
-		fmt.Fprintln(os.Stderr, "keydris init: agent id is required")
-		return nil, false
-	}
-	return []string{target, agent}, true
+	u.title("Keydris · Authority before action")
 }
 
-func printInitBanner(w io.Writer) {
-	fmt.Fprint(w, `
+const asciiLogo = `
  _  __               _      _
 | |/ /___ _   _  __| |_ __(_)___
 | ' // _ \ | | |/ _' | '__| / __|
 | . \  __/ |_| | (_| | |  | \__ \
 |_|\_\___|\__, |\__,_|_|  |_|___/
-          |___/   governed agent egress
-`)
+          |___/
+`
+
+func lightTerminalBackground() bool {
+	colors := strings.Split(os.Getenv("COLORFGBG"), ";")
+	background := colors[len(colors)-1]
+	return background == "7" || background == "15"
+}
+func claudeHookOptions(cfg *config.Config, strict bool) (sandbox.Options, error) {
+	executable, err := hookExecutable()
+	if err != nil {
+		return sandbox.Options{}, err
+	}
+	return sandbox.Options{
+		HTTPProxyPort: cfg.HTTPProxyPort, AllowedDomains: cfg.AllowedDomains, CAPath: cfg.CABundlePath, Strict: strict,
+		SessionStartHook: executable + " __session-start", SessionEndHook: executable + " __session-end", PreToolUseHook: executable + " __pretool-use",
+	}, nil
 }
