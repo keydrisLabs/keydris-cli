@@ -130,18 +130,26 @@ jobs:
             platform-linux-arm64
           )
           for package in "${native_packages[@]}"; do
+            name=$(node -p "require('./packages/$package/package.json').name")
+            # Idempotent: a re-run after a partial failure skips versions already on the registry.
+            if [ "$(npm view "$name@$NPM_VERSION" version 2>/dev/null || true)" = "$NPM_VERSION" ]; then
+              echo "$name@$NPM_VERSION already published, skipping"
+              continue
+            fi
             npm publish "./packages/$package" --access public --tag "$NPM_TAG"
           done
+          # npm says a fresh publish "may take a few minutes to become available",
+          # so allow ~5 minutes per package before declaring it missing.
           for package in "${native_packages[@]}"; do
             name=$(node -p "require('./packages/$package/package.json').name")
             published=
-            for attempt in {1..12}; do
+            for attempt in {1..30}; do
               published=$(npm view "$name@$NPM_VERSION" version 2>/dev/null || true)
               if [ "$published" = "$NPM_VERSION" ]; then
                 break
               fi
-              echo "Waiting for $name@$NPM_VERSION to become visible ($attempt/12)"
-              sleep 5
+              echo "Waiting for $name@$NPM_VERSION to become visible ($attempt/30)"
+              sleep 10
             done
             if [ "$published" != "$NPM_VERSION" ]; then
               echo "::error::$name@$NPM_VERSION was published but is not visible in the registry"
@@ -155,4 +163,11 @@ jobs:
           NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/'
           NPM_CONFIG_PROVENANCE: 'false'
           NPM_TAG: ${{ steps.meta.outputs.npm_tag }}
-        run: npm publish ./packages/cli --access public --tag "$NPM_TAG"
+          NPM_VERSION: ${{ steps.meta.outputs.npm_version }}
+        run: |
+          name=$(node -p "require('./packages/cli/package.json').name")
+          if [ "$(npm view "$name@$NPM_VERSION" version 2>/dev/null || true)" = "$NPM_VERSION" ]; then
+            echo "$name@$NPM_VERSION already published, skipping"
+          else
+            npm publish ./packages/cli --access public --tag "$NPM_TAG"
+          fi
