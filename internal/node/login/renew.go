@@ -41,7 +41,9 @@ func EnsureFresh(identityDir, mtlsControlURL, serverCAPath string, window time.D
 	if err != nil {
 		return nil, fmt.Errorf("build renewal CSR: %w", err)
 	}
-	body, _ := json.Marshal(map[string]string{"csr": string(csrPEM)})
+	// Renewal re-reports the client metadata so a CLI upgrade shows up in the
+	// console without a fresh sign-in.
+	body, _ := json.Marshal(withClientMetadata(map[string]string{"csr": string(csrPEM)}))
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(

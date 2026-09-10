@@ -49,15 +49,15 @@ func decodedTestRoutes(t *testing.T, agentID string, hosts ...string) *runtimeco
 // stubScopeSeams swaps the control-plane seams and counts mints/revokes.
 func stubScopeSeams(
 	t *testing.T,
-	mint func(*config.Config, string, string) (*mintedInstance, error),
+	mint func(*config.Config, string, string, string) (*mintedInstance, error),
 	routes func(*config.Config, string) (*runtimecontract.RuntimeRoutes, error),
 ) (mints, revokes *int) {
 	t.Helper()
 	mintCount, revokeCount := 0, 0
 	oldMint, oldRevoke, oldRoutes := mintSessionInstance, revokeSessionInstance, fetchSessionRoutes
-	mintSessionInstance = func(cfg *config.Config, agentID, handle string) (*mintedInstance, error) {
+	mintSessionInstance = func(cfg *config.Config, agentID, handle, agentRuntime string) (*mintedInstance, error) {
 		mintCount++
-		return mint(cfg, agentID, handle)
+		return mint(cfg, agentID, handle, agentRuntime)
 	}
 	revokeSessionInstance = func(*config.Config, string) error {
 		revokeCount++
@@ -70,7 +70,7 @@ func stubScopeSeams(
 	return &mintCount, &revokeCount
 }
 
-func okMint(*config.Config, string, string) (*mintedInstance, error) {
+func okMint(*config.Config, string, string, string) (*mintedInstance, error) {
 	return &mintedInstance{
 		SPIFFEID:  "spiffe://keydris.test/scope",
 		KIT:       "test-kit",
@@ -141,7 +141,7 @@ func TestDetectPolicyScopeMintFailureWarnsOnly(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{DataDir: dir}
 	mints, revokes := stubScopeSeams(t,
-		func(*config.Config, string, string) (*mintedInstance, error) {
+		func(*config.Config, string, string, string) (*mintedInstance, error) {
 			return nil, fmt.Errorf("control plane unreachable")
 		},
 		func(*config.Config, string) (*runtimecontract.RuntimeRoutes, error) {

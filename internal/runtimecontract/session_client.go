@@ -12,9 +12,13 @@ import (
 )
 
 type CreateKitSessionInput struct {
-	AgentID           string
-	SessionHandle     string
-	IdempotencyKey    string
+	AgentID        string
+	SessionHandle  string
+	IdempotencyKey string
+	// AgentRuntime names the coding tool the session is minted for
+	// ("claude_code", "codex"). Optional: a renewal that omits it keeps the
+	// replaced session's value server-side.
+	AgentRuntime      string
 	ReplacesSessionID string
 }
 
@@ -42,10 +46,14 @@ func CreateKitSession(
 	if err != nil {
 		return nil, err
 	}
-	body, err := json.Marshal(map[string]string{
+	payload := map[string]string{
 		"agent_id":       input.AgentID,
 		"session_handle": input.SessionHandle,
-	})
+	}
+	if input.AgentRuntime != "" {
+		payload["agent_runtime"] = input.AgentRuntime
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}

@@ -22,7 +22,8 @@ func detectPolicyScope(cfg *config.Config, agentID string, w io.Writer) ([]strin
 		return nil, false
 	}
 
-	inst, err := mintSessionInstance(cfg, agentID, newProxyToken())
+	// A throwaway scope-detection session serves no coding tool.
+	inst, err := mintSessionInstance(cfg, agentID, newProxyToken(), "")
 	if err != nil {
 		return warn(fmt.Errorf("open a runtime session: %w", err))
 	}

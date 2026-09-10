@@ -379,7 +379,7 @@ type signResponse struct {
 }
 
 func signCSR(controlURL, token string, csrPEM []byte, deviceID, deviceName, agentID string) (*signResponse, error) {
-	payload := map[string]string{"csr": string(csrPEM), "device_name": deviceName}
+	payload := withClientMetadata(map[string]string{"csr": string(csrPEM), "device_name": deviceName})
 	if deviceID != "" {
 		payload["device_id"] = deviceID
 	}
