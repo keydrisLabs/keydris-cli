@@ -75,7 +75,7 @@ type Options struct {
 
 	// LoginHint pre-fills the consent page's email field (mock IdP only).
 	LoginHint string
-	// NoBrowser prints the URL instead of launching a browser (headless/CI).
+	// NoBrowser prints the URL for manual opening; a browser callback is still required.
 	NoBrowser bool
 	// Timeout bounds the wait for the browser redirect.
 	Timeout time.Duration
@@ -152,17 +152,6 @@ func Run(opt Options) (*Identity, error) {
 		return nil, fmt.Errorf("exchange code: %w", err)
 	}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	// CSR subject is advisory; the control plane sets the real identity from the
-	// verified token, so an empty hint here is fine.
-	csrPEM, err := makeCSR(key, tokens.email)
-	if err != nil {
-		return nil, fmt.Errorf("build CSR: %w", err)
-	}
-
 	// Present the access token to the control plane: /identity/sign requires the
 	// Cognito access token whose `client_id` claim equals the CLI app-client id
 	// (an ID token carries `aud`, not `client_id`, and is rejected). Fall back to
@@ -170,6 +159,32 @@ func Run(opt Options) (*Identity, error) {
 	bearer := tokens.accessToken
 	if bearer == "" {
 		bearer = tokens.idToken
+	}
+	return enroll(opt, bearer, tokens.email)
+}
+
+// EnrollWithAccessToken enrolls the same device identity as browser login using
+// an access token obtained separately (for example, Cognito InitiateAuth in CI).
+// The control plane verifies the token and its CLI app-client binding. The token
+// is used only for enrollment and is never persisted with the device identity.
+func EnrollWithAccessToken(opt Options, accessToken string) (*Identity, error) {
+	opt.applyDefaults()
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken == "" || strings.ContainsAny(accessToken, " \t\r\n") {
+		return nil, fmt.Errorf("a single non-empty access token is required")
+	}
+	return enroll(opt, accessToken, "")
+}
+
+func enroll(opt Options, bearer, email string) (*Identity, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	// The CSR subject is advisory; the server derives identity from the token.
+	csrPEM, err := makeCSR(key, email)
+	if err != nil {
+		return nil, fmt.Errorf("build CSR: %w", err)
 	}
 	deviceID := ""
 	if existing, loadErr := Load(opt.IdentityDir); loadErr == nil {
