@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/url"
 	"strings"
+
+	"github.com/keydrisLabs/keydris-cli/internal/secureurl"
 )
 
 // decodeStrict decodes raw JSON into output, rejecting unknown fields and
@@ -54,6 +56,10 @@ func trustedRuntimeURL(baseURL, endpointPath string) (string, error) {
 	if err != nil || base.Scheme == "" || base.Host == "" ||
 		(base.Scheme != "https" && base.Scheme != "http") {
 		return "", fmt.Errorf("invalid Keydris runtime URL")
+	}
+	// Runtime calls carry the KIT bearer; plaintext is loopback-only.
+	if err := secureurl.Assert("Keydris runtime URL", baseURL); err != nil {
+		return "", err
 	}
 	endpoint, err := url.Parse(endpointPath)
 	if err != nil || endpoint.IsAbs() || endpoint.Host != "" {
