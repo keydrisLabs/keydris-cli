@@ -124,6 +124,7 @@ func usage() {
 Usage:
   keydris login                      Browser sign-in; stores a local client certificate
                                        [--email you@example.com] [--no-browser]
+  keydris login --access-token-stdin  Enroll with a Cognito CLI access token from stdin
   keydris whoami                     Show the locally stored identity
   keydris logout                     Remove the locally stored identity
   keydris init                       Interactive agent setup
