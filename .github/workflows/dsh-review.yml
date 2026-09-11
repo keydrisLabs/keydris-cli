@@ -1,0 +1,193 @@
+name: dsh-review
+
+# Scheduled DeepSeek Harness run: review recent commits and add missing tests.
+#
+# The harness runs headless in PTC mode. PTC ("programmatic tool calling")
+# presents the tool registry to the model as a generated TypeScript SDK, so a
+# sequence that would be several round trips becomes one program. In headless it
+# is selected by DSH_TOOLS_MODE; the shipped `ptc` agent preset is a Web-surface
+# mechanism and is NOT composed into the headless tree.
+#
+# WHY DSH_PERMISSION_MODE=danger-full-access:
+#   The headless composition derives the approval policy from this single knob:
+#     policy: (DSH_PERMISSION_MODE ?? 'workspace-write') === 'danger-full-access'
+#             ? 'never' : 'ask'
+#   A cron job has no human to answer `ask`, so the sandboxed default would stall
+#   on the first approval. There is no "workspace-write + never" setting, so
+#   unattended operation requires danger-full-access. What makes that acceptable
+#   is structural rather than sandbox-based:
+#     * actions/checkout runs with persist-credentials: false, so the agent's
+#       shell holds no git credential and cannot push.
+#     * The workflow - trusted code - creates the branch, commits and opens the
+#       PR. The agent only edits the working tree.
+#     * main is only ever reached through a reviewed pull request.
+#   Keep this job schedule-only. Never wire it to pull_request: the repository is
+#   public, and a fork PR must never reach a job holding DEEPSEEK_API_KEY.
+#
+# Required repository secret: DEEPSEEK_API_KEY
+
+on:
+  schedule:
+    # Weekly, Monday 03:00 UTC. Every run spends model tokens, so start here and
+    # tighten only if the value justifies the cost.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Override the review task text
+        required: false
+      force:
+        description: Run even when nothing changed in the lookback window
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dsh-review
+  cancel-in-progress: false
+
+env:
+  # DSH is a release candidate; pin it so a behaviour change never arrives
+  # unnoticed in a scheduled run. Bump deliberately.
+  DSH_VERSION: 0.1.5-rc.1
+  LOOKBACK_DAYS: '7'
+  # Keep harness state and run artifacts out of the checkout so they are never
+  # picked up by the commit.
+  DSH_HOME: ${{ runner.temp }}/dsh-home
+  REPORT_DIR: ${{ runner.temp }}/dsh-run
+
+jobs:
+  review:
+    name: DeepSeek Harness review
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Require the API key
+        env:
+          KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::DEEPSEEK_API_KEY is not set; add it as a repository secret"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # The agent must not be able to push. See the header note.
+          persist-credentials: false
+
+      - name: Decide whether anything needs reviewing
+        id: gate
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "::notice::force requested; running regardless of recent activity"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$(git log --since="${LOOKBACK_DAYS} days ago" --oneline)" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no commits in the last ${LOOKBACK_DAYS} days; skipping to avoid needless model spend"
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Install the harness
+        run: npm install --global "@deepseek-ai/dsh@${DSH_VERSION}"
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Configure the harness home
+        run: |
+          mkdir -p "$DSH_HOME" "$REPORT_DIR"
+          cat > "$DSH_HOME/settings.yaml" <<'YAML'
+          agent-default-model:
+            provider: deepseek-official
+            model: deepseek-flash
+            reasoningEffort: max
+          YAML
+          dsh --version
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Create the working branch
+        run: |
+          # Branch first, so even an agent that ignores its instructions and runs
+          # `git push` targets this branch rather than main.
+          git switch --create "dsh/review-${{ github.run_id }}"
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Run the harness
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DSH_TOOLS_MODE: ptc
+          DSH_PERMISSION_MODE: danger-full-access
+        run: |
+          TASK="${{ inputs.task }}"
+          if [ -z "$TASK" ]; then
+            TASK="Review the keydris-cli repository. Your review window is the last ${LOOKBACK_DAYS} days of commits.
+
+          1. Read the recent commits (git log --since=\"${LOOKBACK_DAYS} days ago\" -p) and identify behaviour that changed.
+          2. For any changed behaviour that lacks test coverage, add or extend Go tests. Match the existing table-driven style and place them in the package under test.
+          3. Run: go build ./... && go vet ./... && go test ./...
+             All three must pass. Fix anything your own change breaks.
+          4. Do not modify anything under .github/. Do not commit, push, or create branches.
+          5. Leave your changes in the working tree. In your final answer, summarise what you changed and what you deliberately did not change, and why."
+          fi
+
+          printf '%s\n' "$TASK" > "$REPORT_DIR/dsh-task.txt"
+          # The harness prints the final assistant message to stdout and exits 1
+          # on failure; capture both so the report survives a non-zero exit.
+          dsh --profile headless "$TASK" 2>&1 | tee "$REPORT_DIR/dsh-report.txt"
+          exit "${PIPESTATUS[0]}"
+
+      - if: always() && steps.gate.outputs.run == 'true'
+        name: Publish the harness report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-report
+          path: ${{ runner.temp }}/dsh-run/
+          if-no-files-found: ignore
+
+      - if: always() && steps.gate.outputs.run == 'true'
+        name: Open a pull request for any changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "::notice::the harness made no changes; nothing to open a pull request for"
+            exit 0
+          fi
+
+          git add --all
+          git -c user.name="dsh-review[bot]" \
+              -c user.email="dsh-review@users.noreply.github.com" \
+              commit -m "chore(dsh): scheduled review and test additions"
+
+          # Explicit token: checkout deliberately did not persist credentials.
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD
+
+          cat > "$REPORT_DIR/pr-body.md" <<'BODY'
+          Automated DeepSeek Harness run (`dsh-review`).
+
+          The harness reviewed the recent commits and added or extended tests where
+          behaviour had changed without coverage. See this run's `dsh-report`
+          artifact for its full reasoning and summary.
+
+          Review before merging: an unattended agent wrote this.
+          BODY
+
+          # Never target main: the commit only ever reaches it through review.
+          gh pr create \
+            --base main \
+            --head "dsh/review-${{ github.run_id }}" \
+            --title "chore(dsh): scheduled review and test additions" \
+            --body-file "$REPORT_DIR/pr-body.md"
