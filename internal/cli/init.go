@@ -205,7 +205,7 @@ func runInit(args []string) int {
 	if *noStart {
 		ui.next("keydris proxy up")
 	} else if target == "claude-code" {
-		ui.next("claude")
+		ui.next("keydris run -- claude")
 	} else {
 		ui.next("keydris codex")
 	}
