@@ -46,7 +46,7 @@ An agent that talks to GitHub, Slack, or an MCP server normally holds that servi
 - **No secret at rest on the agent side.** A compromised laptop yields nothing between requests; an attacker has to be present *during* an authorized call, on an origin the policy already governs.
 - **The credential's blast radius is one call.** Not one process, not one session: one HTTP request or one `tools/call`, with its real arguments, evaluated against policy before anything reaches the network.
 - **Authorization is bound to the actual request.** The method, path, resource id, and body travel with the decision, so the control plane decides against the call that is really about to happen — and re-enforces that decision server-side at execution time.
-- **The agent is unmodified.** Claude Code runs `claude`; Codex runs through `keydris codex`. Onboarding installs a bundled skill and wires a short session briefing so agents understand their delegated authority and how to handle denials.
+- **The agent is unmodified.** Claude Code runs through `keydris run -- claude`; Codex runs through `keydris codex`. Neither harness is patched — the wrapper only opens the session and points the process at the proxy. Onboarding installs a bundled skill and wires a short session briefing so agents understand their delegated authority and how to handle denials.
 - **Failures deny.** No session, control plane unreachable, request timeout, malformed payload: every error path is an explicit deny, never a silent allow.
 - **One static binary, one Go dependency.** `CGO_ENABLED=0`, stdlib plus a JSON canonicalizer. No runtime, no daemon manager, no kernel module required on the default plane.
 
@@ -182,7 +182,8 @@ and [Claude's sandbox requirements](https://code.claude.com/docs/en/sandboxing).
 ### VS Code integrated terminals
 
 Use the same commands in a VS Code terminal as in a standalone terminal:
-`claude` after Claude onboarding, or `keydris codex` after Codex onboarding.
+`keydris run -- claude` after Claude onboarding, or `keydris codex` after Codex
+onboarding.
 Hooks use absolute executable paths, so opening another project does not change
 which CLI or certificates they use. Keep the same home, `CLAUDE_CONFIG_DIR`,
 `CODEX_HOME`, and any `KEYDRIS_*` overrides in the setup and session terminals.
@@ -262,12 +263,19 @@ keydris proxy up
 # 3. Confirm enforcement state and the detected proxy scope.
 keydris status
 
-# 4. Run a real session. Claude Code fires the wired SessionStart hook, which
-#    mints a runtime session and registers it; the proxy attributes the session's
-#    egress to that identity, and every Bash command is checked against the
-#    policy's command rules first.
-claude
+# 4. Run a real session. The wrapper mints the runtime session before Claude
+#    starts and points the claude process itself at the proxy, so its own
+#    remote-HTTP MCP and WebFetch calls are governed alongside its Bash
+#    children; every Bash command is checked against the policy's command
+#    rules first, and the session is revoked when the process exits.
+keydris run -- claude
 ```
+
+Bare `claude` also works — the wired SessionStart hook mints and registers the
+session, and Claude Code's sandbox routes Bash-subprocess egress to the proxy.
+What it does not cover is the `claude` process's own HTTP traffic, which never
+enters the sandbox. Prefer `keydris run -- claude` whenever the agent reaches a
+governed origin through a remote MCP server or WebFetch rather than a shell.
 
 `keydris init` with no arguments opens an interactive menu that prompts for the same two choices. `keydris login` also works standalone (to re-authenticate); `init` runs it automatically when needed.
 
@@ -285,17 +293,13 @@ Run `/hooks` once inside Codex to trust the new entries, and pair the integratio
 
 ### Without a harness
 
-`keydris run` plays the sandbox's role, exercising the same proxy and enforcement path:
+`keydris run` plays the sandbox's role, exercising the same proxy and enforcement path for any command:
 
 ```bash
 keydris run -- curl -s https://your-api/
 ```
 
-To cover Claude Code's own remote-HTTP MCP client (not only its sandboxed Bash children), launch the process itself through the proxy:
-
-```bash
-keydris run -- claude
-```
+This is the same wrapper the Claude Code quickstart uses, and the one `keydris codex` builds on.
 
 ---
 
@@ -493,7 +497,7 @@ Three planes ship in this binary behind one interface. **`sandbox` is the defaul
 ### Yours
 
 - **Un-bypassability comes from the sandbox, not from Keydris.** It holds only while Claude Code's sandbox is enabled and routed here. `keydris init` locks it (`failIfUnavailable`, `allowUnsandboxedCommands: false`), and `keydris status` surfaces drift — but a user who disables the sandbox loses enforcement.
-- **Launch through the wrapper.** `keydris codex`, never `codex`. Starting Codex directly creates no Keydris session at all.
+- **Launch through the wrapper.** `keydris codex`, never `codex`: starting Codex directly creates no Keydris session at all. For Claude Code, `keydris run -- claude` rather than `claude` — bare `claude` still mints a session through its hook, but only its Bash subprocesses are proxied, so the agent's own MCP and WebFetch egress goes ungoverned.
 - **Trust the Codex hooks once.** Codex will not run hooks from a new file until you confirm them with `/hooks`. For managed fleets, deploy the same absolute hook paths through Codex `requirements.toml` — user-level hook trust is not an administrator boundary.
 - **Treat `~/.keydris-data` as sensitive.** `evidence.jsonl` and `proxy.log` record full JSON tool parameters and request bodies for managed authorization calls, which may contain application secrets. They are created `0600` under a `0700` directory; handle them accordingly.
 - **The per-session proxy token is a bearer credential.** A co-resident process that reads it from the environment or `$CLAUDE_ENV_FILE` can impersonate the session until `session-end`.

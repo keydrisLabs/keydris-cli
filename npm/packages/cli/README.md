@@ -38,8 +38,8 @@ and `socat`; `keydris doctor` checks these and namespace availability. WSL1 and
 detected mixed Windows/Linux execution are rejected with recovery guidance.
 After WSL shuts down, run `keydris proxy up` before reopening agent sessions.
 
-VS Code integrated terminals use the normal agent launch commands: `claude`
-or `keydris codex` after onboarding. For WSL, open the folder with VS Code's WSL
+VS Code integrated terminals use the normal agent launch commands:
+`keydris run -- claude` or `keydris codex` after onboarding. For WSL, open the folder with VS Code's WSL
 extension and run setup in that terminal. Sidebar integration is separate.
 
 `keydris init` installs a bundled `keydris-authority` skill and a short session
