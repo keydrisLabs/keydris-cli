@@ -26,7 +26,7 @@ func TestCreateAndRevokeKitSessionReplacement(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			if body["agent_id"] != "agent-1" || body["session_handle"] != "handle-1" {
+			if body["agent_id"] != "agent-1" || body["session_handle"] != "handle-1" || body["agent_runtime"] != "claude_code" {
 				t.Errorf("request body = %v", body)
 			}
 			writer.Header().Set("Content-Type", "application/json")
@@ -43,6 +43,7 @@ func TestCreateAndRevokeKitSessionReplacement(t *testing.T) {
 	session, err := CreateKitSession(context.Background(), server.Client(), server.URL, CreateKitSessionInput{
 		AgentID:           "agent-1",
 		SessionHandle:     "handle-1",
+		AgentRuntime:      "claude_code",
 		IdempotencyKey:    "renew-test-001",
 		ReplacesSessionID: oldSessionID,
 	})

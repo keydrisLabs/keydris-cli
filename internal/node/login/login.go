@@ -385,7 +385,7 @@ func signCSR(controlURL, token string, csrPEM []byte, deviceID, deviceName, agen
 	if err := secureurl.Assert("KEYDRIS_CONTROL_URL", controlURL); err != nil {
 		return nil, err
 	}
-	payload := map[string]string{"csr": string(csrPEM), "device_name": deviceName}
+	payload := withClientMetadata(map[string]string{"csr": string(csrPEM), "device_name": deviceName})
 	if deviceID != "" {
 		payload["device_id"] = deviceID
 	}

@@ -100,7 +100,8 @@ func runInternalSessionHook(phase string, args []string) int {
 			writeClaudeProxyEnv(cfg, sid)
 			return claudeSessionBriefing()
 		}
-		if code := hookSessionStart(cfg, *blueprint, sid); code != 0 {
+		// Only Claude Code's SessionStart hook reaches this path.
+		if code := hookSessionStart(cfg, *blueprint, sid, agentRuntimeClaudeCode); code != 0 {
 			return code
 		}
 		// Best-effort peer-verification anchor: the process that spawned this hook

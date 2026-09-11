@@ -43,7 +43,7 @@ func runRun(args []string) int {
 	}
 	sid := "run-" + newProxyToken()
 
-	if code := hookSessionStart(cfg, *blueprint, sid); code != 0 {
+	if code := hookSessionStart(cfg, *blueprint, sid, agentRuntimeForCommand(cmd[0])); code != 0 {
 		return code
 	}
 	ended := false

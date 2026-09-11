@@ -6,6 +6,7 @@ package cli
 import (
 	"fmt"
 	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 	"os"
 	"strings"
 )
@@ -13,6 +14,13 @@ import (
 // Version is the build version, stamped at link time via
 // -ldflags "-X github.com/keydrisLabs/keydris-cli/internal/cli.Version=<v>".
 var Version = "dev"
+
+// The login package reports the CLI version to the control plane on
+// enrollment and renewal; -X stamps Version before init runs, so this is the
+// final value.
+func init() {
+	login.ClientVersion = Version
+}
 
 // Execute dispatches the command line and returns a process exit code.
 func Execute() int {

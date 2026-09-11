@@ -126,7 +126,7 @@ func TestRunOwnsOneMintAndRevoke(t *testing.T) {
 
 	var mints, revokes int
 	oldMint, oldRevoke, oldSend, oldExchange, oldRoutes := mintSessionInstance, revokeSessionInstance, sendSessionMessage, exchangeSessionMessage, fetchSessionRoutes
-	mintSessionInstance = func(*config.Config, string, string) (*mintedInstance, error) {
+	mintSessionInstance = func(*config.Config, string, string, string) (*mintedInstance, error) {
 		mints++
 		return &mintedInstance{SPIFFEID: "spiffe://keydris.test/run", KIT: "test-kit", SessionID: "test-ulid"}, nil
 	}
@@ -176,7 +176,7 @@ func TestRepeatedSessionStartRevokesPreviousInstance(t *testing.T) {
 
 	var mints, revokes int
 	oldMint, oldRevoke, oldSend, oldExchange, oldRoutes := mintSessionInstance, revokeSessionInstance, sendSessionMessage, exchangeSessionMessage, fetchSessionRoutes
-	mintSessionInstance = func(*config.Config, string, string) (*mintedInstance, error) {
+	mintSessionInstance = func(*config.Config, string, string, string) (*mintedInstance, error) {
 		mints++
 		return &mintedInstance{
 			SPIFFEID:  "spiffe://keydris.test/session",
@@ -197,10 +197,10 @@ func TestRepeatedSessionStartRevokesPreviousInstance(t *testing.T) {
 		mintSessionInstance, revokeSessionInstance, sendSessionMessage, exchangeSessionMessage, fetchSessionRoutes = oldMint, oldRevoke, oldSend, oldExchange, oldRoutes
 	}()
 
-	if code := hookSessionStart(cfg, "policy", "same-session"); code != 0 {
+	if code := hookSessionStart(cfg, "policy", "same-session", ""); code != 0 {
 		t.Fatalf("first start code = %d", code)
 	}
-	if code := hookSessionStart(cfg, "policy", "same-session"); code != 0 {
+	if code := hookSessionStart(cfg, "policy", "same-session", ""); code != 0 {
 		t.Fatalf("second start code = %d", code)
 	}
 	if mints != 2 || revokes != 1 {

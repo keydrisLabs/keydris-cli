@@ -99,7 +99,9 @@ func updateSessionOwner(cfg *config.Config, sid string, pid int, managed bool) {
 	})
 }
 
-func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
+// agentRuntime names the coding tool the session serves (see agent_runtime.go);
+// "" omits it and lets the control plane record the session without one.
+func hookSessionStart(cfg *config.Config, blueprintFlag, sid, agentRuntime string) int {
 	if err := checkResetInProgress(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -134,7 +136,7 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid string) int {
 		return 1
 	}
 
-	inst, err := mintSessionInstance(cfg, blueprint, handle)
+	inst, err := mintSessionInstance(cfg, blueprint, handle, agentRuntime)
 	if err != nil {
 		unbindSessionForMode(cfg, handle)
 		fmt.Fprintf(os.Stderr, "keydris session: mint: %v\n", err)
@@ -344,7 +346,7 @@ func mTLSClient(cfg *config.Config) (*http.Client, error) {
 	return client, nil
 }
 
-func mintInstance(cfg *config.Config, agentID, handle string) (*mintedInstance, error) {
+func mintInstance(cfg *config.Config, agentID, handle, agentRuntime string) (*mintedInstance, error) {
 	client, err := mTLSClient(cfg)
 	if err != nil {
 		return nil, err
@@ -354,6 +356,7 @@ func mintInstance(cfg *config.Config, agentID, handle string) (*mintedInstance, 
 	return runtimecontract.CreateKitSession(ctx, client, cfg.ControlMTLSURL, runtimecontract.CreateKitSessionInput{
 		AgentID:        agentID,
 		SessionHandle:  handle,
+		AgentRuntime:   agentRuntime,
 		IdempotencyKey: "cli-" + newProxyToken(),
 	})
 }
