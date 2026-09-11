@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/platform"
+	"github.com/keydrisLabs/keydris-cli/internal/secureurl"
 )
 
 // Options drives Run.
@@ -379,6 +380,11 @@ type signResponse struct {
 }
 
 func signCSR(controlURL, token string, csrPEM []byte, deviceID, deviceName, agentID string) (*signResponse, error) {
+	// The IdP bearer token rides this request: refuse to post it over
+	// plaintext to anything that leaves the machine.
+	if err := secureurl.Assert("KEYDRIS_CONTROL_URL", controlURL); err != nil {
+		return nil, err
+	}
 	payload := withClientMetadata(map[string]string{"csr": string(csrPEM), "device_name": deviceName})
 	if deviceID != "" {
 		payload["device_id"] = deviceID
