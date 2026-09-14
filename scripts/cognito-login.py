@@ -21,6 +21,58 @@ class LoginError(Exception):
     pass
 
 
+ERROR_HINTS = {
+    "NotAuthorizedException": "Cognito rejected the sign-in; check the account credentials and app-client secret configuration.",
+    "UserNotFoundException": "The user was not found in the app client's user pool.",
+    "UserNotConfirmedException": "The Cognito user must be confirmed before signing in.",
+    "PasswordResetRequiredException": "The Cognito user must reset their password before signing in.",
+    "InvalidParameterException": "Check the app client and its ALLOW_USER_PASSWORD_AUTH setting.",
+    "ResourceNotFoundException": "Check that the app client exists in the configured Cognito region.",
+    "TooManyRequestsException": "Cognito rate-limited the request; wait before retrying.",
+    "ForbiddenException": "An AWS WAF rule blocked the Cognito request.",
+    "InvalidUserPoolConfigurationException": "Check the Cognito user-pool configuration.",
+    "UserLambdaValidationException": "A Cognito Lambda trigger rejected the sign-in.",
+    "InvalidLambdaResponseException": "A Cognito Lambda trigger returned an invalid response.",
+    "UnexpectedLambdaException": "A Cognito Lambda trigger failed.",
+    "InternalErrorException": "Cognito encountered an internal service error.",
+}
+
+# Use known provider messages only to select fixed explanations. Never print the
+# response text: it can contain usernames, client IDs, or custom Lambda output.
+REASON_HINTS = (
+    ("NotAuthorizedException", "incorrect username or password", "Cognito reports incorrect username or password; it may intentionally hide whether the user exists."),
+    ("NotAuthorizedException", "secret_hash was not received", "This app client requires its client-secret GitHub secret so the helper can send SECRET_HASH."),
+    ("NotAuthorizedException", "unable to verify secret hash", "The supplied app-client secret hash was rejected; check the client-secret GitHub secret."),
+    ("NotAuthorizedException", "user is disabled", "The Cognito user is disabled."),
+    ("NotAuthorizedException", "password attempts exceeded", "Cognito temporarily blocked password attempts; wait before retrying."),
+    ("InvalidParameterException", "user_password_auth flow not enabled", "Enable ALLOW_USER_PASSWORD_AUTH for this Cognito app client."),
+)
+
+
+def describe_auth_error(error):
+    fallback = f"Cognito sign-in failed (HTTP {error.code}); no recognized Cognito error details were returned"
+    try:
+        detail = json.loads(error.read(8192))
+    except (ValueError, OSError):
+        return fallback
+    if not isinstance(detail, dict):
+        return fallback
+    code = detail.get("__type", "")
+    if not isinstance(code, str):
+        return fallback
+    code = code.rsplit("#", 1)[-1]
+    hint = ERROR_HINTS.get(code)
+    if hint is None:
+        return fallback
+    message = detail.get("message", "")
+    if isinstance(message, str):
+        for reason_code, phrase, explanation in REASON_HINTS:
+            if code == reason_code and phrase in message.lower():
+                hint = explanation
+                break
+    return f"Cognito sign-in failed ({code}; HTTP {error.code}): {hint}"
+
+
 def authenticate(region, client_id, username, password, client_secret="", opener=None):
     if not re.fullmatch(r"[a-z]{2}(?:-[a-z]+)+-\d+", region):
         raise LoginError("A valid Cognito region is required")
@@ -54,11 +106,7 @@ def authenticate(region, client_id, username, password, client_secret="", opener
         with (opener or urllib.request.urlopen)(request, timeout=30) as response:
             result = json.load(response)
     except urllib.error.HTTPError as error:
-        # Cognito messages can include user data. Report only the status.
-        raise LoginError(
-            f"Cognito sign-in failed (HTTP {error.code}); check the CI user's "
-            "credentials, app client, and ALLOW_USER_PASSWORD_AUTH configuration"
-        ) from None
+        raise LoginError(describe_auth_error(error)) from None
     except (urllib.error.URLError, TimeoutError, ValueError):
         raise LoginError("Could not obtain a valid Cognito authentication response") from None
 

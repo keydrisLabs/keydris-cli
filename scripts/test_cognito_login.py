@@ -53,6 +53,43 @@ class CognitoLoginTests(unittest.TestCase):
             login.authenticate("us-east-1", "client", "user", "password-in-error", opener=fail)
         self.assertNotIn("password-in-error", str(error.exception))
 
+    def test_http_failures_report_safe_account_and_client_reasons(self):
+        cases = [
+            ("NotAuthorizedException", "Incorrect username or password.", "incorrect username or password"),
+            ("NotAuthorizedException", "Client private-value is configured with secret but SECRET_HASH was not received", "requires its client-secret"),
+            ("NotAuthorizedException", "Unable to verify secret hash for client private-value", "secret hash was rejected"),
+            ("NotAuthorizedException", "User is disabled.", "user is disabled"),
+            ("NotAuthorizedException", "Password attempts exceeded", "temporarily blocked"),
+            ("UserNotConfirmedException", "User private-value is not confirmed", "must be confirmed"),
+            ("PasswordResetRequiredException", "Password reset required for private-value", "reset their password"),
+            ("InvalidParameterException", "USER_PASSWORD_AUTH flow not enabled for this client", "Enable ALLOW_USER_PASSWORD_AUTH"),
+            ("ResourceNotFoundException", "Client private-value does not exist", "app client exists"),
+        ]
+        for code, message, expected in cases:
+            with self.subTest(code=code, expected=expected):
+                def fail(*args, **kwargs):
+                    body = {"__type": "provider.namespace#" + code,
+                            "message": message + " private-value", "extra": "private-value"}
+                    raise urllib.error.HTTPError("https://example.invalid", 400, "private-value", {},
+                                                 io.BytesIO(json.dumps(body).encode()))
+
+                with self.assertRaises(login.LoginError) as error:
+                    login.authenticate("us-east-1", "client", "private-value", "private-value", opener=fail)
+                self.assertIn(code, str(error.exception))
+                self.assertIn(expected, str(error.exception))
+                self.assertNotIn("private-value", str(error.exception))
+
+    def test_unknown_and_malformed_error_bodies_remain_private(self):
+        for raw in [b"private-value", b"[]", b"null", b"{\"__type\": []}",
+                    b'{"__type":"private-value","message":"private-value"}',
+                    json.dumps({"__type": "NotAuthorizedException", "message": ["private-value"]}).encode(),
+                    b'{"message":"' + b"x" * 8192 + b'private-value"}']:
+            with self.subTest(raw=raw[:50]):
+                error = urllib.error.HTTPError("https://example.invalid", 400, "private-value", {}, io.BytesIO(raw))
+                summary = login.describe_auth_error(error)
+                self.assertIn("HTTP 400", summary)
+                self.assertNotIn("private-value", summary)
+
     def test_token_file_is_private_and_github_output_is_masked(self):
         with tempfile.TemporaryDirectory() as directory:
             token_file = Path(directory) / "token"
