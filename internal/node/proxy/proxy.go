@@ -107,6 +107,66 @@ func forwardOneResponse(client net.Conn, upstream net.Conn, req *http.Request) e
 	return nil
 }
 
+// ForwardTLSOneTapped forwards exactly one HTTPS request unchanged (no
+// credential injection), optionally teeing the response body into the writer
+// tap returns for that response. The usage meter (ENG-261) reads token counts
+// off the tee; the returned writer must never fail (its Write cannot error),
+// so tapping can never break the forwarded stream.
+func ForwardTLSOneTapped(
+	client net.Conn,
+	req *http.Request,
+	dst, sni string,
+	tap func(*http.Response) io.Writer,
+) error {
+	prepareOriginRequest(req)
+
+	upstream, err := tls.Dial("tcp", dst, &tls.Config{
+		ServerName: sni,
+		MinVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		WriteReject(client, "upstream unreachable")
+		return fmt.Errorf("dial upstream (tls) %s: %w", dst, err)
+	}
+	defer upstream.Close()
+
+	req.RequestURI = ""
+	req.Close = true
+	req.Header.Set("Connection", "close")
+	if err := req.Write(upstream); err != nil {
+		return fmt.Errorf("write upstream request: %w", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(upstream), req)
+	if err != nil {
+		return fmt.Errorf("read upstream response: %w", err)
+	}
+	defer resp.Body.Close()
+	if tap != nil {
+		if sink := tap(resp); sink != nil {
+			resp.Body = teedBody{
+				Reader: io.TeeReader(resp.Body, sink),
+				closer: resp.Body,
+			}
+		}
+	}
+
+	resp.Header.Del("Connection")
+	resp.Header.Del("Keep-Alive")
+	resp.Close = true
+	if err := resp.Write(client); err != nil {
+		return fmt.Errorf("copy upstream response: %w", err)
+	}
+	return nil
+}
+
+type teedBody struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (b teedBody) Close() error { return b.closer.Close() }
+
 // TunnelCONNECT establishes an opaque HTTP CONNECT tunnel. Keydris does not
 // terminate TLS, inspect request bodies, authorize, or mutate headers on it.
 func TunnelCONNECT(client net.Conn, bufferedClient io.Reader, target string) error {

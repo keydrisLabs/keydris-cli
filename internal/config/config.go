@@ -146,6 +146,15 @@ type Config struct {
 	// whose process is not in the session's tree). Effective on Linux; a no-op on
 	// platforms that cannot resolve the peer.
 	PeerVerify string
+	// CostMetering enables LLM usage metering (ENG-261) on the sandbox/proxyenv
+	// planes: known LLM provider origins are TLS-terminated for METERING ONLY
+	// (model id + token counts, never prompt/completion content) and the
+	// counters are reported under the session's KIT. Default on; disable with
+	// KEYDRIS_COST_METERING=off.
+	CostMetering bool
+	// MeteredOriginOverrides adjusts the built-in metered-origin list. Entries
+	// are "host=provider", or "host=off" to remove a built-in origin.
+	MeteredOriginOverrides []string
 
 	// --- Browser login (`keydris login`) ---
 
@@ -255,6 +264,9 @@ func Load() *Config {
 		ManagedScopeError:   managedErr,
 		AllowSoleFallback:   env("KEYDRIS_ALLOW_SOLE_FALLBACK", "") != "",
 		PeerVerify:          env("KEYDRIS_PEER_VERIFY", "warn"),
+
+		CostMetering:           !envDisabled("KEYDRIS_COST_METERING"),
+		MeteredOriginOverrides: envList("KEYDRIS_METERED_ORIGINS"),
 
 		ClientCAPath:       env("KEYDRIS_CLIENT_CA_PATH", filepath.Join(dataDir, "client-ca.crt")),
 		ClientCAKeyPath:    env("KEYDRIS_CLIENT_CA_KEY_PATH", filepath.Join(dataDir, "client-ca.key")),
@@ -486,6 +498,17 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// envDisabled reports an explicit opt-out ("off", "0", "false", "no"); any
+// other value — including unset — leaves the feature on.
+func envDisabled(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "off", "0", "false", "no":
+		return true
+	default:
+		return false
+	}
 }
 
 // loadDotEnv reads simple KEY=VALUE lines from path and sets them in the
