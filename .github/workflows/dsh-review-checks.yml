@@ -3,13 +3,21 @@ name: dsh-review-checks
 on:
   pull_request:
     paths:
-      - '.github/workflows/dsh-review*.yml'
+      - '.github/workflows/dsh-*.yml'
+      - '.github/workflows/live-e2e.yml'
+      - 'scripts/live*'
+      - 'scripts/test_live*'
+      - 'scripts/dsh-tasks/**'
       - 'scripts/dsh-review.py'
       - 'scripts/test_dsh_review.py'
   push:
     branches: [main]
     paths:
-      - '.github/workflows/dsh-review*.yml'
+      - '.github/workflows/dsh-*.yml'
+      - '.github/workflows/live-e2e.yml'
+      - 'scripts/live*'
+      - 'scripts/test_live*'
+      - 'scripts/dsh-tasks/**'
       - 'scripts/dsh-review.py'
       - 'scripts/test_dsh_review.py'
 
@@ -29,6 +37,6 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Lint the DSH workflows
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/dsh-review.yml .github/workflows/dsh-review-checks.yml
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/dsh-review.yml .github/workflows/dsh-task.yml .github/workflows/dsh-review-checks.yml .github/workflows/live-e2e.yml
       - name: Check the publishing boundary and task input
-        run: python3 -I -m unittest discover -s scripts -p 'test_dsh_review.py' -v
+        run: python3 -I -m unittest discover -s scripts -p 'test_*.py' -v

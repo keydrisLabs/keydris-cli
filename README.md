@@ -816,13 +816,14 @@ gh run watch
 
 Teardown signs in again with the console client, revokes the agent, archives the
 policy, and removes local credentials. `keep_resources=true` retains the backend
-resources for inspection. This workflow is manual-only because it uses live
-credentials.
+resources for inspection. This workflow is manual or called by the trusted daily
+maintenance workflow; it never runs directly on pull-request events.
 
 Authentication, enrollment, and harness execution run as a dedicated regular Linux
 user inside WSL2. The harness wrappers use Keydris's generated CA bundle; the lane
-does not require writing the system trust store. Each harness runs two basic
-shell-action assertions in fresh Linux directories:
+does not require writing the system trust store. Each harness runs the declarative
+cases in [`scripts/live-e2e-cases.json`](scripts/live-e2e-cases.json) in fresh Linux
+directories. The two mandatory baseline assertions are:
 
 - **Allow:** an exact `cp keydris-e2e-source.txt keydris-e2e-allowed.txt` tool call
   must succeed and create a regular file matching the randomly generated source.
@@ -975,3 +976,56 @@ Built on:
 ---
 
 **If keydris-cli took a credential off one of your machines, a star helps others find it.**
+
+### Daily DeepSeek maintenance
+
+[`dsh-review.yml`](.github/workflows/dsh-review.yml) runs every day at **03:00 UTC
+(08:30 Asia/Kolkata)**. Each of its three tasks uses a separate agent checkout and
+opens its own PR only when it has validated changes; nothing is auto-merged:
+
+- **review:** review the last day's commits and add missing Go coverage. Skips an
+  idle day unless manually forced.
+- **dead-code:** audit the whole repository, including scripts and packaging.
+  Go reachability reports include tests and all Linux/macOS/Windows × amd64/arm64
+  targets. These are only candidates: the agent must check dynamic entry points,
+  generated code, platform tags, and compatibility before removing anything.
+  Build, vet, Go/Python tests, and all six CLI cross-builds must pass.
+- **e2e:** add useful missing cases to the WSL2 live-test catalog. A fresh runner
+  validates that existing cases are unchanged and no executable files were edited.
+  The existing `live-e2e.yml` then runs the proposed catalog against BOTH real
+  Claude Code and Codex in WSL2, including Cognito enrollment and resource cleanup.
+  Only a successful live run allows the separate publishing job to open the PR.
+  Failures retain the proposal/report artifacts and do not publish a success PR.
+
+The E2E catalog supports copy-success and policy-denied deletion variants: plain,
+spaced, Unicode, or nested filenames; random, empty, multiline, or Unicode file
+contents; and overwriting an existing destination for copy. It accepts no shell
+commands, arbitrary paths, scripts, custom prompts, or policy outcomes. Existing
+cases cannot be removed or weakened. The 12-case limit bounds daily test growth;
+when no useful supported addition remains, the agent should make no change and
+report what needs a human-reviewed interpreter extension. Additional operation
+families need a reviewed change to the trusted interpreter, not generated code
+running with the live credentials.
+
+Configure `DEEPSEEK_API_KEY`, the live E2E secrets/variables above, and the repository
+setting **Allow GitHub Actions to create and approve pull requests**. Keep default
+workflow permissions read-only. Each agent job explicitly has read-only GitHub
+permissions; only its isolated publisher has write access. The model process gets
+only its DeepSeek key, not Cognito, Claude, or Codex credentials. Model runs and
+live tests incur provider usage. Dead-code and E2E audits run even on idle days.
+
+To run all tasks or select just one before merging workflow changes:
+
+```bash
+gh workflow run dsh-review.yml --ref YOUR_BRANCH -f mode=all -f force=true
+gh workflow run dsh-review.yml --ref YOUR_BRANCH -f mode=e2e
+```
+
+Available modes are `all`, `review`, `dead-code`, and `e2e`. An optional `task`
+override is literal text and remains subject to the selected task's patch
+restrictions. Reports are `dsh-report-<mode>` artifacts and proposals are
+`dsh-changes-<mode>`. The catalog validated for WSL2 is also retained separately.
+The daily schedule takes effect when this workflow reaches the default branch.
+Manual branch runs target their source branch when opening PRs, so unmerged
+workflow changes are not displayed as agent-generated changes. Scheduled runs
+target the default branch normally.

@@ -1,20 +1,22 @@
 name: dsh-review
 
-# Never add a pull_request trigger: the unattended agent uses an API key and
-# danger-full-access. It has read-only GitHub permissions. A separate hosted
-# runner validates a patch and opens a PR without executing agent-written files.
-# Required secret: DEEPSEEK_API_KEY. Repository settings must allow Actions PRs.
-
+# Daily at 03:00 UTC (08:30 India). Each task has its own isolated jobs and PR.
+# Never expose the model/API-key jobs to pull_request events.
 on:
   schedule:
-    - cron: '0 3 * * 1'
+    - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
+      mode:
+        description: Maintenance task to run
+        type: choice
+        options: [all, review, dead-code, e2e]
+        default: all
       task:
-        description: Override the review task text
+        description: Optional task override (use with one selected mode)
         required: false
       force:
-        description: Run even when nothing changed in the lookback window
+        description: Run recent-change review even when there are no recent commits
         type: boolean
         default: false
 
@@ -25,209 +27,37 @@ concurrency:
   group: dsh-review
   cancel-in-progress: false
 
-env:
-  DSH_VERSION: 0.1.5-rc.1
-  LOOKBACK_DAYS: '7'
-
 jobs:
   review:
-    name: DeepSeek Harness review
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    outputs:
-      run: ${{ steps.gate.outputs.run }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Decide whether anything needs reviewing
-        id: gate
-        env:
-          FORCE_REVIEW: ${{ inputs.force }}
-        run: |
-          if [ "$FORCE_REVIEW" = "true" ]; then
-            echo "::notice::force requested; running regardless of recent activity"
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          elif [ -n "$(git log --since="${LOOKBACK_DAYS} days ago" --oneline)" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no commits in the last ${LOOKBACK_DAYS} days; skipping to avoid needless model spend"
-          fi
-
-      - if: steps.gate.outputs.run == 'true'
-        name: Require the API key
-        env:
-          KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: |
-          if [ -z "$KEY" ]; then
-            echo "::error::DEEPSEEK_API_KEY is not set; add it as a repository secret"
-            exit 1
-          fi
-
-      - if: steps.gate.outputs.run == 'true'
-        name: Initialize temporary directories
-        run: |
-          mkdir -p "$RUNNER_TEMP/dsh-home" "$RUNNER_TEMP/dsh-run" "$RUNNER_TEMP/dsh-changes"
-          echo "DSH_HOME=$RUNNER_TEMP/dsh-home" >> "$GITHUB_ENV"
-          echo "REPORT_DIR=$RUNNER_TEMP/dsh-run" >> "$GITHUB_ENV"
-
-      - if: steps.gate.outputs.run == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - if: steps.gate.outputs.run == 'true'
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          # Do not save agent-controlled files into a cache used by other jobs.
-          cache: false
-
-      - if: steps.gate.outputs.run == 'true'
-        name: Install the harness
-        run: npm install --global "@deepseek-ai/dsh@${DSH_VERSION}"
-
-      - if: steps.gate.outputs.run == 'true'
-        name: Configure the harness home
-        run: |
-          cat > "$DSH_HOME/settings.yaml" <<'YAML'
-          agent-default-model:
-            provider: deepseek-official
-            model: deepseek-flash
-            reasoningEffort: max
-          YAML
-          dsh --version
-
-      - if: steps.gate.outputs.run == 'true'
-        name: Run the harness
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DSH_TOOLS_MODE: ptc
-          # Other modes currently map to interactive approval prompts.
-          DSH_PERMISSION_MODE: danger-full-access
-          TASK_OVERRIDE: ${{ inputs.task }}
-        run: |
-          TASK="$TASK_OVERRIDE"
-          if [ -z "$TASK" ]; then
-            TASK="Review the keydris-cli repository. Your review window is the last ${LOOKBACK_DAYS} days of commits.
-
-          1. Read the recent commits (git log --since=\"${LOOKBACK_DAYS} days ago\" -p) and identify behaviour that changed.
-          2. For any changed behaviour that lacks test coverage, add or extend Go tests. Match the existing table-driven style and place them in the package under test.
-          3. Run: go build ./... && go vet ./... && go test ./...
-             All three must pass. Fix anything your own change breaks.
-          4. Do not modify .github/, Git configuration files, symlinks, or submodules. Do not commit, push, or create branches.
-          5. Leave your changes in the working tree. In your final answer, summarise what you changed and what you deliberately did not change, and why."
-          fi
-
-          printf '%s\n' "$TASK" > "$REPORT_DIR/dsh-task.txt"
-          dsh --profile headless "$TASK" 2>&1 | tee "$REPORT_DIR/dsh-report.txt"
-          exit "${PIPESTATUS[0]}"
-
-      - if: steps.gate.outputs.run == 'true'
-        name: Verify the proposed changes
-        run: go build ./... && go vet ./... && go test ./...
-
-      - if: steps.gate.outputs.run == 'true'
-        name: Export proposed changes as data
-        run: |
-          # Compare with the reviewed SHA even if the agent committed or switched
-          # branches. Git metadata and hooks are never transferred. The receiving
-          # job treats this patch as untrusted input.
-          git add --all
-          git diff --cached --binary --full-index --no-ext-diff --no-textconv \
-            "$GITHUB_SHA" > "$RUNNER_TEMP/dsh-changes/changes.patch"
-
-      - if: steps.gate.outputs.run == 'true'
-        name: Upload proposed changes
-        uses: actions/upload-artifact@v4
-        with:
-          # A failed publish job can be retried without rerunning the agent.
-          name: dsh-changes
-          path: ${{ runner.temp }}/dsh-changes/changes.patch
-          if-no-files-found: error
-          overwrite: true
-
-      - if: always() && steps.gate.outputs.run == 'true'
-        name: Publish the harness report
-        uses: actions/upload-artifact@v4
-        with:
-          name: dsh-report
-          path: ${{ runner.temp }}/dsh-run/
-          if-no-files-found: ignore
-          overwrite: true
-
-  publish:
-    name: Open a review pull request
-    needs: review
-    if: needs.review.outputs.run == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    if: github.event_name == 'schedule' || inputs.mode == 'all' || inputs.mode == 'review'
     permissions:
       contents: write
       pull-requests: write
-
-    steps:
-      - name: Check out the trusted workflow revision
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Download the proposed patch outside the checkout
-        uses: actions/download-artifact@v4
-        with:
-          name: dsh-changes
-          path: ${{ runner.temp }}/dsh-changes
-
-      - name: Validate and stage the proposed patch
-        id: patch
-        run: |
-          # Apply only to the index so proposed files cannot replace trusted code.
-          python3 -I scripts/dsh-review.py "$RUNNER_TEMP/dsh-changes/changes.patch"
-          if git diff --cached --quiet; then
-            echo "::notice::the harness made no changes; nothing to open a pull request for"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - if: steps.patch.outputs.changed == 'true'
-        name: Commit and publish the review branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REVIEW_BRANCH: dsh/review-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          git -c core.hooksPath=/dev/null \
-            -c user.name="dsh-review[bot]" \
-            -c user.email="dsh-review@users.noreply.github.com" \
-            commit -m "chore(dsh): scheduled review and test additions"
-
-          # Authenticate without storing the token. Never use an agent-supplied
-          # remote or infer the destination from the current branch.
-          git -c core.hooksPath=/dev/null -c credential.helper= \
-            -c 'credential.helper=!gh auth git-credential' \
-            push "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
-            "HEAD:refs/heads/${REVIEW_BRANCH}"
-
-          cat > "$RUNNER_TEMP/dsh-pr-body.md" <<'BODY'
-          Automated DeepSeek Harness review of recent commits and test coverage.
-
-          See this workflow run's report artifact for the task and harness report.
-          Build, vet, and tests completed in the agent job. Review before merging:
-          an unattended agent wrote these changes.
-          BODY
-          printf '\nWorkflow run: %s/%s/actions/runs/%s\n' \
-            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
-            >> "$RUNNER_TEMP/dsh-pr-body.md"
-
-          gh pr create --repo "$GITHUB_REPOSITORY" \
-            --base main --head "$REVIEW_BRANCH" \
-            --title "chore(dsh): scheduled review and test additions" \
-            --body-file "$RUNNER_TEMP/dsh-pr-body.md"
+    uses: ./.github/workflows/dsh-task.yml
+    with:
+      mode: review
+      task: ${{ inputs.task || '' }}
+      force: ${{ inputs.force || false }}
+    secrets: inherit
+  dead_code:
+    if: github.event_name == 'schedule' || inputs.mode == 'all' || inputs.mode == 'dead-code'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/dsh-task.yml
+    with:
+      mode: dead-code
+      task: ${{ inputs.task || '' }}
+      force: ${{ inputs.force || false }}
+    secrets: inherit
+  e2e:
+    if: github.event_name == 'schedule' || inputs.mode == 'all' || inputs.mode == 'e2e'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/dsh-task.yml
+    with:
+      mode: e2e
+      task: ${{ inputs.task || '' }}
+      force: ${{ inputs.force || false }}
+    secrets: inherit

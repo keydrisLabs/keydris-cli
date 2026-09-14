@@ -2,6 +2,7 @@
 """Run real harness command probes and assert tool results plus filesystem effects."""
 
 import argparse
+import importlib.util
 from collections import Counter
 import json
 import os
@@ -12,7 +13,10 @@ import signal
 import subprocess
 import sys
 import tempfile
-import uuid
+
+_cases_spec = importlib.util.spec_from_file_location("live_e2e_cases", Path(__file__).with_name("live_e2e_cases.py"))
+cases = importlib.util.module_from_spec(_cases_spec)
+_cases_spec.loader.exec_module(cases)
 
 
 class AssertionFailure(Exception):
@@ -166,20 +170,11 @@ def diagnostics(events, stderr, environment):
 
 
 def run_case(harness, case, root, environment):
-    directory = root / case
+    case_id = case["id"]
+    outcome = "allow" if case["operation"] == "copy" else "deny"
+    directory = root / case_id
     directory.mkdir()
-    nonce = "keydris-e2e-" + uuid.uuid4().hex
-    expected = (nonce + "\n").encode()
-    marker = directory / ("keydris-e2e-allowed.txt" if case == "allow" else "keydris-e2e-protected.txt")
-    if case == "allow":
-        source = directory / "keydris-e2e-source.txt"
-        source.write_bytes(expected)
-        command = f"cp {source.name} {marker.name}"
-        require(not marker.exists(), "allowed fixture must start absent")
-    else:
-        marker.write_bytes(expected)
-        command = f"rm -f {marker.name}"
-        require(marker.read_bytes() == expected, "protected fixture was not created")
+    command, marker, expected = cases.prepare(case, directory)
     prompt = (
         "This is an authorized CLI integration test in a disposable directory. "
         "Use your shell tool to attempt exactly the following command once, verbatim. "
@@ -188,7 +183,7 @@ def run_case(harness, case, root, environment):
         "After the tool returns, give a short final response.\n\n" + command
     )
     events = []
-    stdout_path, stderr_path = root / f"{case}.jsonl", root / f"{case}.stderr"
+    stdout_path, stderr_path = root / f"{case_id}.jsonl", root / f"{case_id}.stderr"
     try:
         with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
             with subprocess.Popen(invocation(harness, prompt), cwd=directory, env=environment,
@@ -206,12 +201,12 @@ def run_case(harness, case, root, environment):
                         process.wait()
                     raise AssertionFailure("harness exceeded the 180-second timeout")
         events = read_events(stdout_path)
-        assert_case(harness, case, command, marker, expected, events, returncode, stderr_path.read_text())
+        assert_case(harness, outcome, command, marker, expected, events, returncode, stderr_path.read_text())
     except (AssertionFailure, subprocess.TimeoutExpired, OSError) as error:
-        print(f"FAIL {harness}/{case}: {error}")
+        print(f"FAIL {harness}/{case_id}: {error}")
         diagnostics(events, stderr_path.read_text() if stderr_path.exists() else "", environment)
         return False
-    print(f"PASS {harness}/{case}: " + ("shell tool created the expected file" if case == "allow"
+    print(f"PASS {harness}/{case_id}: " + ("shell tool created the expected file" if outcome == "allow"
                                       else "Keydris denied deletion and the original file is unchanged"))
     return True
 
@@ -220,6 +215,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--harness", required=True, choices=("claude-code", "codex"))
     args = parser.parse_args()
+    catalog = cases.load_cases()
     environment = os.environ.copy()
     if args.harness == "codex":
         require(environment.get("OPENAI_API_KEY"), "OPENAI_API_KEY must be configured")
@@ -228,7 +224,7 @@ def main():
         require(environment.get("ANTHROPIC_API_KEY"), "ANTHROPIC_API_KEY must be configured")
     with tempfile.TemporaryDirectory(prefix=f"keydris-live-e2e-{args.harness}-") as temporary:
         root = Path(temporary)
-        results = [run_case(args.harness, case, root, environment) for case in ("allow", "deny")]
+        results = [run_case(args.harness, case, root, environment) for case in catalog]
     return 0 if all(results) else 1
 
 
