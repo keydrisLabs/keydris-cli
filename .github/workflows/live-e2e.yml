@@ -104,7 +104,13 @@ jobs:
           set -euo pipefail
           install -m 0755 /mnt/c/keydris-test/keydris /usr/local/bin/keydris
           apt-get update -qq
-          apt-get install -y -qq curl jq python3 nodejs npm bubblewrap socat
+          apt-get install -y -qq curl jq python3 xz-utils bubblewrap socat
+          # Ubuntu 24.04's Node 18 is older than Claude Code's Node 22 minimum.
+          NODE_ARCHIVE=node-v22.23.2-linux-x64.tar.xz
+          curl -fsSLo "/tmp/$NODE_ARCHIVE" "https://nodejs.org/dist/v22.23.2/$NODE_ARCHIVE"
+          echo "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307  /tmp/$NODE_ARCHIVE" | sha256sum -c -
+          tar -xJf "/tmp/$NODE_ARCHIVE" -C /usr/local --strip-components=1
+          rm -f "/tmp/$NODE_ARCHIVE"
           install -m 0600 deploy/dev/keydris.toml "$HOME/.keydris.toml"
 
           npm install -g @anthropic-ai/claude-code @openai/codex
@@ -190,6 +196,7 @@ jobs:
           echo "::notice::provisioned agent $AGENT_ID on policy $POLICY_ID"
 
       - name: Sign in to Cognito and enroll a fresh CLI device
+        id: enroll
         shell: wsl-bash {0}
         env:
           KEYDRIS_E2E_USERNAME: ${{ secrets.KEYDRIS_E2E_USERNAME }}
@@ -245,7 +252,7 @@ jobs:
           keydris logs | head -40
 
       - name: Run the real Codex session through Keydris
-        if: ${{ inputs.harness == 'both' || inputs.harness == 'codex' }}
+        if: ${{ !cancelled() && steps.enroll.outcome == 'success' && (inputs.harness == 'both' || inputs.harness == 'codex') }}
         shell: wsl-bash {0}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
