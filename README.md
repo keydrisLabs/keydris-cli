@@ -819,7 +819,10 @@ policy, and removes local credentials. `keep_resources=true` retains the backend
 resources for inspection. This workflow is manual-only because it uses live
 credentials.
 
-Each harness runs two basic shell-action assertions in fresh Linux directories:
+Authentication, enrollment, and harness execution run as a dedicated regular Linux
+user inside WSL2. The harness wrappers use Keydris's generated CA bundle; the lane
+does not require writing the system trust store. Each harness runs two basic
+shell-action assertions in fresh Linux directories:
 
 - **Allow:** an exact `cp keydris-e2e-source.txt keydris-e2e-allowed.txt` tool call
   must succeed and create a regular file matching the randomly generated source.
