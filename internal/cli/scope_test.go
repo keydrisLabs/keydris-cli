@@ -257,3 +257,18 @@ func TestRefreshPolicyScopeSurvivesWriteFailure(t *testing.T) {
 		t.Fatalf("missing warning: %q", out.String())
 	}
 }
+
+func TestPluralOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		n    int
+		want string
+	}{
+		{0, "0 governed origins"},
+		{1, "1 governed origin"},
+		{2, "2 governed origins"},
+	} {
+		if got := pluralOrigins(tc.n); got != tc.want {
+			t.Errorf("pluralOrigins(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}
