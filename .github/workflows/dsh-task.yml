@@ -262,6 +262,7 @@ jobs:
       - name: Commit and publish the review branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_BRANCH: ${{ github.ref_name }}
           REVIEW_BRANCH: dsh/${{ inputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           git -c core.hooksPath=/dev/null \
@@ -289,6 +290,6 @@ jobs:
             >> "$RUNNER_TEMP/dsh-pr-body.md"
 
           gh pr create --repo "$GITHUB_REPOSITORY" \
-            --base main --head "$REVIEW_BRANCH" \
+            --base "$BASE_BRANCH" --head "$REVIEW_BRANCH" \
             --title "chore(dsh): ${DSH_MODE} maintenance" \
             --body-file "$RUNNER_TEMP/dsh-pr-body.md"

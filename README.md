@@ -1026,3 +1026,6 @@ override is literal text and remains subject to the selected task's patch
 restrictions. Reports are `dsh-report-<mode>` artifacts and proposals are
 `dsh-changes-<mode>`. The catalog validated for WSL2 is also retained separately.
 The daily schedule takes effect when this workflow reaches the default branch.
+Manual branch runs target their source branch when opening PRs, so unmerged
+workflow changes are not displayed as agent-generated changes. Scheduled runs
+target the default branch normally.

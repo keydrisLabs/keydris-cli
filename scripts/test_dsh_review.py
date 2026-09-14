@@ -214,7 +214,7 @@ class PublishingTests(unittest.TestCase):
         publish_env.update({
             "PATH": str(fake_bin) + os.pathsep + self.env["PATH"],
             "GH_ARGS_FILE": str(args_file), "RUNNER_TEMP": str(self.root),
-            "REVIEW_BRANCH": "dsh/review-123-1", "GITHUB_SERVER_URL": self.root.as_uri(),
+            "REVIEW_BRANCH": "dsh/review-123-1", "BASE_BRANCH": "main", "GITHUB_SERVER_URL": self.root.as_uri(),
             "GITHUB_REPOSITORY": "remote", "GITHUB_RUN_ID": "123",
         })
         result = subprocess.run(
