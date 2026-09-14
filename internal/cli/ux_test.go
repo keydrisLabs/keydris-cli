@@ -174,6 +174,27 @@ func TestUXPlainOutputAndStatusJSON(t *testing.T) {
 	}
 }
 
+// The banner picks a readable foreground on light terminals from COLORFGBG.
+func TestLightTerminalBackground(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"", false},
+		{"7", true},
+		{"15", true},
+		{"0;7", true},
+		{"0;15", true},
+		{"15;0", false},
+		{"0;8", false},
+	} {
+		t.Setenv("COLORFGBG", tc.value)
+		if got := lightTerminalBackground(); got != tc.want {
+			t.Errorf("lightTerminalBackground() with COLORFGBG=%q = %v, want %v", tc.value, got, tc.want)
+		}
+	}
+}
+
 func TestUXResetRefusesNewDirectoryContents(t *testing.T) {
 	cfg := uxConfig(t)
 	dir := filepath.Join(cfg.DataDir, "sessions")

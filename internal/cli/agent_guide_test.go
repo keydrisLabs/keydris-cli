@@ -128,3 +128,47 @@ func TestAgentSkillRejectsLinkedDestination(t *testing.T) {
 		t.Fatal("linked user file changed")
 	}
 }
+
+// Custom Claude configuration can point its skill directory at Codex's user
+// skill directory. Deinit must then keep the shared managed copy while the other
+// integration still references Keydris, and remove it once nothing does.
+func TestCleanupAgentSkillKeepsSharedCopyWhileOtherIntegrationActive(t *testing.T) {
+	cfg := uxConfig(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Make Claude's skill root coincide with Codex's ~/.agents/skills.
+	cfg.ClaudeSettingsPath = filepath.Join(home, ".agents", "settings.json")
+	path, err := agentSkillPath(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexPath, err := agentSkillPath(cfg, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != codexPath {
+		t.Fatalf("test fixture is not shared: %s != %s", path, codexPath)
+	}
+	if err := installAgentSkill(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.CodexHooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.CodexHooksPath, []byte(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"keydris __agent-context"}]}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cleanupAgentSkill(cfg, "claude-code")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("shared skill removed while Codex still used Keydris: %v", err)
+	}
+	if err := os.WriteFile(cfg.CodexHooksPath, []byte(`{"hooks":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cleanupAgentSkill(cfg, "claude-code")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("managed skill retained without an active integration")
+	}
+}
