@@ -748,6 +748,13 @@ Everything sits under `~/.keydris-data` (`0700`); files are `0600`.
 
 `keydris login` signs in through the browser (OAuth 2.0 Authorization Code + PKCE) and stores the client certificate under `identity/`. It works against the control plane's built-in mock IdP out of the box, or a real OIDC provider such as AWS Cognito.
 
+For unattended enrollment, `keydris login --access-token-stdin` reads a Cognito
+**CLI app-client access token** from standard input and uses the same
+`POST /identity/sign` enrollment as browser login. Set `KEYDRIS_AGENT_ID` first
+to bind the certificate to the agent. The CLI generates the private key locally
+and stores the resulting certificate; it does not store the Cognito token.
+`--no-browser` still requires a person to open the URL and complete the callback.
+
 ---
 
 ## Tests and CI
@@ -767,6 +774,84 @@ make build     # version-stamped binary into bin/
 | [`cli/channel_binding_test.go`](internal/cli/channel_binding_test.go) | Pins `keydris upgrade`'s channel→host map to `scripts/render-install.sh` |
 | [`proxyscope/scope_test.go`](internal/proxyscope/scope_test.go), [`config/*_test.go`](internal/config/) | Origin canonicalization; layered config and the managed-scope file |
 | [`evidence/ledger_test.go`](internal/evidence/ledger_test.go) | Hash-chain construction and tamper detection |
+
+### Live Cognito e2e on GitHub
+
+[`.github/workflows/live-e2e.yml`](.github/workflows/live-e2e.yml) runs real Claude
+Code and Codex sessions in WSL2 against the dev control plane. Each run signs in
+a confirmed Cognito username/password user with `USER_PASSWORD_AUTH`, provisions
+a temporary policy and agent, and enrolls a fresh device certificate. Runtime
+sessions and certificate renewals then use mTLS. This exercises direct Cognito
+authentication and enrollment; it does not exercise the hosted browser login UI.
+
+Configure these **Actions secrets** on the repository:
+
+- `KEYDRIS_E2E_USERNAME` and `KEYDRIS_E2E_PASSWORD`: a Cognito user already joined
+  to the target Keydris organization, with `POLICY_MANAGE` and `AGENT_MANAGE`.
+- `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`: credentials for the selected harnesses.
+
+Set the **Actions variable** `KEYDRIS_COGNITO_CONSOLE_CLIENT_ID` to that user pool's
+console app client. The workflow uses `us-east-1` and the dev CLI app client from
+`deploy/dev/keydris.toml` by default; override them with the variables
+`KEYDRIS_COGNITO_REGION` and `KEYDRIS_COGNITO_CLI_CLIENT_ID` when needed. The backend
+requires the console client's access token for provisioning and the CLI client's
+access token for `/identity/sign`; the tokens are not interchangeable. Both app
+clients must enable `ALLOW_USER_PASSWORD_AUTH`. If either client is confidential,
+also set its `KEYDRIS_COGNITO_CONSOLE_CLIENT_SECRET` or
+`KEYDRIS_COGNITO_CLI_CLIENT_SECRET` Actions secret.
+
+The sign-in helper stops if Cognito requests MFA, a password change, or another
+challenge. Complete account setup and use an authentication method compatible
+with the account's requirements before running this workflow.
+
+After the workflow and CLI changes are merged into the default branch:
+
+```bash
+gh workflow run live-e2e.yml --ref main \
+  -f control_url=https://dev.api.keydris.com \
+  -f control_mtls_url=https://dev.api.keydris.com:8443 \
+  -f harness=both -f keep_resources=false
+gh run watch
+```
+
+Teardown signs in again with the console client, revokes the agent, archives the
+policy, and removes local credentials. `keep_resources=true` retains the backend
+resources for inspection. This workflow is manual-only because it uses live
+credentials.
+
+Authentication, enrollment, and harness execution run as a dedicated regular Linux
+user inside WSL2. The harness wrappers use Keydris's generated CA bundle; the lane
+does not require writing the system trust store. Each harness runs two basic
+shell-action assertions in fresh Linux directories:
+
+- **Allow:** an exact `cp keydris-e2e-source.txt keydris-e2e-allowed.txt` tool call
+  must succeed and create a regular file matching the randomly generated source.
+  This plain command keeps the policy's shell-redirection safeguards enabled.
+- **Deny:** an exact `rm -f keydris-e2e-protected.txt` tool call must return
+  `keydris_policy_denied`, and the pre-created file must retain its original bytes.
+
+The verifier reads Claude's tool-use/tool-result events and Codex's command-execution
+events. Codex rejects commands before producing an execution event, so its denial
+assertion also accepts the runtime router's hook-rejection record, matched to the
+complete command and policy reason. Prompt echoes, model claims, missing tool calls, nonzero harness exits,
+authorization outages, and sandbox errors cannot satisfy these checks. Both cases
+run for each selected harness and print individual PASS/FAIL results. These cover
+basic command execution and policy rejection, not all policy features or bypasses.
+Shell authorization goes directly to the backend; the proxy evidence ledger is
+not used as shell-decision evidence.
+
+Claude runs inside `keydris run` with only its Bash tool enabled. Codex uses the
+freshly generated and verified Keydris hooks with `--dangerously-bypass-hook-trust`
+for that CI invocation, while keeping the workspace-write sandbox enabled. The
+runner is disposable; this does not persist hook trust on developer machines.
+Approval-required behavior is outside these noninteractive allow/deny probes.
+
+The assertion runner and verifier use Python's standard library. Run their
+regression checks with
+`python3 -m unittest discover -s scripts -p 'test_live_e2e.py'`.
+
+The auth helper uses only Python's standard library. Run its isolated checks with
+`python3 -m unittest discover -s scripts -p 'test_cognito_login.py'`.
 
 ---
 

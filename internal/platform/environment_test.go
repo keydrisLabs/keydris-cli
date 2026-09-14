@@ -3,6 +3,8 @@ package platform
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +48,10 @@ func TestWSLDetectsLinkedStateAncestor(t *testing.T) {
 	if err := os.Mkdir(windows, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	windows, err := filepath.EvalSymlinks(windows)
+	if err != nil {
+		t.Fatal(err)
+	}
 	link := filepath.Join(dir, "linux-looking-home")
 	if err := os.Symlink(windows, link); err != nil {
 		t.Skip("symlink creation unavailable")
@@ -53,5 +59,79 @@ func TestWSLDetectsLinkedStateAncestor(t *testing.T) {
 	e := Environment{OS: "linux", WSL: "2", windowsMounts: []string{filepath.ToSlash(windows)}}
 	if err := e.ValidatePath("data", filepath.Join(link, "not-created", "state")); err == nil {
 		t.Fatal("linked Windows state ancestor accepted")
+	}
+}
+
+func TestWSLCommandFileFormats(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL uses Unix executable lookup")
+	}
+	e := Environment{OS: "linux", WSL: "2"}
+	for _, tc := range []struct {
+		name, content, wantError string
+	}{
+		{"claude.exe", "\x7fELF\x02\x01\x01\x00", ""},
+		{"native.EXE", "\x7fELF\x02\x01\x01\x00", ""},
+		{"native", "\x7fELF\x02\x01\x01\x00", ""},
+		{"windows.exe", "MZ windows executable", "Windows binary"},
+		{"renamed-windows", "MZ windows executable", "Windows binary"},
+		{"unknown.exe", "unknown executable", "Windows executable"},
+		{"truncated.exe", "\x7fEL", "Windows executable"},
+		{"empty.exe", "", "Windows executable"},
+		{"launcher.cmd", "@echo off\r\n", "Windows executable"},
+		{"launcher.bat", "@echo off\r\n", "Windows executable"},
+		{"launcher.ps1", "Write-Host 'hello'\n", "Windows executable"},
+		{"launcher", "#!/bin/sh\necho hello\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executable := filepath.Join(t.TempDir(), tc.name)
+			if err := os.WriteFile(executable, []byte(tc.content), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			got, err := e.resolveCommand(executable)
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("got %q, %v; want error containing %q", got, err, tc.wantError)
+				}
+			} else if err != nil || got != executable {
+				t.Fatalf("got %q, %v; want %q", got, err, executable)
+			}
+		})
+	}
+}
+
+func TestWSLCommandResolvesSymlinkBeforeCheckingFormat(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL uses Unix executable lookup")
+	}
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "claude.exe")
+	if err := os.WriteFile(binary, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(dir, "claude")
+	if err := os.Symlink(binary, launcher); err != nil {
+		t.Skip("symlink creation unavailable")
+	}
+	e := Environment{OS: "linux", WSL: "2"}
+	if got, err := e.resolveCommand(launcher); err != nil || got != launcher {
+		t.Fatalf("Linux npm symlink rejected: %q, %v", got, err)
+	}
+	if err := os.WriteFile(binary, []byte("MZ windows executable"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.resolveCommand(launcher); err == nil {
+		t.Fatal("symlink to Windows binary accepted")
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.windowsMounts = []string{filepath.ToSlash(resolvedDir)}
+	if err := os.WriteFile(binary, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.resolveCommand(launcher); err == nil || !strings.Contains(err.Error(), "Windows-mounted path") {
+		t.Fatalf("Windows-mounted ELF accepted: %v", err)
 	}
 }

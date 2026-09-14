@@ -132,7 +132,10 @@ func windowsMounts(mountinfo string) []string {
 // ResolveCommand freezes PATH resolution before a session is minted and
 // refuses the Windows executables/shims that WSL interop can otherwise launch.
 func ResolveCommand(command string) (string, error) {
-	e := Current()
+	return Current().resolveCommand(command)
+}
+
+func (e Environment) resolveCommand(command string) (string, error) {
 	if err := e.Validate(); err != nil {
 		return "", err
 	}
@@ -154,10 +157,6 @@ func ResolveCommand(command string) (string, error) {
 	if err := e.ValidatePath(command, resolved); err != nil {
 		return "", err
 	}
-	switch strings.ToLower(filepath.Ext(resolved)) {
-	case ".exe", ".cmd", ".bat", ".com", ".ps1":
-		return "", fmt.Errorf("%s resolves to a Windows executable (%s); install its Linux version inside WSL", command, resolved)
-	}
 	f, err := os.Open(resolved)
 	if err != nil {
 		return "", err
@@ -168,9 +167,20 @@ func ResolveCommand(command string) (string, error) {
 	if n >= 2 && string(header[:2]) == "MZ" {
 		return "", fmt.Errorf("%s is a Windows binary; install its Linux version inside WSL", resolved)
 	}
+	switch strings.ToLower(filepath.Ext(resolved)) {
+	case ".exe":
+		// Claude Code's npm installer uses bin/claude.exe on every OS.
+		// Its Linux package contains ELF, so the suffix alone is not enough.
+		if n >= 4 && string(header[:4]) == "\x7fELF" {
+			break
+		}
+		fallthrough
+	case ".cmd", ".bat", ".com", ".ps1":
+		return "", fmt.Errorf("%s resolves to a Windows executable (%s); install its Linux version inside WSL", command, resolved)
+	}
 	// npm's POSIX launchers can still inherit Windows Node through PATH.
 	if readErr == nil && strings.HasPrefix(string(header[:n]), "#!") && strings.Contains(strings.SplitN(string(header[:n]), "\n", 2)[0], "node") && command != "node" {
-		if _, err := ResolveCommand("node"); err != nil {
+		if _, err := e.resolveCommand("node"); err != nil {
 			return "", fmt.Errorf("%s needs Linux Node.js: %w", command, err)
 		}
 	}

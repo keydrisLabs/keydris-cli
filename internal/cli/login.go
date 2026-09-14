@@ -3,15 +3,17 @@ package cli
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
 	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 )
 
-// runLogin implements `keydris login`: a browser-based OAuth (PKCE) sign-in
-// against the control plane that results in a locally stored client
+// runLogin implements `keydris login`: browser-based OAuth (PKCE) or enrollment
+// with an externally obtained access token, resulting in a locally stored client
 // certificate. The private key is generated on this machine and never leaves
 // it; the control plane only signs the CSR. The daemon later presents this
 // certificate over mTLS when calling the control plane.
@@ -19,12 +21,42 @@ func runLogin(args []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	email := fs.String("email", defaultLoginHint(), "suggested identity to pre-fill on the consent page")
 	noBrowser := fs.Bool("no-browser", false, "print the sign-in URL instead of opening a browser")
+	accessTokenStdin := fs.Bool("access-token-stdin", false, "enroll with an existing Cognito CLI access token read from stdin")
 	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() != 0 || (*accessTokenStdin && *noBrowser) {
+		fmt.Fprintln(os.Stderr, "Usage: keydris login [--email you@example.com] [--no-browser] | --access-token-stdin")
 		return 1
 	}
 
 	cfg := config.Load()
+	if *accessTokenStdin {
+		return accessTokenLogin(cfg, os.Stdin)
+	}
 	return browserLogin(cfg, *email, *noBrowser)
+}
+
+func accessTokenLogin(cfg *config.Config, reader io.Reader) int {
+	if err := cfg.ValidatePaths(); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris login: %v\n", err)
+		return 1
+	}
+	// Bound input without accepting a truncated token. Never include it in errors.
+	const maxTokenBytes = 64 * 1024
+	body, err := io.ReadAll(io.LimitReader(reader, maxTokenBytes+1))
+	if err != nil || len(body) > maxTokenBytes {
+		fmt.Fprintln(os.Stderr, "keydris login: cannot read access token (maximum 64 KiB)")
+		return 1
+	}
+	id, err := login.EnrollWithAccessToken(login.Options{
+		ControlURL: cfg.ControlURL, IdentityDir: cfg.IdentityDir, AgentID: cfg.AgentID,
+	}, strings.TrimSpace(string(body)))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "keydris login: %v\n", err)
+		return 1
+	}
+	return printLoginIdentity(cfg, id)
 }
 
 // browserLogin runs the PKCE browser sign-in. The device certificate it stores
@@ -62,6 +94,10 @@ func browserLogin(cfg *config.Config, loginHint string, noBrowser bool) int {
 		return 1
 	}
 
+	return printLoginIdentity(cfg, id)
+}
+
+func printLoginIdentity(cfg *config.Config, id *login.Identity) int {
 	fmt.Printf("keydris: signed in as %s\n", id.Email)
 	fmt.Printf("  identity:   %s\n", id.SPIFFEID)
 	fmt.Printf("  device id:  %s\n", id.DeviceID)
