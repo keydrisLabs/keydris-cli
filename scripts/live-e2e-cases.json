@@ -1,0 +1,4 @@
+[
+  {"id": "allow", "operation": "copy", "filename": "plain", "content": "nonce", "overwrite": false},
+  {"id": "deny", "operation": "delete", "filename": "plain", "content": "nonce", "overwrite": false}
+]

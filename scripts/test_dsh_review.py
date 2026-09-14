@@ -1,6 +1,7 @@
 """Regression checks for the DSH job boundary, using local Git repositories only."""
 
 import os
+import json
 from pathlib import Path
 import re
 import shutil
@@ -12,7 +13,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github/workflows/dsh-review.yml"
+WORKFLOW = ROOT / ".github/workflows/dsh-task.yml"
 
 
 def step_script(name):
@@ -41,7 +42,7 @@ class PublishingTests(unittest.TestCase):
         # Isolate all fixtures from developer credentials, hooks, and Git config.
         self.env.update({
             "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0", "GH_TOKEN": "fake-review-token",
+            "GIT_TERMINAL_PROMPT": "0", "GH_TOKEN": "fake-review-token", "DSH_MODE": "review",
         })
         for name in list(self.env):
             if name.startswith("GIT_") and name not in (
@@ -55,7 +56,12 @@ class PublishingTests(unittest.TestCase):
         (self.agent / "existing.go").write_text("package fixture\n")
         (self.agent / "removed.go").write_text("package fixture\n")
         (self.agent / "scripts").mkdir()
-        shutil.copyfile(ROOT / "scripts/dsh-review.py", self.agent / "scripts/dsh-review.py")
+        for name in ("dsh-review.py", "live_e2e_cases.py", "live-e2e-cases.json"):
+            shutil.copyfile(ROOT / "scripts" / name, self.agent / "scripts" / name)
+        # Fixtures start with the mandatory baseline, even after real daily
+        # proposals have extended the repository's catalog.
+        catalog = self.agent / "scripts/live-e2e-cases.json"
+        catalog.write_text(json.dumps(json.loads(catalog.read_text())[:2]))
         self.run_git(self.agent, "add", "--all")
         self.run_git(self.agent, "commit", "-m", "base")
         self.base = self.run_git(self.agent, "rev-parse", "HEAD").stdout.strip().decode()
@@ -74,9 +80,11 @@ class PublishingTests(unittest.TestCase):
             cwd=self.agent, env=export_env, check=True, capture_output=True,
         )
 
-    def stage(self, accepted=True):
+    def stage(self, accepted=True, mode="review"):
+        cases_output = self.root / "validated-cases.json"
         result = subprocess.run(
-            [sys.executable, "-I", "scripts/dsh-review.py", str(self.patch)],
+            [sys.executable, "-I", "scripts/dsh-review.py", str(self.patch), "--mode", mode,
+             "--cases-output", str(cases_output)],
             cwd=self.publisher, env=self.env, capture_output=True, text=True,
         )
         if accepted:
@@ -101,6 +109,33 @@ class PublishingTests(unittest.TestCase):
         self.export()
         self.stage()
         self.assertEqual(self.run_git(self.publisher, "diff", "--cached", "--raw").stdout, b"")
+
+    def test_e2e_publishes_only_additive_validated_catalog_data(self):
+        catalog = self.agent / "scripts/live-e2e-cases.json"
+        baseline = json.loads(catalog.read_text())
+        addition = dict(baseline[0], id="copy-overwrite", overwrite=True)
+        catalog.write_text(json.dumps(baseline + [addition]))
+        self.export()
+        self.stage(mode="e2e")
+        self.assertEqual(json.loads((self.root / "validated-cases.json").read_text()), baseline + [addition])
+        self.assertEqual(json.loads((self.publisher / "scripts/live-e2e-cases.json").read_text()), baseline)
+
+    def test_e2e_rejects_executable_changes_even_alongside_a_valid_case(self):
+        catalog = self.agent / "scripts/live-e2e-cases.json"
+        baseline = json.loads(catalog.read_text())
+        catalog.write_text(json.dumps(baseline + [dict(baseline[0], id="copy-overwrite", overwrite=True)]))
+        (self.agent / "scripts/dsh-review.py").write_text("print('untrusted')\n")
+        self.export()
+        self.stage(mode="e2e", accepted=False)
+        self.assertFalse((self.root / "validated-cases.json").exists())
+
+    def test_e2e_rejects_changes_to_existing_assertion_cases(self):
+        catalog = self.agent / "scripts/live-e2e-cases.json"
+        baseline = json.loads(catalog.read_text())
+        baseline[1]["operation"] = "copy"
+        catalog.write_text(json.dumps(baseline))
+        self.export()
+        self.stage(mode="e2e", accepted=False)
 
     def test_workflow_and_git_configuration_changes_reject_entire_patch(self):
         for name in (".github/workflows/attack.yml", ".gitattributes", "nested/.gitmodules"):

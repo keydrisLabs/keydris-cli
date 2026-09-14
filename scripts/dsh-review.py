@@ -6,6 +6,8 @@ The agent's Git directory, configuration, hooks, and environment are not inputs.
 """
 
 import argparse
+import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -18,7 +20,7 @@ def git(*args):
     ).stdout
 
 
-def stage_patch(patch):
+def stage_patch(patch, mode="review", cases_output=None):
     if git("diff", "--cached", "--raw"):
         raise ValueError("Publishing requires a clean index")
     if not patch.is_file() or patch.is_symlink():
@@ -38,11 +40,22 @@ def stage_patch(patch):
             ):
                 raise ValueError("Symlink and submodule changes are not permitted")
             name = raw_path.decode("utf-8", errors="strict")
+            if mode == "e2e" and name != "scripts/live-e2e-cases.json":
+                raise ValueError("E2E proposals may only extend scripts/live-e2e-cases.json")
             parts = name.casefold().split("/")
             if "\\" in name or any(part in (
                 "", ".", "..", ".git", ".github", ".gitattributes", ".gitmodules"
             ) for part in parts):
                 raise ValueError("Workflow, Git configuration, or unsafe path changes are not permitted")
+        if mode == "e2e":
+            # Load only the trusted working-tree validator, never the index.
+            spec = importlib.util.spec_from_file_location("cases", Path(__file__).with_name("live_e2e_cases.py"))
+            cases = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cases)
+            proposed = json.loads(git("show", ":scripts/live-e2e-cases.json"))
+            cases.validate_additions(cases.load_cases(), proposed)
+            if cases_output:
+                cases_output.write_text(json.dumps(proposed, indent=2) + "\n", encoding="utf-8")
     except (ValueError, subprocess.CalledProcessError):
         # Reject the whole proposal, leaving trusted working-tree files intact.
         git("reset", "--mixed", "--quiet", "HEAD")
@@ -52,9 +65,11 @@ def stage_patch(patch):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("patch", type=Path)
+    parser.add_argument("--mode", choices=("review", "dead-code", "e2e"), default="review")
+    parser.add_argument("--cases-output", type=Path)
     args = parser.parse_args()
     try:
-        stage_patch(args.patch)
+        stage_patch(args.patch, args.mode, args.cases_output)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         # Do not print untrusted patch contents into workflow logs.
         print("::error::DSH patch rejected: {}".format(error), file=sys.stderr)
