@@ -111,7 +111,11 @@ jobs:
           echo "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307  /tmp/$NODE_ARCHIVE" | sha256sum -c -
           tar -xJf "/tmp/$NODE_ARCHIVE" -C /usr/local --strip-components=1
           rm -f "/tmp/$NODE_ARCHIVE"
-          install -m 0600 deploy/dev/keydris.toml "$HOME/.keydris.toml"
+          # Exercise the sandboxes as a normal Linux user. Running Claude's
+          # nested seccomp helper as UID 0 can fail while writing uid_map.
+          useradd --create-home --shell /bin/bash keydris-e2e
+          install -o keydris-e2e -g keydris-e2e -m 0600 \
+            deploy/dev/keydris.toml /home/keydris-e2e/.keydris.toml
 
           npm install -g @anthropic-ai/claude-code @openai/codex
 
@@ -122,8 +126,10 @@ jobs:
           codex --version
           echo "::endgroup::"
 
+          python3 -m unittest discover -s scripts -p 'test_live_e2e.py'
+
       - name: Sign in to Cognito for provisioning
-        shell: wsl-bash {0}
+        shell: wsl-bash -u keydris-e2e {0}
         env:
           KEYDRIS_E2E_USERNAME: ${{ secrets.KEYDRIS_E2E_USERNAME }}
           KEYDRIS_E2E_PASSWORD: ${{ secrets.KEYDRIS_E2E_PASSWORD }}
@@ -137,7 +143,7 @@ jobs:
             --token-file /tmp/keydris-live-e2e/console-token
 
       - name: Provision throwaway policy and agent via the backend API
-        shell: wsl-bash {0}
+        shell: wsl-bash -u keydris-e2e {0}
         run: |
           set -euo pipefail
           API="${KEYDRIS_CONTROL_URL%/}"
@@ -167,8 +173,8 @@ jobs:
                 "integrations": [],
                 "credentials": [],
                 "commands": [
-                  { "id": "ci.allow.probe", "patterns": ["echo keydris-e2e-*"], "effect": "allow" },
-                  { "id": "ci.deny.destructive", "patterns": ["rm -rf *"], "effect": "reject" }
+                  { "id": "ci.allow.copy", "patterns": ["cp keydris-e2e-source.txt keydris-e2e-allowed.txt"], "effect": "allow" },
+                  { "id": "ci.deny.delete", "patterns": ["rm -f keydris-e2e-*"], "effect": "reject" }
                 ]
               },
               "conditions": [],
@@ -182,29 +188,28 @@ jobs:
             -H 'content-type: application/json' --data-binary @/tmp/policy.json | jq -er '.id | select(type == "string" and length > 0)')"
           echo "policy: $POLICY_ID"
           # Keep the policy recoverable even if agent creation fails.
-          printf 'POLICY_ID=%q\nRUN_TAG=%q\n' "$POLICY_ID" "$RUN_TAG" > /mnt/c/keydris-test/ids.env
+          printf 'POLICY_ID=%q\nRUN_TAG=%q\n' "$POLICY_ID" "$RUN_TAG" > /tmp/keydris-live-e2e/ids.env
 
           AGENT_ID="$(curl -fsS -X POST "$API/agents" -H "$AUTH" \
             -H 'content-type: application/json' \
             -d "{\"name\":\"${RUN_TAG}\",\"policyId\":\"${POLICY_ID}\"}" | jq -er '.id | select(type == "string" and length > 0)')"
           echo "agent: $AGENT_ID"
 
-          # Persist for later steps. GITHUB_ENV does not cross into WSL, so the
-          # ids are staged on the Windows side, which WSL always sees.
-          printf 'AGENT_ID=%q\n' "$AGENT_ID" >> /mnt/c/keydris-test/ids.env
+          # Persist inside the private directory shared by the WSL steps.
+          printf 'AGENT_ID=%q\n' "$AGENT_ID" >> /tmp/keydris-live-e2e/ids.env
 
           echo "::notice::provisioned agent $AGENT_ID on policy $POLICY_ID"
 
       - name: Sign in to Cognito and enroll a fresh CLI device
         id: enroll
-        shell: wsl-bash {0}
+        shell: wsl-bash -u keydris-e2e {0}
         env:
           KEYDRIS_E2E_USERNAME: ${{ secrets.KEYDRIS_E2E_USERNAME }}
           KEYDRIS_E2E_PASSWORD: ${{ secrets.KEYDRIS_E2E_PASSWORD }}
           KEYDRIS_COGNITO_CLIENT_SECRET: ${{ secrets.KEYDRIS_COGNITO_CLI_CLIENT_SECRET }}
         run: |
           set -euo pipefail
-          . /mnt/c/keydris-test/ids.env
+          . /tmp/keydris-live-e2e/ids.env
           export KEYDRIS_AGENT_ID="$AGENT_ID"
           trap 'rm -f /tmp/keydris-live-e2e/cli-token' EXIT
           python3 scripts/cognito-login.py \
@@ -215,68 +220,42 @@ jobs:
 
       - name: Run the real Claude Code session through Keydris
         if: ${{ inputs.harness == 'both' || inputs.harness == 'claude-code' }}
-        shell: wsl-bash {0}
+        shell: wsl-bash -u keydris-e2e {0}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          set -uo pipefail
-          set +e
-          . /mnt/c/keydris-test/ids.env
+          set -euo pipefail
+          . /tmp/keydris-live-e2e/ids.env
 
           export KEYDRIS_AGENT_ID="$AGENT_ID"
 
-          keydris init claude-code "$AGENT_ID" --trust-store || exit 1
-          keydris proxy up || exit 1
+          keydris init claude-code "$AGENT_ID"
+          keydris proxy up
           keydris status --json | tee /tmp/status.json
           jq -e '.ready == true' /tmp/status.json || {
             echo "::error::keydris status is not ready"; exit 1
           }
 
-          # The allowed command must actually execute.
-          claude -p 'Run exactly this bash command and show its output: echo keydris-e2e-ok' \
-            --max-turns 3 --output-format text > /tmp/allowed.txt 2>&1
-          grep -q 'keydris-e2e-ok' /tmp/allowed.txt || {
-            echo "::error::the policy-allowed command did not run"; cat /tmp/allowed.txt; exit 1
-          }
-
-          # The denied command must be blocked by the hook, not merely refused by
-          # the model. Assert the side effect never happened.
-          rm -f /tmp/keydris-e2e-never
-          claude -p 'Run exactly this bash command: rm -rf /tmp/keydris-e2e-never-marker' \
-            --max-turns 3 --output-format text > /tmp/denied.txt 2>&1
-          [ ! -e /tmp/keydris-e2e-never-marker ] || {
-            echo "::error::a policy-denied command executed"; exit 1
-          }
-
-          # The evidence ledger is the authoritative record of both decisions.
-          keydris logs | head -40
+          python3 scripts/live-e2e.py --harness claude-code
 
       - name: Run the real Codex session through Keydris
         if: ${{ !cancelled() && steps.enroll.outcome == 'success' && (inputs.harness == 'both' || inputs.harness == 'codex') }}
-        shell: wsl-bash {0}
+        shell: wsl-bash -u keydris-e2e {0}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          set -uo pipefail
-          set +e
-          . /mnt/c/keydris-test/ids.env
+          set -euo pipefail
+          . /tmp/keydris-live-e2e/ids.env
 
           export KEYDRIS_AGENT_ID="$AGENT_ID"
-          keydris init codex "$AGENT_ID" --trust-store || exit 1
-
-          # Pair with approval_policy=untrusted: PreToolUse is deny-only on
-          # Codex, and approval-required commands only reach the human if Codex
-          # was already going to ask.
-          keydris codex exec --sandbox workspace-write \
-            'Run exactly this bash command and show its output: echo keydris-e2e-ok' \
-            > /tmp/codex.txt 2>&1
-          grep -q 'keydris-e2e-ok' /tmp/codex.txt || {
-            echo "::error::the policy-allowed command did not run under Codex"; cat /tmp/codex.txt; exit 1
-          }
+          keydris init codex "$AGENT_ID"
+          keydris status --json | tee /tmp/status-codex.json
+          jq -e '.ready == true' /tmp/status-codex.json
+          python3 scripts/live-e2e.py --harness codex
 
       - name: Teardown
         if: ${{ always() && !inputs.keep_resources }}
-        shell: wsl-bash {0}
+        shell: wsl-bash -u keydris-e2e {0}
         env:
           KEYDRIS_E2E_USERNAME: ${{ secrets.KEYDRIS_E2E_USERNAME }}
           KEYDRIS_E2E_PASSWORD: ${{ secrets.KEYDRIS_E2E_PASSWORD }}
@@ -285,8 +264,8 @@ jobs:
           set -euo pipefail
           trap 'keydris logout >/dev/null 2>&1 || true; rm -rf /tmp/keydris-live-e2e' EXIT
           keydris proxy down >/dev/null 2>&1 || true
-          [ -f /mnt/c/keydris-test/ids.env ] || { echo "nothing provisioned"; exit 0; }
-          . /mnt/c/keydris-test/ids.env
+          [ -f /tmp/keydris-live-e2e/ids.env ] || { echo "nothing provisioned"; exit 0; }
+          . /tmp/keydris-live-e2e/ids.env
 
           API="${KEYDRIS_CONTROL_URL%/}"
           case "$API" in https://*) ;; *) echo "::error::control_url must use HTTPS"; exit 1;; esac
@@ -313,7 +292,7 @@ jobs:
 
       - name: Remove local credentials when keeping debug resources
         if: ${{ always() && inputs.keep_resources }}
-        shell: wsl-bash {0}
+        shell: wsl-bash -u keydris-e2e {0}
         run: |
           keydris proxy down >/dev/null 2>&1 || true
           keydris logout >/dev/null 2>&1 || true
