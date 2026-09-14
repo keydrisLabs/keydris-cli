@@ -333,7 +333,11 @@ func exchange(path string, m Message) (*response, error) {
 		return nil, fmt.Errorf("dial daemon socket %s: %w", path, err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	timeout := 2 * time.Second
+	if m.Action == ActionUnregister {
+		timeout = 30 * time.Second
+	}
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	body, err := json.Marshal(m)
 	if err != nil {
@@ -343,7 +347,7 @@ func exchange(path string, m Message) (*response, error) {
 		return nil, err
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 4096), (3<<20)+8192)
 	if !sc.Scan() {

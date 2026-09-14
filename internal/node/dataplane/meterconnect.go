@@ -35,7 +35,7 @@ func (p *sandboxPlane) meterConnect(
 	}
 	defer tconn.Close()
 
-	req, _, err := readRequest(tconn)
+	req, requestReader, err := readRequest(tconn)
 	if err != nil {
 		return
 	}
@@ -62,7 +62,7 @@ func (p *sandboxPlane) meterConnect(
 		}
 	}
 
-	forwardErr := proxy.ForwardTLSOneTapped(tconn, req, target, host, tap)
+	forwardErr := proxy.ForwardTLSOneTapped(tconn, req, target, host, tap, requestReader)
 	if !info.Inference || p.meter == nil {
 		return
 	}

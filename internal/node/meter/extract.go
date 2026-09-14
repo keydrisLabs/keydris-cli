@@ -10,14 +10,9 @@ import (
 )
 
 const (
-	// maxRequestPeekBytes bounds the request-body prefix scanned for the model
-	// id. SDKs serialize "model" first, so a small prefix is almost always
-	// enough; a miss degrades to model "unknown" (booked unpriced server-side).
+	// Only the request hint is bounded; response metadata is read incrementally.
 	maxRequestPeekBytes = 256 << 10
-	// maxJSONBodyBytes bounds buffering of a non-streaming response body.
-	maxJSONBodyBytes = 4 << 20
-	// maxSSELineBytes bounds one SSE line; longer lines (large content deltas)
-	// are skipped — the usage-bearing events are small.
+	// Kept as a regression-test boundary; SSE lines may now exceed this size.
 	maxSSELineBytes = 512 << 10
 )
 
@@ -52,7 +47,7 @@ var inferencePaths = map[string]map[string]bool{
 func ExtractRequest(provider string, req *http.Request) RequestInfo {
 	info := RequestInfo{
 		Model:     unknownModel,
-		Inference: inferencePaths[provider][requestPath(req)],
+		Inference: req != nil && req.Method == http.MethodPost && inferencePaths[provider][requestPath(req)],
 	}
 	if !info.Inference || req.Body == nil || req.Body == http.NoBody {
 		return info
@@ -177,6 +172,10 @@ func skipValue(decoder *json.Decoder) error {
 
 // UsageTotals is what a response sink accumulated.
 type UsageTotals struct {
+	ServiceTier string
+	HasInput    bool
+	Invalid     bool
+	Model       string
 	InputTokens int
 	// OutputTokens is nil when the response carried no output usage — never
 	// estimated.
@@ -220,17 +219,25 @@ func NewResponseSink(resp *http.Response) ResponseSink {
 // Anthropic message / message_start / message_delta, OpenAI chat completions,
 // and OpenAI responses events. Unknown fields are ignored by design.
 type wireUsage struct {
-	Type       string         `json:"type"`
-	Usage      *usageBlock    `json:"usage"`
-	Message    *usageEnvelope `json:"message"`
-	Delta      *wireDelta     `json:"delta"`
-	Response   *usageEnvelope `json:"response"`
-	Choices    []wireChoice   `json:"choices"`
-	StopReason string         `json:"stop_reason"`
+	ServiceTier      string
+	Model            string
+	Status           string
+	IncompleteReason string
+	Type             string         `json:"type"`
+	Usage            *usageBlock    `json:"usage"`
+	Message          *usageEnvelope `json:"message"`
+	Delta            *wireDelta     `json:"delta"`
+	Response         *usageEnvelope `json:"response"`
+	Choices          []wireChoice   `json:"choices"`
+	StopReason       string         `json:"stop_reason"`
 }
 
 type usageEnvelope struct {
-	Usage *usageBlock `json:"usage"`
+	ServiceTier      string
+	Model            string
+	Status           string
+	IncompleteReason string
+	Usage            *usageBlock `json:"usage"`
 }
 
 type wireDelta struct {
@@ -248,15 +255,16 @@ type usageBlock struct {
 	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
 	// OpenAI chat completions.
-	PromptTokens        *int `json:"prompt_tokens"`
-	CompletionTokens    *int `json:"completion_tokens"`
-	PromptTokensDetails *struct {
-		CachedTokens *int `json:"cached_tokens"`
-	} `json:"prompt_tokens_details"`
+	PromptTokens        *int          `json:"prompt_tokens"`
+	CompletionTokens    *int          `json:"completion_tokens"`
+	PromptTokensDetails *tokenDetails `json:"prompt_tokens_details"`
 	// OpenAI responses API.
-	InputTokensDetails *struct {
-		CachedTokens *int `json:"cached_tokens"`
-	} `json:"input_tokens_details"`
+	InputTokensDetails *tokenDetails `json:"input_tokens_details"`
+}
+
+type tokenDetails struct {
+	CachedTokens     *int `json:"cached_tokens"`
+	CacheWriteTokens *int `json:"cache_write_tokens"`
 }
 
 type accumulator struct {
@@ -266,6 +274,35 @@ type accumulator struct {
 // observe folds one decoded JSON object into the running totals. Later
 // observations win (Anthropic's message_delta carries the cumulative output).
 func (a *accumulator) observe(w wireUsage) {
+	if w.ServiceTier != "" {
+		a.totals.ServiceTier = w.ServiceTier
+	}
+	if w.Response != nil && w.Response.ServiceTier != "" {
+		a.totals.ServiceTier = w.Response.ServiceTier
+	}
+	if w.Model != "" {
+		a.totals.Model = w.Model
+	}
+	if w.Message != nil && w.Message.Model != "" {
+		a.totals.Model = w.Message.Model
+	}
+	if w.Response != nil {
+		if w.Response.Model != "" {
+			a.totals.Model = w.Response.Model
+		}
+		if w.Response.Status != "" {
+			a.totals.StopReason = w.Response.Status
+		}
+		if w.Response.IncompleteReason != "" {
+			a.totals.StopReason = w.Response.IncompleteReason
+		}
+	}
+	if w.Status != "" {
+		a.totals.StopReason = w.Status
+	}
+	if w.IncompleteReason != "" {
+		a.totals.StopReason = w.IncompleteReason
+	}
 	blocks := []*usageBlock{w.Usage}
 	if w.Message != nil {
 		blocks = append(blocks, w.Message.Usage)
@@ -304,15 +341,33 @@ func (a *accumulator) observeBlock(block *usageBlock) {
 		if block.PromptTokensDetails != nil && block.PromptTokensDetails.CachedTokens != nil {
 			cachedRead = *block.PromptTokensDetails.CachedTokens
 		}
-		a.totals.InputTokens = max(0, *block.PromptTokens-cachedRead)
+		a.totals.HasInput = true
+		writes := 0
+		if block.PromptTokensDetails != nil && block.PromptTokensDetails.CacheWriteTokens != nil {
+			writes = *block.PromptTokensDetails.CacheWriteTokens
+		}
+		if cachedRead+writes > *block.PromptTokens {
+			a.totals.Invalid = true
+		}
+		a.totals.InputTokens = max(0, *block.PromptTokens-cachedRead-writes)
+		a.totals.CacheCreationTokens = writes
 		a.totals.CacheReadTokens = cachedRead
 	case block.InputTokens != nil:
+		a.totals.HasInput = true
 		input := *block.InputTokens
 		if block.InputTokensDetails != nil && block.InputTokensDetails.CachedTokens != nil {
 			// OpenAI responses API: input_tokens includes the cached share too.
 			cachedRead = *block.InputTokensDetails.CachedTokens
 			input = max(0, input-cachedRead)
 		}
+		if block.InputTokensDetails != nil && block.InputTokensDetails.CacheWriteTokens != nil {
+			a.totals.CacheCreationTokens = *block.InputTokensDetails.CacheWriteTokens
+			input -= a.totals.CacheCreationTokens
+		}
+		if block.InputTokensDetails != nil && (input < 0 || cachedRead > *block.InputTokens) {
+			a.totals.Invalid = true
+		}
+		input = max(0, input)
 		a.totals.InputTokens = input
 		a.totals.CacheReadTokens = cachedRead
 	case cachedRead > 0:
@@ -331,96 +386,73 @@ func (a *accumulator) observeBlock(block *usageBlock) {
 	}
 }
 
-// jsonSink buffers a bounded non-streaming JSON body and decodes it once.
-type jsonSink struct {
-	buf      bytes.Buffer
-	overflow bool
-}
+// Both response formats use the same incremental, content-discarding parser.
+type jsonSink struct{ parser metadataJSON }
 
-func (s *jsonSink) Write(p []byte) (int, error) {
-	if !s.overflow {
-		remaining := maxJSONBodyBytes - s.buf.Len()
-		if len(p) > remaining {
-			s.overflow = true
-			s.buf.Reset() // a truncated JSON document cannot be decoded anyway
-		} else {
-			s.buf.Write(p)
-		}
-	}
-	return len(p), nil
-}
-
+func (s *jsonSink) Write(p []byte) (int, error) { s.parser.write(p); return len(p), nil }
 func (s *jsonSink) Totals() UsageTotals {
 	var acc accumulator
-	var w wireUsage
-	if !s.overflow && json.Unmarshal(s.buf.Bytes(), &w) == nil {
-		acc.observe(w)
-	}
+	s.parser.observe(&acc)
 	return acc.totals
 }
 
-// sseSink incrementally scans SSE "data:" lines for usage-bearing events.
-// Over-long lines (large content deltas) are skipped without buffering.
 type sseSink struct {
-	acc     accumulator
-	line    []byte
-	discard bool
+	acc       accumulator
+	parser    metadataJSON
+	prefix    []byte
+	data      bool
+	ignore    bool
+	lineBytes int
 }
 
-func newSSESink() *sseSink {
-	return &sseSink{line: make([]byte, 0, 4096)}
-}
-
+func newSSESink() *sseSink { return &sseSink{} }
 func (s *sseSink) Write(p []byte) (int, error) {
 	total := len(p)
 	for len(p) > 0 {
-		index := bytes.IndexByte(p, '\n')
-		if index < 0 {
-			s.append(p)
+		n := bytes.IndexByte(p, '\n')
+		if n < 0 {
+			s.writeLine(p)
 			break
 		}
-		s.append(p[:index])
+		s.writeLine(p[:n])
 		s.finishLine()
-		p = p[index+1:]
+		p = p[n+1:]
 	}
 	return total, nil
 }
-
-func (s *sseSink) append(chunk []byte) {
-	if s.discard {
+func (s *sseSink) writeLine(p []byte) {
+	s.lineBytes += len(p)
+	if s.ignore {
 		return
 	}
-	if len(s.line)+len(chunk) > maxSSELineBytes {
-		s.discard = true
-		s.line = s.line[:0]
-		return
+	for len(p) > 0 && !s.data {
+		s.prefix = append(s.prefix, p[0])
+		p = p[1:]
+		if !bytes.HasPrefix([]byte("data:"), s.prefix) {
+			s.ignore = true
+			return
+		}
+		if len(s.prefix) == 5 {
+			s.data = true
+		}
 	}
-	s.line = append(s.line, chunk...)
+	if s.data {
+		s.parser.write(p)
+	}
 }
-
 func (s *sseSink) finishLine() {
-	line := bytes.TrimSuffix(s.line, []byte("\r"))
-	discarded := s.discard
-	s.line = s.line[:0]
-	s.discard = false
-	if discarded {
-		return
+	if s.data {
+		s.parser.write([]byte{'\n'})
+		if s.parser.done || s.parser.bad {
+			s.parser.observe(&s.acc)
+			s.parser = metadataJSON{}
+		}
+	} else if s.lineBytes == 0 || (s.lineBytes == 1 && bytes.Equal(s.prefix, []byte{'\r'})) {
+		s.parser = metadataJSON{}
 	}
-	payload, ok := bytes.CutPrefix(line, []byte("data:"))
-	if !ok {
-		return
-	}
-	payload = bytes.TrimSpace(payload)
-	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-		return
-	}
-	var w wireUsage
-	if json.Unmarshal(payload, &w) == nil {
-		s.acc.observe(w)
-	}
+	s.prefix = s.prefix[:0]
+	s.data = false
+	s.ignore = false
+	s.lineBytes = 0
 }
-
-func (s *sseSink) Totals() UsageTotals {
-	s.finishLine() // a final line without a trailing newline still counts
-	return s.acc.totals
-}
+func (s *sseSink) Totals() UsageTotals { s.finishLine(); return s.acc.totals }

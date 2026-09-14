@@ -114,7 +114,7 @@ func Run(cfg *config.Config) error {
 	}
 	defer dp.Close()
 	router := newRuntimeRouter(authClient, cfg.ControlMTLSURL)
-	go runSessionRenewalLoop(ctx, cfg, authClient, sessions, log.Printf)
+	go runSessionRenewalLoop(ctx, cfg, authClient, sessions, log.Printf, usageMeter.FlushSessionFinal)
 
 	if usesNetfilter {
 		if err := netfilter.Up(cfg.ProxyPort, cfg.BackendPort, cfg.ProxyUID); err != nil {

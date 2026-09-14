@@ -457,7 +457,15 @@ Alongside policy scope, the proxy meters the agent's **LLM API usage** so the da
 
 **Meter-only guarantee.** What leaves the machine per model call: the model id, token counts (input / output / cache), the stop reason, and latency — batched to `POST /v1/runtime/sessions/usage` under the session's KIT. Prompt and completion content is spliced through to the provider and discarded; the wire contract has no field that could carry it. A response whose usage cannot be read (for example an OpenAI stream without `stream_options.include_usage`) is recorded with an unknown output count — never estimated.
 
-Every metering failure degrades to plain forwarding: a metering bug can never break a model call. Events carry idempotent request ids, so retried batches are server-side no-ops.
+Usage parsing and reporting errors do not fail the forwarded model response. Events carry idempotent request ids, including across KIT renewal.
+
+OpenAI events use the response's actual model and service tier. Cached reads and cache writes are split out of inclusive input counts. Response metadata is scanned incrementally, including large Responses API payloads, without retaining generated content. Missing tiers remain unknown; incomplete or invalid token counts remain unpriced.
+
+HTTP inference streaming and non-streaming responses are metered. WebSocket upgrades and their buffered frames are forwarded bidirectionally without metering. Background polling, Batch, audio/image endpoints, tool fees and regional surcharges are outside this token estimate. The client does not add `stream_options.include_usage`; callers must opt in for Chat Completions stream totals.
+
+Buffers are bounded and best effort. Session unregister joins in-flight reports and retries their unsent events with the departing KIT before revocation, within a 15-second reporting budget. The unregister socket allows 30 seconds for that cleanup. Final network failure is logged and may leave usage gaps; there is no durable spool.
+
+Deploy the platform's contracts 1.4.0 and pricing migrations before this CLI version. Administrators manage supplied rates, organization overrides and historical recalculation in Settings → Model pricing.
 
 ```bash
 KEYDRIS_COST_METERING=off      # disable metering entirely
