@@ -169,7 +169,7 @@ jobs:
                 "integrations": [],
                 "credentials": [],
                 "commands": [
-                  { "id": "ci.allow.probe", "patterns": ["echo keydris-e2e-*"], "effect": "allow" },
+                  { "id": "ci.allow.copy", "patterns": ["cp keydris-e2e-source.txt keydris-e2e-allowed.txt"], "effect": "allow" },
                   { "id": "ci.deny.delete", "patterns": ["rm -f keydris-e2e-*"], "effect": "reject" }
                 ]
               },

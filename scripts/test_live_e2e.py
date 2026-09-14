@@ -119,6 +119,26 @@ class AssertionsTest(unittest.TestCase):
         for secret in ("secret-value", "session:handle", "eyJhbGci.eyJzdWI.signature"):
             self.assertNotIn(secret, redacted)
 
+    def test_codex_pre_execution_rejection_requires_runtime_record_and_exact_command(self):
+        command = "rm -f keydris-e2e-protected.txt"
+        self.marker.write_bytes(self.expected)
+        events = [{"type": "turn.completed"}]
+        stderr = ("2026-09-14T09:36:05Z ERROR codex_core::tools::router: "
+                  "error=Command blocked by PreToolUse hook: COMMAND DENIED\n"
+                  "Policy: keydris_policy_denied\nEnd of reason. Command: " + command + "\n")
+        live.assert_case("codex", "deny", command, self.marker, self.expected, events, 0, stderr)
+        for invalid in (stderr.replace(command, "rm -f another-file"),
+                        stderr.replace("codex_core::tools::router", "model"),
+                        stderr.replace("keydris_policy_denied", "keydris_policy_unavailable"),
+                        "I was denied: keydris_policy_denied. Command: " + command):
+            with self.subTest(stderr=invalid):
+                with self.assertRaises(live.AssertionFailure):
+                    live.assert_case("codex", "deny", command, self.marker, self.expected, events, 0, invalid)
+        with self.assertRaisesRegex(live.AssertionFailure, "no tool result"):
+            live.assert_case("codex", "deny", command, self.marker, self.expected,
+                             events + [{"type": "item.completed", "item": {
+                                 "type": "agent_message", "text": stderr}}], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

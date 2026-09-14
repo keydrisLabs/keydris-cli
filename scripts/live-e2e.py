@@ -61,7 +61,7 @@ def read_events(path):
     return events
 
 
-def command_results(harness, events, command):
+def command_results(harness, events, command, stderr=""):
     """Only inspect tool records; model prose and echoed prompts never qualify."""
     if harness == "claude-code":
         calls = set()
@@ -87,9 +87,18 @@ def command_results(harness, events, command):
                     and shell_command(item.get("command")) == command):
                 yield (item.get("exit_code") == 0 and item.get("status") == "completed",
                        item.get("aggregated_output", ""))
+        # Codex 0.154 emits no command_execution item when PreToolUse blocks
+        # before spawning a command. Its runtime router logs the rejection and
+        # the complete attempted command on stderr. Model prose never qualifies.
+        rejection = re.compile(
+            r"^[^\n]*\bERROR codex_core::tools::router: error=Command blocked by PreToolUse hook: "
+            r"(?P<reason>.*?)\. Command: (?P<command>[^\r\n]+)$", re.MULTILINE | re.DOTALL)
+        for match in rejection.finditer(stderr):
+            if match.group("command") == command:
+                yield False, match.group("reason")
 
 
-def assert_case(harness, case, command, marker, expected, events, returncode):
+def assert_case(harness, case, command, marker, expected, events, returncode, stderr=""):
     require(returncode == 0, f"harness process exited with status {returncode}")
     if harness == "claude-code":
         completed = any(event.get("type") == "result" and event.get("subtype") == "success"
@@ -98,7 +107,7 @@ def assert_case(harness, case, command, marker, expected, events, returncode):
         completed = (any(event.get("type") == "turn.completed" for event in events)
                      and not any(event.get("type") in {"error", "turn.failed"} for event in events))
     require(completed, "harness did not report a successful completed turn")
-    results = list(command_results(harness, events, command))
+    results = list(command_results(harness, events, command, stderr))
     require(results, "no tool result for the exact requested shell command")
     if case == "allow":
         require(any(success for success, _ in results), "allowed shell command did not succeed")
@@ -145,8 +154,11 @@ def diagnostics(events, stderr, environment):
             for block in event.get("message", {}).get("content", []):
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     details.append(content_text(block.get("content")))
-        elif event.get("type") in {"error", "turn.failed", "result"}:
+        elif event.get("type") in {"error", "turn.failed"}:
             details.append(json.dumps(event))
+        elif event.get("type") == "result":
+            details.append(json.dumps({key: event[key] for key in
+                                      ("subtype", "is_error", "result", "errors") if key in event}))
     text = redact("\n".join(details) + "\n" + stderr, environment)
     # Prefix each line so harness output cannot become a GitHub workflow command.
     for line in text[-8000:].splitlines():
@@ -160,7 +172,9 @@ def run_case(harness, case, root, environment):
     expected = (nonce + "\n").encode()
     marker = directory / ("keydris-e2e-allowed.txt" if case == "allow" else "keydris-e2e-protected.txt")
     if case == "allow":
-        command = f"echo {nonce} > {marker.name}"
+        source = directory / "keydris-e2e-source.txt"
+        source.write_bytes(expected)
+        command = f"cp {source.name} {marker.name}"
         require(not marker.exists(), "allowed fixture must start absent")
     else:
         marker.write_bytes(expected)
@@ -192,7 +206,7 @@ def run_case(harness, case, root, environment):
                         process.wait()
                     raise AssertionFailure("harness exceeded the 180-second timeout")
         events = read_events(stdout_path)
-        assert_case(harness, case, command, marker, expected, events, returncode)
+        assert_case(harness, case, command, marker, expected, events, returncode, stderr_path.read_text())
     except (AssertionFailure, subprocess.TimeoutExpired, OSError) as error:
         print(f"FAIL {harness}/{case}: {error}")
         diagnostics(events, stderr_path.read_text() if stderr_path.exists() else "", environment)

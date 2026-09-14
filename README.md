@@ -821,13 +821,16 @@ credentials.
 
 Each harness runs two basic shell-action assertions in fresh Linux directories:
 
-- **Allow:** an exact `echo keydris-e2e-<nonce> > keydris-e2e-allowed.txt` tool call
-  must succeed and create a regular file containing the run's random value.
+- **Allow:** an exact `cp keydris-e2e-source.txt keydris-e2e-allowed.txt` tool call
+  must succeed and create a regular file matching the randomly generated source.
+  This plain command keeps the policy's shell-redirection safeguards enabled.
 - **Deny:** an exact `rm -f keydris-e2e-protected.txt` tool call must return
   `keydris_policy_denied`, and the pre-created file must retain its original bytes.
 
 The verifier reads Claude's tool-use/tool-result events and Codex's command-execution
-events. Prompt echoes, model claims, missing tool calls, nonzero harness exits,
+events. Codex rejects commands before producing an execution event, so its denial
+assertion also accepts the runtime router's hook-rejection record, matched to the
+complete command and policy reason. Prompt echoes, model claims, missing tool calls, nonzero harness exits,
 authorization outages, and sandbox errors cannot satisfy these checks. Both cases
 run for each selected harness and print individual PASS/FAIL results. These cover
 basic command execution and policy rejection, not all policy features or bypasses.
