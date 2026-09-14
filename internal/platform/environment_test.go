@@ -80,7 +80,11 @@ func TestWSLCommandFileFormats(t *testing.T) {
 		{"empty.exe", "", "Windows executable"},
 		{"launcher.cmd", "@echo off\r\n", "Windows executable"},
 		{"launcher.bat", "@echo off\r\n", "Windows executable"},
+		{"launcher.com", "unknown executable", "Windows executable"},
 		{"launcher.ps1", "Write-Host 'hello'\n", "Windows executable"},
+		// The ELF exemption is for Claude Code's bin/claude.exe only: other
+		// Windows suffixes are rejected regardless of content.
+		{"mismatched.cmd", "\x7fELF\x02\x01\x01\x00", "Windows executable"},
 		{"launcher", "#!/bin/sh\necho hello\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,5 +137,52 @@ func TestWSLCommandResolvesSymlinkBeforeCheckingFormat(t *testing.T) {
 	}
 	if _, err := e.resolveCommand(launcher); err == nil || !strings.Contains(err.Error(), "Windows-mounted path") {
 		t.Fatalf("Windows-mounted ELF accepted: %v", err)
+	}
+}
+
+func TestWSLCommandNodeLauncherNeedsLinuxNode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL uses Unix executable lookup")
+	}
+	dir := t.TempDir()
+	launcher := filepath.Join(dir, "claude")
+	if err := os.WriteFile(launcher, []byte("#!/usr/bin/env node\nconsole.log('lint')\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := Environment{OS: "linux", WSL: "2"}
+	t.Setenv("PATH", dir) // no node on PATH
+	if _, err := e.resolveCommand(launcher); err == nil || !strings.Contains(err.Error(), "needs Linux Node.js") {
+		t.Fatalf("node launcher without Linux Node accepted: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "node"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.resolveCommand(launcher); err != nil || got != launcher {
+		t.Fatalf("node launcher with Linux Node rejected: %q, %v", got, err)
+	}
+}
+
+func TestResolveCommandSkipsFormatChecksOutsideWSL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows shim lookup differs")
+	}
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "tool.cmd")
+	if err := os.WriteFile(shim, []byte("not a Windows executable"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := Environment{OS: runtime.GOOS}
+	if got, err := e.resolveCommand(shim); err != nil || got != shim {
+		t.Fatalf("non-WSL resolution rejected %q: %q, %v", shim, got, err)
+	}
+}
+
+func TestResolveCommandUsesCurrentEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL uses Unix executable lookup")
+	}
+	got, err := ResolveCommand("sh")
+	if err != nil || !filepath.IsAbs(got) {
+		t.Fatalf("ResolveCommand(sh) = %q, %v; want an absolute path", got, err)
 	}
 }
