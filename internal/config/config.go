@@ -371,25 +371,6 @@ func envList(key string) []string {
 	return out
 }
 
-// ResolveBlueprint applies blueprint precedence: an explicit run/hook flag wins,
-// then KEYDRIS_BLUEPRINT, then the policy id set by `keydris init claude-code
-// <policy-id>`, then the built-in default. This is the single source of truth
-// for which blueprint a session binds to — i.e. the agent segment of the SVID's
-// SPIFFE ID (spiffe://<td>/agent/<blueprint>/<ulid>), which the broker authorizes
-// against grants for that blueprint.
-func (c *Config) ResolveBlueprint(flag string) string {
-	switch {
-	case flag != "":
-		return flag
-	case c.Blueprint != "":
-		return c.Blueprint
-	case c.PolicyID != "":
-		return c.PolicyID
-	default:
-		return "repo-tools"
-	}
-}
-
 // ResolveAgent selects the control-plane agent UUID. The legacy blueprint and
 // policy values are accepted only as migration fallbacks for existing installs.
 func (c *Config) ResolveAgent(flag string) string {
@@ -447,20 +428,6 @@ func readPolicyID(dataDir string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
-}
-
-// SavePolicyID persists the policy id under the data dir so later `keydris proxy
-// up` / `keydris status` pick it up without re-passing it.
-func SavePolicyID(dataDir, id string) error {
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return err
-	}
-	_ = os.Chmod(dataDir, 0o700)
-	path := policyIDPath(dataDir)
-	if err := os.WriteFile(path, []byte(strings.TrimSpace(id)+"\n"), 0o600); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o600)
 }
 
 // RemovePolicyID clears the persisted policy id (used by `keydris deinit`). A

@@ -373,13 +373,6 @@ func revokeInstance(cfg *config.Config, ulid string) error {
 
 // --- session state (so SessionEnd can find the minted instance) ---
 
-func stateDir(cfg *config.Config) string { return sessionstate.Dir(cfg.DataDir) }
-
-func statePath(cfg *config.Config, sid string) string {
-	path, _ := sessionstate.Path(cfg.DataDir, sid)
-	return path
-}
-
 func validateSessionID(sid string) error {
 	return sessionstate.ValidateID(sid)
 }
