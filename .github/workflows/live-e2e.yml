@@ -1,0 +1,313 @@
+name: live-e2e
+
+# Real end-to-end: real Claude Code and real OpenAI Codex, driven through the
+# Keydris proxy against the dev control plane, with everything provisioned and
+# torn down per run through the backend API.
+#
+# Each run signs a real Cognito user in with USER_PASSWORD_AUTH. A console
+# app-client access token provisions resources; a CLI app-client access token
+# enrolls a fresh device certificate through POST /identity/sign. All runtime
+# sessions and certificate renewals then use the normal mTLS flow.
+# The user must already belong to the dev org and have POLICY_MANAGE and
+# AGENT_MANAGE permissions. Both app clients must allow USER_PASSWORD_AUTH.
+#
+# Required repository secrets:
+#   KEYDRIS_E2E_USERNAME / KEYDRIS_E2E_PASSWORD  confirmed Cognito test user
+#   ANTHROPIC_API_KEY  for the real Claude Code session
+#   OPENAI_API_KEY     for the real Codex session
+# Required repository variable:
+#   KEYDRIS_COGNITO_CONSOLE_CLIENT_ID  console app client in the dev user pool
+# Optional variables: KEYDRIS_COGNITO_REGION, KEYDRIS_COGNITO_CLI_CLIENT_ID.
+# Optional secrets for confidential app clients:
+#   KEYDRIS_COGNITO_CONSOLE_CLIENT_SECRET / KEYDRIS_COGNITO_CLI_CLIENT_SECRET
+#
+# SECURITY: keydris-cli is a PUBLIC repository. Secrets are not exposed to fork
+# PRs, and this lane is workflow_dispatch-only by design - never wire it to
+# pull_request.
+
+on:
+  workflow_dispatch:
+    inputs:
+      control_url:
+        description: Control-plane base URL
+        required: true
+        default: https://dev.api.keydris.com
+      control_mtls_url:
+        description: Control-plane mTLS base URL
+        required: true
+        default: https://dev.api.keydris.com:8443
+      harness:
+        description: Which harnesses to exercise
+        type: choice
+        options: [both, claude-code, codex]
+        default: both
+      keep_resources:
+        description: Skip teardown (debugging only - leaves the agent and policy behind)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-e2e
+  cancel-in-progress: false
+
+jobs:
+  live-e2e:
+    name: Live harness e2e (WSL2)
+    # WSL2 is the platform under test. Swap to 'ubuntu-latest' for a faster lane
+    # that drops the Windows/WSL2 dimension entirely.
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      KEYDRIS_CONTROL_URL: ${{ inputs.control_url }}
+      KEYDRIS_CONTROL_MTLS_URL: ${{ inputs.control_mtls_url }}
+      KEYDRIS_COGNITO_REGION: ${{ vars.KEYDRIS_COGNITO_REGION || 'us-east-1' }}
+      KEYDRIS_COGNITO_CLI_CLIENT_ID: ${{ vars.KEYDRIS_COGNITO_CLI_CLIENT_ID || '791bq13e9aijdu8cspi851mv5u' }}
+      KEYDRIS_COGNITO_CONSOLE_CLIENT_ID: ${{ vars.KEYDRIS_COGNITO_CONSOLE_CLIENT_ID }}
+      # Forward step environment variables into Linux, including secrets only
+      # on the steps that declare them. Never interpolate credentials into Bash.
+      WSLENV: KEYDRIS_CONTROL_URL:KEYDRIS_CONTROL_MTLS_URL:KEYDRIS_COGNITO_REGION:KEYDRIS_COGNITO_CLI_CLIENT_ID:KEYDRIS_COGNITO_CONSOLE_CLIENT_ID:KEYDRIS_E2E_USERNAME:KEYDRIS_E2E_PASSWORD:KEYDRIS_COGNITO_CLIENT_SECRET:ANTHROPIC_API_KEY:OPENAI_API_KEY:GITHUB_ACTIONS
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build linux/amd64 binary
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -trimpath -o bin/keydris-linux-amd64 ./cmd/keydris
+          New-Item -ItemType Directory -Force -Path C:\keydris-test | Out-Null
+          Copy-Item bin/keydris-linux-amd64 C:\keydris-test\keydris
+
+      - name: Install WSL2 distribution
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+
+      # Real harnesses, installed inside the distribution. ResolveCommand
+      # refuses Windows shims, so a host-installed Claude Code cannot satisfy
+      # the WSL contract - they must be Linux-resident.
+      - name: Install keydris and the real harnesses
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          install -m 0755 /mnt/c/keydris-test/keydris /usr/local/bin/keydris
+          apt-get update -qq
+          apt-get install -y -qq curl jq python3 nodejs npm bubblewrap socat
+          install -m 0600 deploy/dev/keydris.toml "$HOME/.keydris.toml"
+
+          npm install -g @anthropic-ai/claude-code @openai/codex
+
+          echo "::group::toolchain"
+          keydris version
+          node --version
+          claude --version
+          codex --version
+          echo "::endgroup::"
+
+      - name: Sign in to Cognito for provisioning
+        shell: wsl-bash {0}
+        env:
+          KEYDRIS_E2E_USERNAME: ${{ secrets.KEYDRIS_E2E_USERNAME }}
+          KEYDRIS_E2E_PASSWORD: ${{ secrets.KEYDRIS_E2E_PASSWORD }}
+          KEYDRIS_COGNITO_CLIENT_SECRET: ${{ secrets.KEYDRIS_COGNITO_CONSOLE_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -m 0700 /tmp/keydris-live-e2e
+          python3 scripts/cognito-login.py \
+            --client-id "$KEYDRIS_COGNITO_CONSOLE_CLIENT_ID" \
+            --token-file /tmp/keydris-live-e2e/console-token
+
+      - name: Provision throwaway policy and agent via the backend API
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          API="${KEYDRIS_CONTROL_URL%/}"
+          case "$API" in https://*) ;; *) echo "::error::control_url must use HTTPS"; exit 1;; esac
+          AUTH="Authorization: Bearer $(cat /tmp/keydris-live-e2e/console-token)"
+          trap 'rm -f /tmp/keydris-live-e2e/console-token' EXIT
+          RUN_TAG="ci-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}"
+
+          # A command-rules-only policy needs no integration, so the whole thing
+          # is self-provisioning. Governed-egress assertions would additionally
+          # need an integrationId + routed credential in the org.
+          cat > /tmp/policy.json <<JSON
+          {
+            "name": "${RUN_TAG}",
+            "config": {
+              "version": 4,
+              "payment": {
+                "enabled": false,
+                "spend":   { "enabled": false, "maxAmount": "0", "outcome": "reject" },
+                "refund":  { "enabled": false, "maxAmount": "0", "outcome": "reject" },
+                "currency": "USD",
+                "methods": [],
+                "providers": []
+              },
+              "action": {
+                "enabled": true,
+                "integrations": [],
+                "credentials": [],
+                "commands": [
+                  { "id": "ci.allow.probe", "patterns": ["echo keydris-e2e-*"], "effect": "allow" },
+                  { "id": "ci.deny.destructive", "patterns": ["rm -rf *"], "effect": "reject" }
+                ]
+              },
+              "conditions": [],
+              "defaultOutcome": "reject",
+              "obligations": { "notifyChannels": [] }
+            }
+          }
+          JSON
+
+          POLICY_ID="$(curl -fsS -X POST "$API/policies" -H "$AUTH" \
+            -H 'content-type: application/json' --data-binary @/tmp/policy.json | jq -er '.id | select(type == "string" and length > 0)')"
+          echo "policy: $POLICY_ID"
+          # Keep the policy recoverable even if agent creation fails.
+          printf 'POLICY_ID=%q\nRUN_TAG=%q\n' "$POLICY_ID" "$RUN_TAG" > /mnt/c/keydris-test/ids.env
+
+          AGENT_ID="$(curl -fsS -X POST "$API/agents" -H "$AUTH" \
+            -H 'content-type: application/json' \
+            -d "{\"name\":\"${RUN_TAG}\",\"policyId\":\"${POLICY_ID}\"}" | jq -er '.id | select(type == "string" and length > 0)')"
+          echo "agent: $AGENT_ID"
+
+          # Persist for later steps. GITHUB_ENV does not cross into WSL, so the
+          # ids are staged on the Windows side, which WSL always sees.
+          printf 'AGENT_ID=%q\n' "$AGENT_ID" >> /mnt/c/keydris-test/ids.env
+
+          echo "::notice::provisioned agent $AGENT_ID on policy $POLICY_ID"
+
+      - name: Sign in to Cognito and enroll a fresh CLI device
+        shell: wsl-bash {0}
+        env:
+          KEYDRIS_E2E_USERNAME: ${{ secrets.KEYDRIS_E2E_USERNAME }}
+          KEYDRIS_E2E_PASSWORD: ${{ secrets.KEYDRIS_E2E_PASSWORD }}
+          KEYDRIS_COGNITO_CLIENT_SECRET: ${{ secrets.KEYDRIS_COGNITO_CLI_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          . /mnt/c/keydris-test/ids.env
+          export KEYDRIS_AGENT_ID="$AGENT_ID"
+          trap 'rm -f /tmp/keydris-live-e2e/cli-token' EXIT
+          python3 scripts/cognito-login.py \
+            --client-id "$KEYDRIS_COGNITO_CLI_CLIENT_ID" \
+            --token-file /tmp/keydris-live-e2e/cli-token
+          keydris login --access-token-stdin < /tmp/keydris-live-e2e/cli-token
+          keydris whoami
+
+      - name: Run the real Claude Code session through Keydris
+        if: ${{ inputs.harness == 'both' || inputs.harness == 'claude-code' }}
+        shell: wsl-bash {0}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -uo pipefail
+          set +e
+          . /mnt/c/keydris-test/ids.env
+
+          export KEYDRIS_AGENT_ID="$AGENT_ID"
+
+          keydris init claude-code "$AGENT_ID" --trust-store || exit 1
+          keydris proxy up || exit 1
+          keydris status --json | tee /tmp/status.json
+          jq -e '.ready == true' /tmp/status.json || {
+            echo "::error::keydris status is not ready"; exit 1
+          }
+
+          # The allowed command must actually execute.
+          claude -p 'Run exactly this bash command and show its output: echo keydris-e2e-ok' \
+            --max-turns 3 --output-format text > /tmp/allowed.txt 2>&1
+          grep -q 'keydris-e2e-ok' /tmp/allowed.txt || {
+            echo "::error::the policy-allowed command did not run"; cat /tmp/allowed.txt; exit 1
+          }
+
+          # The denied command must be blocked by the hook, not merely refused by
+          # the model. Assert the side effect never happened.
+          rm -f /tmp/keydris-e2e-never
+          claude -p 'Run exactly this bash command: rm -rf /tmp/keydris-e2e-never-marker' \
+            --max-turns 3 --output-format text > /tmp/denied.txt 2>&1
+          [ ! -e /tmp/keydris-e2e-never-marker ] || {
+            echo "::error::a policy-denied command executed"; exit 1
+          }
+
+          # The evidence ledger is the authoritative record of both decisions.
+          keydris logs | head -40
+
+      - name: Run the real Codex session through Keydris
+        if: ${{ inputs.harness == 'both' || inputs.harness == 'codex' }}
+        shell: wsl-bash {0}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -uo pipefail
+          set +e
+          . /mnt/c/keydris-test/ids.env
+
+          export KEYDRIS_AGENT_ID="$AGENT_ID"
+          keydris init codex "$AGENT_ID" --trust-store || exit 1
+
+          # Pair with approval_policy=untrusted: PreToolUse is deny-only on
+          # Codex, and approval-required commands only reach the human if Codex
+          # was already going to ask.
+          keydris codex exec --sandbox workspace-write \
+            'Run exactly this bash command and show its output: echo keydris-e2e-ok' \
+            > /tmp/codex.txt 2>&1
+          grep -q 'keydris-e2e-ok' /tmp/codex.txt || {
+            echo "::error::the policy-allowed command did not run under Codex"; cat /tmp/codex.txt; exit 1
+          }
+
+      - name: Teardown
+        if: ${{ always() && !inputs.keep_resources }}
+        shell: wsl-bash {0}
+        env:
+          KEYDRIS_E2E_USERNAME: ${{ secrets.KEYDRIS_E2E_USERNAME }}
+          KEYDRIS_E2E_PASSWORD: ${{ secrets.KEYDRIS_E2E_PASSWORD }}
+          KEYDRIS_COGNITO_CLIENT_SECRET: ${{ secrets.KEYDRIS_COGNITO_CONSOLE_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          trap 'keydris logout >/dev/null 2>&1 || true; rm -rf /tmp/keydris-live-e2e' EXIT
+          keydris proxy down >/dev/null 2>&1 || true
+          [ -f /mnt/c/keydris-test/ids.env ] || { echo "nothing provisioned"; exit 0; }
+          . /mnt/c/keydris-test/ids.env
+
+          API="${KEYDRIS_CONTROL_URL%/}"
+          case "$API" in https://*) ;; *) echo "::error::control_url must use HTTPS"; exit 1;; esac
+          # Authenticate again so cleanup does not depend on the original
+          # console token still being valid after the harness sessions.
+          python3 scripts/cognito-login.py \
+            --client-id "$KEYDRIS_COGNITO_CONSOLE_CLIENT_ID" \
+            --token-file /tmp/keydris-live-e2e/cleanup-token
+          AUTH="Authorization: Bearer $(cat /tmp/keydris-live-e2e/cleanup-token)"
+          cleanup_failed=0
+
+          # Revoking the agent sweeps its active runtime sessions in the same
+          # transaction, so no session can outlive the run.
+          if [ -n "${AGENT_ID:-}" ]; then
+            curl -fsS -X POST "$API/agents/$AGENT_ID/revoke" -H "$AUTH" >/dev/null \
+              && echo "revoked agent $AGENT_ID" \
+              || { echo "::error::could not revoke agent $AGENT_ID"; cleanup_failed=1; }
+          fi
+
+          [ -n "${POLICY_ID:-}" ] && curl -fsS -X DELETE "$API/policies/$POLICY_ID" -H "$AUTH" >/dev/null \
+            && echo "deleted policy $POLICY_ID" \
+            || { echo "::error::could not delete policy ${POLICY_ID:-}"; cleanup_failed=1; }
+          exit "$cleanup_failed"
+
+      - name: Remove local credentials when keeping debug resources
+        if: ${{ always() && inputs.keep_resources }}
+        shell: wsl-bash {0}
+        run: |
+          keydris proxy down >/dev/null 2>&1 || true
+          keydris logout >/dev/null 2>&1 || true
+          rm -rf /tmp/keydris-live-e2e
