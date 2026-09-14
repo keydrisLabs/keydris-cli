@@ -817,8 +817,32 @@ gh run watch
 Teardown signs in again with the console client, revokes the agent, archives the
 policy, and removes local credentials. `keep_resources=true` retains the backend
 resources for inspection. This workflow is manual-only because it uses live
-credentials. The harness command assertions still need stronger execution and
-denial evidence before a green run can be treated as complete policy coverage.
+credentials.
+
+Each harness runs two basic shell-action assertions in fresh Linux directories:
+
+- **Allow:** an exact `echo keydris-e2e-<nonce> > keydris-e2e-allowed.txt` tool call
+  must succeed and create a regular file containing the run's random value.
+- **Deny:** an exact `rm -f keydris-e2e-protected.txt` tool call must return
+  `keydris_policy_denied`, and the pre-created file must retain its original bytes.
+
+The verifier reads Claude's tool-use/tool-result events and Codex's command-execution
+events. Prompt echoes, model claims, missing tool calls, nonzero harness exits,
+authorization outages, and sandbox errors cannot satisfy these checks. Both cases
+run for each selected harness and print individual PASS/FAIL results. These cover
+basic command execution and policy rejection, not all policy features or bypasses.
+Shell authorization goes directly to the backend; the proxy evidence ledger is
+not used as shell-decision evidence.
+
+Claude runs inside `keydris run` with only its Bash tool enabled. Codex uses the
+freshly generated and verified Keydris hooks with `--dangerously-bypass-hook-trust`
+for that CI invocation, while keeping the workspace-write sandbox enabled. The
+runner is disposable; this does not persist hook trust on developer machines.
+Approval-required behavior is outside these noninteractive allow/deny probes.
+
+The assertion runner and verifier use Python's standard library. Run their
+regression checks with
+`python3 -m unittest discover -s scripts -p 'test_live_e2e.py'`.
 
 The auth helper uses only Python's standard library. Run its isolated checks with
 `python3 -m unittest discover -s scripts -p 'test_cognito_login.py'`.

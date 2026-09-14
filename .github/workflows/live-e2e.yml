@@ -122,6 +122,8 @@ jobs:
           codex --version
           echo "::endgroup::"
 
+          python3 -m unittest discover -s scripts -p 'test_live_e2e.py'
+
       - name: Sign in to Cognito for provisioning
         shell: wsl-bash {0}
         env:
@@ -168,7 +170,7 @@ jobs:
                 "credentials": [],
                 "commands": [
                   { "id": "ci.allow.probe", "patterns": ["echo keydris-e2e-*"], "effect": "allow" },
-                  { "id": "ci.deny.destructive", "patterns": ["rm -rf *"], "effect": "reject" }
+                  { "id": "ci.deny.delete", "patterns": ["rm -f keydris-e2e-*"], "effect": "reject" }
                 ]
               },
               "conditions": [],
@@ -219,37 +221,19 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          set -uo pipefail
-          set +e
+          set -euo pipefail
           . /mnt/c/keydris-test/ids.env
 
           export KEYDRIS_AGENT_ID="$AGENT_ID"
 
-          keydris init claude-code "$AGENT_ID" --trust-store || exit 1
-          keydris proxy up || exit 1
+          keydris init claude-code "$AGENT_ID" --trust-store
+          keydris proxy up
           keydris status --json | tee /tmp/status.json
           jq -e '.ready == true' /tmp/status.json || {
             echo "::error::keydris status is not ready"; exit 1
           }
 
-          # The allowed command must actually execute.
-          claude -p 'Run exactly this bash command and show its output: echo keydris-e2e-ok' \
-            --max-turns 3 --output-format text > /tmp/allowed.txt 2>&1
-          grep -q 'keydris-e2e-ok' /tmp/allowed.txt || {
-            echo "::error::the policy-allowed command did not run"; cat /tmp/allowed.txt; exit 1
-          }
-
-          # The denied command must be blocked by the hook, not merely refused by
-          # the model. Assert the side effect never happened.
-          rm -f /tmp/keydris-e2e-never
-          claude -p 'Run exactly this bash command: rm -rf /tmp/keydris-e2e-never-marker' \
-            --max-turns 3 --output-format text > /tmp/denied.txt 2>&1
-          [ ! -e /tmp/keydris-e2e-never-marker ] || {
-            echo "::error::a policy-denied command executed"; exit 1
-          }
-
-          # The evidence ledger is the authoritative record of both decisions.
-          keydris logs | head -40
+          python3 scripts/live-e2e.py --harness claude-code
 
       - name: Run the real Codex session through Keydris
         if: ${{ !cancelled() && steps.enroll.outcome == 'success' && (inputs.harness == 'both' || inputs.harness == 'codex') }}
@@ -257,22 +241,14 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          set -uo pipefail
-          set +e
+          set -euo pipefail
           . /mnt/c/keydris-test/ids.env
 
           export KEYDRIS_AGENT_ID="$AGENT_ID"
-          keydris init codex "$AGENT_ID" --trust-store || exit 1
-
-          # Pair with approval_policy=untrusted: PreToolUse is deny-only on
-          # Codex, and approval-required commands only reach the human if Codex
-          # was already going to ask.
-          keydris codex exec --sandbox workspace-write \
-            'Run exactly this bash command and show its output: echo keydris-e2e-ok' \
-            > /tmp/codex.txt 2>&1
-          grep -q 'keydris-e2e-ok' /tmp/codex.txt || {
-            echo "::error::the policy-allowed command did not run under Codex"; cat /tmp/codex.txt; exit 1
-          }
+          keydris init codex "$AGENT_ID" --trust-store
+          keydris status --json | tee /tmp/status-codex.json
+          jq -e '.ready == true' /tmp/status-codex.json
+          python3 scripts/live-e2e.py --harness codex
 
       - name: Teardown
         if: ${{ always() && !inputs.keep_resources }}
