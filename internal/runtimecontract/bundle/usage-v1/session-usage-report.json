@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "events": [
+    {
+      "request_id": "llm-call-001",
+      "provider": "anthropic",
+      "model": "claude-opus-5",
+      "input_tokens": 1204,
+      "output_tokens": 356,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 98230,
+      "stop_reason": "end_turn",
+      "latency_ms": 5210,
+      "occurred_at": "2026-07-28T12:00:00.125Z"
+    },
+    {
+      "request_id": "llm-call-002",
+      "provider": "openai",
+      "model": "gpt-6-astra",
+      "service_tier": "default",
+      "input_tokens": 640,
+      "output_tokens": null,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0,
+      "occurred_at": "2026-07-28T12:00:04.500Z"
+    }
+  ]
+}

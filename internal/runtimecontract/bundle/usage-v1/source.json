@@ -1,0 +1,22 @@
+{
+  "contract_bundle_version": "1.4.0",
+  "runtime_schema_version": 1,
+  "artifacts": {
+    "session-usage-report.schema.json": {
+      "source": "packages/contracts/schemas/v1/session-usage-report.schema.json",
+      "sha256": "12ccab10388d2e672424870d5147d54f5194c0e39ad566eb63ec899fcc135e33"
+    },
+    "session-usage-report-response.schema.json": {
+      "source": "packages/contracts/schemas/v1/session-usage-report-response.schema.json",
+      "sha256": "c87751489e983fe232d90047ebd6c178635d2b0d18e9686483419f5dde1bdc45"
+    },
+    "session-usage-report.json": {
+      "source": "packages/contracts/fixtures/v1/valid/session-usage-report.json",
+      "sha256": "f2e0c25f3bdecd6b9839c4e45c2a2c03080e57c8d82ba62991a319e721d2be12"
+    },
+    "session-usage-report-response.json": {
+      "source": "packages/contracts/fixtures/v1/valid/session-usage-report-response.json",
+      "sha256": "e52e030efb1822b3fca048b0e9a31fb77f24221818d1d203ef5657432626fb47"
+    }
+  }
+}

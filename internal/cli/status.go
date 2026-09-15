@@ -227,6 +227,11 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 	} else {
 		add("Policy scope", "warning", "Policy scope has not been detected", "keydris init")
 	}
+	if cfg.CostMetering {
+		add("Cost metering", "ok", "LLM usage counters (model, tokens) are reported per session; never prompt content", "")
+	} else {
+		add("Cost metering", "inactive", "Disabled (KEYDRIS_COST_METERING=off)", "")
+	}
 	if offline {
 		add("Control plane", "inactive", "Not checked (--offline)", "")
 	} else {
