@@ -10,6 +10,8 @@ on:
       - 'scripts/dsh-tasks/**'
       - 'scripts/dsh-review.py'
       - 'scripts/test_dsh_review.py'
+      - 'scripts/dsh_pr.py'
+      - 'scripts/test_dsh_pr.py'
   push:
     branches: [main]
     paths:
@@ -20,6 +22,8 @@ on:
       - 'scripts/dsh-tasks/**'
       - 'scripts/dsh-review.py'
       - 'scripts/test_dsh_review.py'
+      - 'scripts/dsh_pr.py'
+      - 'scripts/test_dsh_pr.py'
 
 permissions:
   contents: read
