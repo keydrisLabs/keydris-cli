@@ -186,3 +186,52 @@ func TestResolveCommandUsesCurrentEnvironment(t *testing.T) {
 		t.Fatalf("ResolveCommand(sh) = %q, %v; want an absolute path", got, err)
 	}
 }
+
+// TestWSLCommandResolutionRejectsUnsupportedEnvironment verifies that command
+// resolution fails closed on a Windows-hosted or WSL1 environment before any
+// PATH lookup, so an interop shim is never considered launchable there.
+func TestWSLCommandResolutionRejectsUnsupportedEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		e    Environment
+		want string
+	}{
+		{"windows host under WSL", Environment{OS: "windows", WSL: "2"}, "launched from WSL"},
+		{"WSL1", Environment{OS: "linux", WSL: "1"}, "requires WSL2"},
+		{"unknown WSL", Environment{OS: "linux", WSL: "unknown"}, "requires WSL2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := tc.e.resolveCommand("claude"); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("resolveCommand(claude) = %q, %v; want error containing %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestWSLCommandNodeResolutionKeepsEnvironmentMounts guards recursive node
+// resolution using the same Environment: a Linux launcher whose node resolves
+// onto a Windows mount must be refused. That only holds because the nested
+// lookup goes through the receiver instead of re-detecting the host.
+func TestWSLCommandNodeResolutionKeepsEnvironmentMounts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL uses Unix executable lookup")
+	}
+	launcherDir := t.TempDir()
+	nodeDir := t.TempDir()
+	launcher := filepath.Join(launcherDir, "claude")
+	if err := os.WriteFile(launcher, []byte("#!/usr/bin/env node\nconsole.log('lint')\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeDir, "node"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolvedNodeDir, err := filepath.EvalSymlinks(nodeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", launcherDir+string(os.PathListSeparator)+nodeDir)
+	e := Environment{OS: "linux", WSL: "2", windowsMounts: []string{filepath.ToSlash(resolvedNodeDir)}}
+	if _, err := e.resolveCommand(launcher); err == nil || !strings.Contains(err.Error(), "needs Linux Node.js") || !strings.Contains(err.Error(), "Windows-mounted path") {
+		t.Fatalf("node on a Windows mount was not refused: %v", err)
+	}
+}

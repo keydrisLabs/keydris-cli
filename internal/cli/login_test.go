@@ -13,6 +13,12 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 )
 
+// failingReader returns a read error so tests can drive a broken stdin without
+// a real pipe.
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
 func TestAccessTokenLoginRejectsInvalidStdinBeforeEnrollment(t *testing.T) {
 	cfg := uxConfig(t)
 	requests := 0
@@ -27,6 +33,7 @@ func TestAccessTokenLoginRejectsInvalidStdinBeforeEnrollment(t *testing.T) {
 		strings.NewReader(" \n"),
 		strings.NewReader("first\nsecond"),
 		strings.NewReader(strings.Repeat("x", 64*1024+1)),
+		failingReader{}, // a broken stdin must be refused, not sent truncated
 	} {
 		if accessTokenLogin(cfg, input) == 0 {
 			t.Fatal("invalid stdin was accepted")
@@ -34,6 +41,26 @@ func TestAccessTokenLoginRejectsInvalidStdinBeforeEnrollment(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatal("invalid stdin was sent to the enrollment endpoint")
+	}
+}
+
+// TestAccessTokenLoginRejectsUnsafeRuntimePaths covers the access-token entry
+// point's fail-closed ordering: a non-absolute runtime override is refused
+// before the token is read or presented to the control plane.
+func TestAccessTokenLoginRejectsUnsafeRuntimePaths(t *testing.T) {
+	cfg := uxConfig(t)
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+	cfg.ControlURL = server.URL
+	cfg.IdentityDir = "relative/identity"
+	if code := accessTokenLogin(cfg, strings.NewReader("test-token")); code != 1 {
+		t.Fatalf("accessTokenLogin with a relative identity dir exited %d, want 1", code)
+	}
+	if requests != 0 {
+		t.Fatalf("unsafe runtime paths reached the control plane (%d requests)", requests)
 	}
 }
 
