@@ -1,0 +1,63 @@
+name: dsh-review
+
+# Daily at 03:00 UTC (08:30 India). Each task has its own isolated jobs and PR.
+# Never expose the model/API-key jobs to pull_request events.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Maintenance task to run
+        type: choice
+        options: [all, review, dead-code, e2e]
+        default: all
+      task:
+        description: Optional task override (use with one selected mode)
+        required: false
+      force:
+        description: Run recent-change review even when there are no recent commits
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsh-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.event_name == 'schedule' || inputs.mode == 'all' || inputs.mode == 'review'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/dsh-task.yml
+    with:
+      mode: review
+      task: ${{ inputs.task || '' }}
+      force: ${{ inputs.force || false }}
+    secrets: inherit
+  dead_code:
+    if: github.event_name == 'schedule' || inputs.mode == 'all' || inputs.mode == 'dead-code'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/dsh-task.yml
+    with:
+      mode: dead-code
+      task: ${{ inputs.task || '' }}
+      force: ${{ inputs.force || false }}
+    secrets: inherit
+  e2e:
+    if: github.event_name == 'schedule' || inputs.mode == 'all' || inputs.mode == 'e2e'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/dsh-task.yml
+    with:
+      mode: e2e
+      task: ${{ inputs.task || '' }}
+      force: ${{ inputs.force || false }}
+    secrets: inherit

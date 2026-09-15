@@ -27,3 +27,7 @@ internal/node/ebpf/*.o
 /.gobuild/
 
 .DS_Store
+
+# Python test/interpreter caches are never maintenance proposals.
+__pycache__/
+*.py[cod]

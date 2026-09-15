@@ -1,0 +1,8 @@
+[
+  {"id": "allow", "operation": "copy", "filename": "plain", "content": "nonce", "overwrite": false},
+  {"id": "deny", "operation": "delete", "filename": "plain", "content": "nonce", "overwrite": false},
+  {"id": "copy-overwrite-empty", "operation": "copy", "filename": "plain", "content": "empty", "overwrite": true},
+  {"id": "deny-delete-spaces-multiline", "operation": "delete", "filename": "spaces", "content": "multiline", "overwrite": false},
+  {"id": "copy-nested-multiline-overwrite", "operation": "copy", "filename": "nested", "content": "multiline", "overwrite": true},
+  {"id": "copy-unicode-unicode", "operation": "copy", "filename": "unicode", "content": "unicode", "overwrite": false}
+]

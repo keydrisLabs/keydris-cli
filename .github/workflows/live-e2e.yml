@@ -22,10 +22,28 @@ name: live-e2e
 #   KEYDRIS_COGNITO_CONSOLE_CLIENT_SECRET / KEYDRIS_COGNITO_CLI_CLIENT_SECRET
 #
 # SECURITY: keydris-cli is a PUBLIC repository. Secrets are not exposed to fork
-# PRs, and this lane is workflow_dispatch-only by design - never wire it to
+# PRs. This lane is manual or called by trusted daily maintenance - never use
 # pull_request.
 
 on:
+  workflow_call:
+    inputs:
+      control_url:
+        type: string
+        default: https://dev.api.keydris.com
+      control_mtls_url:
+        type: string
+        default: https://dev.api.keydris.com:8443
+      harness:
+        type: string
+        default: both
+      keep_resources:
+        type: boolean
+        default: false
+      cases_artifact:
+        description: Validated additive case catalog from the trusted maintenance job
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       control_url:
@@ -72,11 +90,28 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - if: inputs.cases_artifact != ''
+        name: Download validated E2E case additions
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.cases_artifact }}
+          path: ${{ runner.temp }}/dsh-e2e-cases
+
+      - if: inputs.cases_artifact != ''
+        name: Validate additions with the trusted case interpreter
+        shell: pwsh
+        run: |
+          python scripts/live_e2e_cases.py --proposal "$env:RUNNER_TEMP/dsh-e2e-cases/live-e2e-cases.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
 
       - name: Build linux/amd64 binary
         shell: pwsh
@@ -126,7 +161,8 @@ jobs:
           codex --version
           echo "::endgroup::"
 
-          python3 -m unittest discover -s scripts -p 'test_live_e2e.py'
+          python3 scripts/live_e2e_cases.py
+          python3 -m unittest discover -s scripts -p 'test_live_e2e*.py'
 
       - name: Sign in to Cognito for provisioning
         shell: wsl-bash -u keydris-e2e {0}
@@ -183,6 +219,8 @@ jobs:
             }
           }
           JSON
+
+          python3 scripts/live_e2e_cases.py --policy /tmp/policy.json
 
           POLICY_ID="$(curl -fsS -X POST "$API/policies" -H "$AUTH" \
             -H 'content-type: application/json' --data-binary @/tmp/policy.json | jq -er '.id | select(type == "string" and length > 0)')"

@@ -1,0 +1,295 @@
+name: dsh-task
+
+# Reusable maintenance task. The agent runner never receives write credentials
+# or live E2E credentials; all proposed patches are untrusted data.
+on:
+  workflow_call:
+    inputs:
+      mode:
+        required: true
+        type: string
+      task:
+        type: string
+        default: ''
+      force:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  DSH_VERSION: 0.1.5-rc.1
+  LOOKBACK_DAYS: '1'
+  DSH_MODE: ${{ inputs.mode }}
+
+jobs:
+  review:
+    name: DeepSeek ${{ inputs.mode }}
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether anything needs reviewing
+        id: gate
+        env:
+          FORCE_REVIEW: ${{ inputs.force }}
+        run: |
+          case "$DSH_MODE" in review|dead-code|e2e) ;; *) echo "::error::invalid maintenance mode"; exit 1;; esac
+          if [ "$FORCE_REVIEW" = "true" ] || [ "$DSH_MODE" != "review" ]; then
+            echo "::notice::running the selected task regardless of recent activity"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$(git log --since="${LOOKBACK_DAYS} days ago" --oneline)" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no commits in the last ${LOOKBACK_DAYS} days; skipping to avoid needless model spend"
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Require the API key
+        env:
+          KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::DEEPSEEK_API_KEY is not set; add it as a repository secret"
+            exit 1
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Initialize temporary directories
+        run: |
+          mkdir -p "$RUNNER_TEMP/dsh-home" "$RUNNER_TEMP/dsh-run" "$RUNNER_TEMP/dsh-changes"
+          echo "DSH_HOME=$RUNNER_TEMP/dsh-home" >> "$GITHUB_ENV"
+          echo "REPORT_DIR=$RUNNER_TEMP/dsh-run" >> "$GITHUB_ENV"
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # Do not save agent-controlled files into a cache used by other jobs.
+          cache: false
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Install the harness
+        run: npm install --global "@deepseek-ai/dsh@${DSH_VERSION}"
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Configure the harness home
+        run: |
+          cat > "$DSH_HOME/settings.yaml" <<'YAML'
+          agent-default-model:
+            provider: deepseek-official
+            model: deepseek-flash
+            reasoningEffort: max
+          YAML
+          dsh --version
+
+      - if: steps.gate.outputs.run == 'true' && inputs.mode == 'dead-code'
+        name: Collect whole-repository dead-code candidates
+        run: |
+          mkdir -p "$RUNNER_TEMP/dsh-tools"
+          GOBIN="$RUNNER_TEMP/dsh-tools" go install golang.org/x/tools/cmd/deadcode@v0.30.0
+          for target in linux windows darwin; do
+            for arch in amd64 arm64; do
+              CGO_ENABLED=0 GOOS="$target" GOARCH="$arch" \
+                "$RUNNER_TEMP/dsh-tools/deadcode" -test ./... \
+                > "$REPORT_DIR/deadcode-${target}-${arch}.txt"
+            done
+          done
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Run the harness
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DSH_TOOLS_MODE: ptc
+          # Other modes currently map to interactive approval prompts.
+          DSH_PERMISSION_MODE: danger-full-access
+          TASK_OVERRIDE: ${{ inputs.task }}
+        run: |
+          TASK="$TASK_OVERRIDE"
+          if [ -z "$TASK" ]; then
+            TASK="$(cat "scripts/dsh-tasks/${DSH_MODE}.md")"
+          fi
+
+          printf '%s\n' "$TASK" > "$REPORT_DIR/dsh-task.txt"
+          dsh --profile headless "$TASK" 2>&1 | tee "$REPORT_DIR/dsh-report.txt"
+          exit "${PIPESTATUS[0]}"
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Verify the proposed changes
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+          python3 -I -m unittest discover -s scripts -p 'test_*.py'
+          if [ "$DSH_MODE" = "dead-code" ]; then
+            for target in linux windows darwin; do
+              for arch in amd64 arm64; do
+                CGO_ENABLED=0 GOOS="$target" GOARCH="$arch" go build \
+                  -o "$RUNNER_TEMP/keydris-${target}-${arch}" ./cmd/keydris
+              done
+            done
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Export proposed changes as data
+        run: |
+          # Compare with the reviewed SHA even if the agent committed or switched
+          # branches. Git metadata and hooks are never transferred. The receiving
+          # job treats this patch as untrusted input.
+          git add --all
+          git diff --cached --binary --full-index --no-ext-diff --no-textconv \
+            "$GITHUB_SHA" > "$RUNNER_TEMP/dsh-changes/changes.patch"
+
+      - if: steps.gate.outputs.run == 'true'
+        name: Upload proposed changes
+        uses: actions/upload-artifact@v4
+        with:
+          # A failed publish job can be retried without rerunning the agent.
+          name: dsh-changes-${{ inputs.mode }}
+          path: ${{ runner.temp }}/dsh-changes/changes.patch
+          if-no-files-found: error
+          overwrite: true
+
+      - if: always() && steps.gate.outputs.run == 'true'
+        name: Publish the harness report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-report-${{ inputs.mode }}
+          path: ${{ runner.temp }}/dsh-run/
+          if-no-files-found: ignore
+          overwrite: true
+
+  validate:
+    name: Validate proposed changes
+    needs: review
+    if: needs.review.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.patch.outputs.changed }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the trusted workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the proposed patch outside the checkout
+        uses: actions/download-artifact@v4
+        with:
+          name: dsh-changes-${{ inputs.mode }}
+          path: ${{ runner.temp }}/dsh-changes
+
+      - name: Validate and stage the proposed patch
+        id: patch
+        run: |
+          # Apply only to the index so proposed files cannot replace trusted code.
+          python3 -I scripts/dsh-review.py "$RUNNER_TEMP/dsh-changes/changes.patch" \
+            --mode "$DSH_MODE" --cases-output "$RUNNER_TEMP/live-e2e-cases.json"
+          if git diff --cached --quiet; then
+            echo "::notice::the harness made no changes; nothing to open a pull request for"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.patch.outputs.changed == 'true' && inputs.mode == 'e2e'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-validated-e2e-cases
+          path: ${{ runner.temp }}/live-e2e-cases.json
+          if-no-files-found: error
+          overwrite: true
+
+  live:
+    name: Validate additions in real WSL2
+    needs: validate
+    if: inputs.mode == 'e2e' && needs.validate.outputs.changed == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      harness: both
+      cases_artifact: dsh-validated-e2e-cases
+    secrets: inherit
+
+  publish:
+    name: Open a reviewed ${{ inputs.mode }} pull request
+    needs: [review, validate, live]
+    if: >-
+      always() && !cancelled() && needs.review.result == 'success' &&
+      needs.validate.result == 'success' && needs.validate.outputs.changed == 'true' &&
+      (needs.live.result == 'success' || (inputs.mode != 'e2e' && needs.live.result == 'skipped'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: dsh-changes-${{ inputs.mode }}
+          path: ${{ runner.temp }}/dsh-changes
+      - name: Revalidate the exact patch before committing
+        run: |
+          python3 -I scripts/dsh-review.py "$RUNNER_TEMP/dsh-changes/changes.patch" --mode "$DSH_MODE"
+
+      - name: Commit and publish the review branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          REVIEW_BRANCH: dsh/${{ inputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          git -c core.hooksPath=/dev/null \
+            -c user.name="dsh-review[bot]" \
+            -c user.email="dsh-review@users.noreply.github.com" \
+            commit -m "chore(dsh): ${DSH_MODE} maintenance"
+
+          # Authenticate without storing the token. Never use an agent-supplied
+          # remote or infer the destination from the current branch.
+          git -c core.hooksPath=/dev/null -c credential.helper= \
+            -c 'credential.helper=!gh auth git-credential' \
+            push "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${REVIEW_BRANCH}"
+
+          cat > "$RUNNER_TEMP/dsh-pr-body.md" <<'BODY'
+          Automated DeepSeek Harness maintenance proposal.
+
+          See this workflow run's report artifact for the task and harness report.
+          Build, vet, and tests completed in the agent job. E2E catalog additions
+          also passed real Claude Code and Codex sessions in WSL2 before publication.
+          Review before merging: an unattended agent wrote these changes.
+          BODY
+          printf '\nWorkflow run: %s/%s/actions/runs/%s\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
+            >> "$RUNNER_TEMP/dsh-pr-body.md"
+
+          gh pr create --repo "$GITHUB_REPOSITORY" \
+            --base "$BASE_BRANCH" --head "$REVIEW_BRANCH" \
+            --title "chore(dsh): ${DSH_MODE} maintenance" \
+            --body-file "$RUNNER_TEMP/dsh-pr-body.md"

@@ -215,6 +215,51 @@ func TestRepeatedSessionStartRevokesPreviousInstance(t *testing.T) {
 	}
 }
 
+// The wrapped tool's identity is reported on the mint so the console can
+// attribute the session. A fake claude on PATH keeps the mapping honest through
+// runRun rather than only unit-testing agentRuntimeForCommand.
+func TestRunReportsClaudeRuntimeToMint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake claude shim is a POSIX script")
+	}
+	dir := t.TempDir()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("KEYDRIS_DATA_DIR", dir)
+	t.Setenv("KEYDRIS_DATAPLANE", "sandbox")
+	t.Setenv("KEYDRIS_AGENT_ID", "11111111-1111-4111-8111-111111111111")
+	t.Setenv("KEYDRIS_SESSION_SOCKET", filepath.Join(dir, "missing.sock"))
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var mintedRuntime string
+	oldMint, oldRevoke, oldSend, oldExchange, oldRoutes := mintSessionInstance, revokeSessionInstance, sendSessionMessage, exchangeSessionMessage, fetchSessionRoutes
+	mintSessionInstance = func(_ *config.Config, _, _, agentRuntime string) (*mintedInstance, error) {
+		mintedRuntime = agentRuntime
+		return &mintedInstance{SPIFFEID: "spiffe://keydris.test/run", KIT: "test-kit", SessionID: "test-ulid"}, nil
+	}
+	revokeSessionInstance = func(*config.Config, string) error { return nil }
+	sendSessionMessage = func(string, sessionsock.Message) error { return nil }
+	exchangeSessionMessage = func(string, sessionsock.Message) (*sessionsock.SessionSnapshot, error) { return nil, nil }
+	fetchSessionRoutes = func(cfg *config.Config, _ string) (*runtimecontract.RuntimeRoutes, error) {
+		return testSessionRoutes(cfg.AgentID), nil
+	}
+	defer func() {
+		mintSessionInstance, revokeSessionInstance, sendSessionMessage, exchangeSessionMessage, fetchSessionRoutes = oldMint, oldRevoke, oldSend, oldExchange, oldRoutes
+	}()
+
+	if code := runRun([]string{"--", "claude"}); code != 0 {
+		t.Fatalf("run code = %d", code)
+	}
+	if mintedRuntime != agentRuntimeClaudeCode {
+		t.Fatalf("minted agent_runtime = %q, want %q", mintedRuntime, agentRuntimeClaudeCode)
+	}
+}
+
 func testSessionRoutes(agentID string) *runtimecontract.RuntimeRoutes {
 	return &runtimecontract.RuntimeRoutes{
 		SchemaVersion:  1,
