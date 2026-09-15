@@ -676,7 +676,6 @@ keydris-cli/
 │   │   ├── dataplane/                  interception, behind one interface
 │   │   │   ├── sandboxproxy.go         the default plane: TLS-terminating forward proxy
 │   │   │   ├── transparent_linux.go    iptables REDIRECT + SO_ORIGINAL_DST
-│   │   │   ├── proxyenv.go             the kernel-free HTTP_PROXY fallback
 │   │   │   └── toolmeta.go             request metadata + MCP `_meta` token injection
 │   │   ├── proxy/                      the Keydris CA and per-host leaf minting
 │   │   ├── sandbox/                    writes ~/.claude/settings.json and ~/.codex/hooks.json
