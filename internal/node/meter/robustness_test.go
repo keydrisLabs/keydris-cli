@@ -106,6 +106,29 @@ func TestOpenAIActualTierAndCacheWriteSplit(t *testing.T) {
 	}
 }
 
+func TestAnthropicSpeedAndServiceTier(t *testing.T) {
+	cases := []struct{ usage, tier string }{
+		{`,"service_tier":"standard","speed":"standard"`, "default"},
+		{`,"service_tier":"standard","speed":"fast"`, "priority"},
+		{`,"service_tier":"priority"`, "unknown"},
+		{``, "default"},
+	}
+	for _, tc := range cases {
+		body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5\",\"usage\":{\"input_tokens\":8,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":1" + tc.usage + "}}}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":12}}\n\n"
+		totals := drain(t, NewResponseSink(sseResponse(body)), body)
+		event := BuildEvent("anthropic", RequestInfo{Model: "request-alias"}, totals, time.Now())
+		if event.Model != "claude-opus-5" || event.ServiceTier != tc.tier || event.OutputTokens == nil || *event.OutputTokens != 12 {
+			t.Fatalf("%q: %+v", tc.usage, event)
+		}
+	}
+	body := `{"model":"claude-opus-4-8","usage":{"input_tokens":8,"output_tokens":3,"speed":"fast"}}`
+	event := BuildEvent("anthropic", RequestInfo{Model: "claude-opus-4-8"}, drain(t, NewResponseSink(jsonResponse()), body), time.Now())
+	if event.ServiceTier != "priority" || event.Model != "claude-opus-4-8" {
+		t.Fatalf("non-streaming fast mode: %+v", event)
+	}
+}
+
 func TestIncompleteOrInvalidUsageCannotProducePricedEvent(t *testing.T) {
 	for _, body := range []string{
 		`{"usage":{"output_tokens":5}}`,

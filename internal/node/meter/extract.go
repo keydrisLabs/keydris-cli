@@ -172,7 +172,11 @@ func skipValue(decoder *json.Decoder) error {
 
 // UsageTotals is what a response sink accumulated.
 type UsageTotals struct {
+	// ServiceTier is the provider's reported tier: OpenAI's top-level field or
+	// Anthropic's usage.service_tier (standard, priority, batch).
 	ServiceTier string
+	// Speed is Anthropic's usage.speed (fast or standard); empty elsewhere.
+	Speed       string
 	HasInput    bool
 	Invalid     bool
 	Model       string
@@ -250,10 +254,12 @@ type wireChoice struct {
 
 type usageBlock struct {
 	// Anthropic.
-	InputTokens              *int `json:"input_tokens"`
-	OutputTokens             *int `json:"output_tokens"`
-	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+	ServiceTier              string `json:"service_tier"`
+	Speed                    string `json:"speed"`
+	InputTokens              *int   `json:"input_tokens"`
+	OutputTokens             *int   `json:"output_tokens"`
+	CacheCreationInputTokens *int   `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     *int   `json:"cache_read_input_tokens"`
 	// OpenAI chat completions.
 	PromptTokens        *int          `json:"prompt_tokens"`
 	CompletionTokens    *int          `json:"completion_tokens"`
@@ -330,6 +336,12 @@ func (a *accumulator) observe(w wireUsage) {
 
 func (a *accumulator) observeBlock(block *usageBlock) {
 	a.totals.Observed = true
+	if block.ServiceTier != "" {
+		a.totals.ServiceTier = block.ServiceTier
+	}
+	if block.Speed != "" {
+		a.totals.Speed = block.Speed
+	}
 	cachedRead := 0
 	if block.CacheReadInputTokens != nil {
 		cachedRead = *block.CacheReadInputTokens

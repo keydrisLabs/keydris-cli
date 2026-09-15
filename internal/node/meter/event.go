@@ -21,13 +21,25 @@ func BuildEvent(
 		model = info.Model
 	}
 	tier := "default"
-	if provider == "openai" {
+	switch provider {
+	case "openai":
 		tier = totals.ServiceTier
 		switch tier {
 		case "fast":
 			tier = "priority"
 		case "default", "flex", "priority", "scale":
 		default:
+			tier = "unknown"
+		}
+	case "anthropic":
+		// Fast mode has published rates and is catalogued under priority, like
+		// OpenAI's fast tier. An Anthropic Priority Tier commitment is contract
+		// priced, so it is reported unknown and stays unpriced until an admin
+		// publishes a rate. Standard and unreported tiers are default.
+		switch {
+		case totals.Speed == "fast":
+			tier = "priority"
+		case totals.ServiceTier == "priority":
 			tier = "unknown"
 		}
 	}

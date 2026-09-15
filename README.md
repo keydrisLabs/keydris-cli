@@ -459,7 +459,7 @@ Alongside policy scope, the proxy meters the agent's **LLM API usage** so the da
 
 Usage parsing and reporting errors do not fail the forwarded model response. Events carry idempotent request ids, including across KIT renewal.
 
-OpenAI events use the response's actual model and service tier. Cached reads and cache writes are split out of inclusive input counts. Response metadata is scanned incrementally, including large Responses API payloads, without retaining generated content. Missing tiers remain unknown; incomplete or invalid token counts remain unpriced.
+OpenAI events use the response's actual model and service tier. Anthropic events report fast mode (`usage.speed`) under the priority tier, and a Priority Tier commitment as unknown because its pricing is contractual. Cached reads and cache writes are split out of inclusive input counts. Response metadata is scanned incrementally, including large Responses API payloads, without retaining generated content. Missing tiers remain unknown; incomplete or invalid token counts remain unpriced.
 
 HTTP inference streaming and non-streaming responses are metered. WebSocket upgrades and their buffered frames are forwarded bidirectionally without metering. Background polling, Batch, audio/image endpoints, tool fees and regional surcharges are outside this token estimate. The client does not add `stream_options.include_usage`; callers must opt in for Chat Completions stream totals.
 

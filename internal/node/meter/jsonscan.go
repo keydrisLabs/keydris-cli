@@ -59,7 +59,7 @@ func metadataScalar(path string) bool {
 		if strings.HasPrefix(path, prefix) {
 			switch strings.TrimPrefix(path, prefix) {
 			case "input_tokens", "output_tokens", "prompt_tokens", "completion_tokens",
-				"cache_creation_input_tokens", "cache_read_input_tokens",
+				"cache_creation_input_tokens", "cache_read_input_tokens", "service_tier", "speed",
 				"prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens",
 				"prompt_tokens_details.cache_write_tokens", "input_tokens_details.cache_write_tokens":
 				return true
@@ -288,6 +288,7 @@ func (s *metadataJSON) usage(path string) *usageBlock {
 		return nil
 	}
 	block := &usageBlock{
+		ServiceTier: s.text(path+".service_tier", 32), Speed: s.text(path+".speed", 16),
 		InputTokens: s.number(path + ".input_tokens"), OutputTokens: s.number(path + ".output_tokens"),
 		PromptTokens: s.number(path + ".prompt_tokens"), CompletionTokens: s.number(path + ".completion_tokens"),
 		CacheCreationInputTokens: s.number(path + ".cache_creation_input_tokens"), CacheReadInputTokens: s.number(path + ".cache_read_input_tokens"),
