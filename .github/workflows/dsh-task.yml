@@ -127,6 +127,7 @@ jobs:
           if [ -z "$TASK" ]; then
             TASK="$(cat "scripts/dsh-tasks/${DSH_MODE}.md")"
           fi
+          TASK="$(printf '%s\n\n%s' "$TASK" "$(cat scripts/dsh-tasks/pr-description.md)")"
 
           printf '%s\n' "$TASK" > "$REPORT_DIR/dsh-task.txt"
           dsh --profile headless "$TASK" 2>&1 | tee "$REPORT_DIR/dsh-report.txt"
@@ -157,6 +158,11 @@ jobs:
           git add --all
           git diff --cached --binary --full-index --no-ext-diff --no-textconv \
             "$GITHUB_SHA" > "$RUNNER_TEMP/dsh-changes/changes.patch"
+          if [ -s "$RUNNER_TEMP/dsh-changes/changes.patch" ]; then
+            test -f "$REPORT_DIR/pr-description.json"
+            test ! -L "$REPORT_DIR/pr-description.json"
+            cp "$REPORT_DIR/pr-description.json" "$RUNNER_TEMP/dsh-changes/pr-description.json"
+          fi
 
       - if: steps.gate.outputs.run == 'true'
         name: Upload proposed changes
@@ -164,7 +170,7 @@ jobs:
         with:
           # A failed publish job can be retried without rerunning the agent.
           name: dsh-changes-${{ inputs.mode }}
-          path: ${{ runner.temp }}/dsh-changes/changes.patch
+          path: ${{ runner.temp }}/dsh-changes/
           if-no-files-found: error
           overwrite: true
 
@@ -259,6 +265,17 @@ jobs:
         run: |
           python3 -I scripts/dsh-review.py "$RUNNER_TEMP/dsh-changes/changes.patch" --mode "$DSH_MODE"
 
+      - name: Prepare the pull request description
+        env:
+          LIVE_RESULT: ${{ needs.live.result }}
+        run: |
+          # The renderer is from the trusted checkout. Agent edits stay in the
+          # index; metadata is JSON data, never sourced as shell or executed.
+          python3 -I scripts/dsh_pr.py "$RUNNER_TEMP/dsh-changes/pr-description.json" \
+            --mode "$DSH_MODE" --live-result "$LIVE_RESULT" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --output-dir "$RUNNER_TEMP"
+
       - name: Commit and publish the review branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -268,7 +285,7 @@ jobs:
           git -c core.hooksPath=/dev/null \
             -c user.name="dsh-review[bot]" \
             -c user.email="dsh-review@users.noreply.github.com" \
-            commit -m "chore(dsh): ${DSH_MODE} maintenance"
+            commit -F "$RUNNER_TEMP/dsh-pr-title.txt"
 
           # Authenticate without storing the token. Never use an agent-supplied
           # remote or infer the destination from the current branch.
@@ -277,19 +294,7 @@ jobs:
             push "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
             "HEAD:refs/heads/${REVIEW_BRANCH}"
 
-          cat > "$RUNNER_TEMP/dsh-pr-body.md" <<'BODY'
-          Automated DeepSeek Harness maintenance proposal.
-
-          See this workflow run's report artifact for the task and harness report.
-          Build, vet, and tests completed in the agent job. E2E catalog additions
-          also passed real Claude Code and Codex sessions in WSL2 before publication.
-          Review before merging: an unattended agent wrote these changes.
-          BODY
-          printf '\nWorkflow run: %s/%s/actions/runs/%s\n' \
-            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
-            >> "$RUNNER_TEMP/dsh-pr-body.md"
-
           gh pr create --repo "$GITHUB_REPOSITORY" \
             --base "$BASE_BRANCH" --head "$REVIEW_BRANCH" \
-            --title "chore(dsh): ${DSH_MODE} maintenance" \
+            --title "$(cat "$RUNNER_TEMP/dsh-pr-title.txt")" \
             --body-file "$RUNNER_TEMP/dsh-pr-body.md"

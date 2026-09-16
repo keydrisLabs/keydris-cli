@@ -56,7 +56,7 @@ class PublishingTests(unittest.TestCase):
         (self.agent / "existing.go").write_text("package fixture\n")
         (self.agent / "removed.go").write_text("package fixture\n")
         (self.agent / "scripts").mkdir()
-        for name in ("dsh-review.py", "live_e2e_cases.py", "live-e2e-cases.json"):
+        for name in ("dsh-review.py", "dsh_pr.py", "live_e2e_cases.py", "live-e2e-cases.json"):
             shutil.copyfile(ROOT / "scripts" / name, self.agent / "scripts" / name)
         # Fixtures start with the mandatory baseline, even after real daily
         # proposals have extended the repository's catalog.
@@ -72,8 +72,14 @@ class PublishingTests(unittest.TestCase):
         return subprocess.run(["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True)
 
     def export(self):
+        (self.root / "pr-description.json").write_text(json.dumps({
+            "title": "Cover enrollment token handling $(touch metadata-executed)",
+            "summary": "Exercise enrollment without a browser.",
+            "reason": "Catch token-handling regressions.",
+            "changes": ["Add login assertions."], "risks": "None identified.",
+        }))
         export_env = self.env.copy()
-        export_env.update({"GITHUB_SHA": self.base, "RUNNER_TEMP": str(self.root)})
+        export_env.update({"GITHUB_SHA": self.base, "RUNNER_TEMP": str(self.root), "REPORT_DIR": str(self.root)})
         subprocess.run(
             ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c",
              step_script("Export proposed changes as data")],
@@ -196,6 +202,7 @@ class PublishingTests(unittest.TestCase):
         (self.agent / "added_test.go").write_text("package fixture\n")
         # A proposed edit to the publisher itself must remain data in its index.
         (self.agent / "scripts/dsh-review.py").write_text("raise RuntimeError('untrusted publisher executed')\n")
+        (self.agent / "scripts/dsh_pr.py").write_text("raise RuntimeError('untrusted renderer executed')\n")
         self.export()
         self.stage()
         self.assertIn("def stage_patch", (self.publisher / "scripts/dsh-review.py").read_text())
@@ -216,7 +223,13 @@ class PublishingTests(unittest.TestCase):
             "GH_ARGS_FILE": str(args_file), "RUNNER_TEMP": str(self.root),
             "REVIEW_BRANCH": "dsh/review-123-1", "BASE_BRANCH": "main", "GITHUB_SERVER_URL": self.root.as_uri(),
             "GITHUB_REPOSITORY": "remote", "GITHUB_RUN_ID": "123",
+            "LIVE_RESULT": "skipped",
         })
+        subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c",
+             step_script("Prepare the pull request description")],
+            cwd=self.publisher, env=publish_env, capture_output=True, text=True, check=True,
+        )
         result = subprocess.run(
             ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c",
              step_script("Commit and publish the review branch")],
@@ -228,12 +241,21 @@ class PublishingTests(unittest.TestCase):
         published = self.run_git(self.remote, "rev-parse", "refs/heads/dsh/review-123-1").stdout.strip().decode()
         self.assertNotEqual(published, self.base)
         self.assertIn("--head\ndsh/review-123-1\n", args_file.read_text())
+        self.assertIn("--title\nchore(dsh): Cover enrollment token handling $(touch metadata-executed)\n", args_file.read_text())
+        self.assertFalse((self.publisher / "metadata-executed").exists())
+        body = (self.root / "dsh-pr-body.md").read_text()
+        self.assertIn("Live WSL2 tests were not run for this proposal.", body)
+        self.assertIn("added_test.go", body)
+        self.assertIn("Catch token-handling regressions.", body)
 
 
 class TaskInputTests(unittest.TestCase):
     def test_shell_syntax_reaches_harness_literally(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / "scripts/dsh-tasks").mkdir(parents=True)
+            prompt = (ROOT / "scripts/dsh-tasks/pr-description.md").read_text().rstrip("\n")
+            (root / "scripts/dsh-tasks/pr-description.md").write_text(prompt)
             harness = root / "dsh"
             harness.write_text('#!/bin/sh\nprintf "%s" "$3" > "$HARNESS_TASK_FILE"\n')
             harness.chmod(0o755)
@@ -249,8 +271,8 @@ class TaskInputTests(unittest.TestCase):
                 cwd=root, env=run_env, capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((root / "received-task").read_text(), task)
-            self.assertEqual((root / "dsh-task.txt").read_text(), task + "\n")
+            self.assertEqual((root / "received-task").read_text(), task + "\n\n" + prompt)
+            self.assertEqual((root / "dsh-task.txt").read_text(), task + "\n\n" + prompt + "\n")
             for marker in ("substitution-ran", "backticks-ran", "quotes-ran"):
                 self.assertFalse((root / marker).exists())
 

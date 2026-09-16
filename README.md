@@ -1056,6 +1056,13 @@ Available modes are `all`, `review`, `dead-code`, and `e2e`. An optional `task`
 override is literal text and remains subject to the selected task's patch
 restrictions. Reports are `dsh-report-<mode>` artifacts and proposals are
 `dsh-changes-<mode>`. The catalog validated for WSL2 is also retained separately.
+Each PR uses a specific title describing the final change, plus a description
+covering the problem, rationale, changes, limitations, and validation. DeepSeek
+writes `pr-description.json` alongside its report, outside the checkout; this
+also applies to custom tasks. The publisher validates that metadata as data and
+adds the actual changed-file list and task-specific validation results. Only E2E
+proposals claim real WSL2 validation. Missing or invalid metadata prevents
+publication instead of falling back to a generic maintenance title.
 The daily schedule takes effect when this workflow reaches the default branch.
 Manual branch runs target their source branch when opening PRs, so unmerged
 workflow changes are not displayed as agent-generated changes. Scheduled runs
