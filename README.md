@@ -136,6 +136,41 @@ go build -o bin\keydris.exe .\cmd\keydris
 
 ---
 
+## Quick setup
+
+You need an **agent ID** — the UUID an operator created in the Keydris console
+for the policy you want this installation to use. `init` signs in when needed,
+configures the selected agent, discovers its governed origins, and starts the
+local proxy. There is no proxy scope to configure by hand.
+
+### Claude Code
+
+```bash
+keydris init claude-code <agent-id>
+keydris status
+keydris run -- claude
+```
+
+Always use `keydris run -- claude` for governed work. It routes Claude's own
+HTTP traffic — including remote MCP and WebFetch — through Keydris, as well as
+the commands Claude starts. See the [full Claude Code setup](#quickstart--claude-code)
+for sandbox, WSL2, and trust-store options.
+
+### OpenAI Codex
+
+```bash
+keydris init codex <agent-id>
+keydris status
+keydris codex
+```
+
+Run `/hooks` once inside Codex to trust the new entries. Start governed sessions
+with `keydris codex`, not `codex` directly. See the [full Codex setup](#quickstart--openai-codex).
+
+For a non-agent command, use `keydris run -- <command>`.
+
+---
+
 ## Getting Started
 
 ### Windows with WSL2
@@ -257,13 +292,10 @@ See [Codex skills](https://learn.chatgpt.com/docs/build-skills),
 #    is no scope to configure by hand.
 keydris init claude-code <agent-id>   # add --trust-store to install the CA system-wide
 
-# 2. Start again later if needed; init already started it (no `&` needed).
-keydris proxy up
-
-# 3. Confirm enforcement state and the detected proxy scope.
+# 2. Confirm enforcement state and the detected proxy scope.
 keydris status
 
-# 4. Run a real session. The wrapper mints the runtime session before Claude
+# 3. Run a real session. The wrapper mints the runtime session before Claude
 #    starts and points the claude process itself at the proxy, so its own
 #    remote-HTTP MCP and WebFetch calls are governed alongside its Bash
 #    children; every Bash command is checked against the policy's command
@@ -285,7 +317,6 @@ Keydris wraps the Codex process so its session is revoked when that terminal pro
 
 ```bash
 keydris init codex <agent-id>        # `init openai` is also accepted
-keydris proxy up
 keydris codex                        # normal Codex arguments follow
 ```
 
