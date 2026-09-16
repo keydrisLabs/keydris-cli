@@ -75,7 +75,13 @@ func TestWSLCommandFileFormats(t *testing.T) {
 		{"native", "\x7fELF\x02\x01\x01\x00", ""},
 		{"windows.exe", "MZ windows executable", "Windows binary"},
 		{"renamed-windows", "MZ windows executable", "Windows binary"},
+		// The header check precedes the extension switch: an MZ payload is
+		// reported as a Windows binary even behind an interop shim suffix.
+		{"windows.cmd", "MZ windows executable", "Windows binary"},
 		{"unknown.exe", "unknown executable", "Windows executable"},
+		// Only ELF earns the .exe exemption; a script that would be a valid
+		// POSIX launcher is still a Windows shim when named .exe.
+		{"script.exe", "#!/usr/bin/env node\n", "Windows executable"},
 		{"truncated.exe", "\x7fEL", "Windows executable"},
 		{"empty.exe", "", "Windows executable"},
 		{"launcher.cmd", "@echo off\r\n", "Windows executable"},
@@ -137,6 +143,54 @@ func TestWSLCommandResolvesSymlinkBeforeCheckingFormat(t *testing.T) {
 	}
 	if _, err := e.resolveCommand(launcher); err == nil || !strings.Contains(err.Error(), "Windows-mounted path") {
 		t.Fatalf("Windows-mounted ELF accepted: %v", err)
+	}
+}
+
+// TestWSLCommandUnreadableExecutableFailsClosed pins the ordering introduced
+// with the .exe ELF exemption: a Windows-suffixed executable is inspected
+// before it can be trusted, so a file that cannot be read is refused instead
+// of being classified from its suffix alone.
+func TestWSLCommandUnreadableExecutableFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL uses Unix executable lookup")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the read permission this test relies on")
+	}
+	executable := filepath.Join(t.TempDir(), "claude.exe")
+	if err := os.WriteFile(executable, []byte("\x7fELF\x02\x01\x01\x00"), 0o111); err != nil {
+		t.Fatal(err)
+	}
+	e := Environment{OS: "linux", WSL: "2"}
+	got, err := e.resolveCommand(executable)
+	if err == nil {
+		t.Fatalf("unreadable executable accepted: %q", got)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("resolveCommand() error = %v, want a read failure", err)
+	}
+	if strings.Contains(err.Error(), "install its Linux version") {
+		t.Fatalf("unreadable executable classified without reading it: %v", err)
+	}
+}
+
+// TestWSLCommandNodeScriptDoesNotRecurse covers the guard that keeps the
+// recursive Linux-Node probe from re-resolving the node command itself when
+// node is a node-shebang script.
+func TestWSLCommandNodeScriptDoesNotRecurse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL uses Unix executable lookup")
+	}
+	dir := t.TempDir()
+	node := filepath.Join(dir, "node")
+	if err := os.WriteFile(node, []byte("#!/usr/bin/env node\nconsole.log('node')\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	e := Environment{OS: "linux", WSL: "2"}
+	got, err := e.resolveCommand("node")
+	if err != nil || got != node {
+		t.Fatalf("resolveCommand(node) = %q, %v; want %q without re-resolution", got, err, node)
 	}
 }
 
