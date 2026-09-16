@@ -8,12 +8,15 @@
 # does not replace the wrapper.
 
 sandbox_mode = "workspace-write"
-# "untrusted" makes Codex ask before running commands, which is what lets a
-# Keydris policy's "require approval" command rules land on the interactive
-# prompt: the Keydris PermissionRequest hook auto-allows policy-allowed
-# commands and stays silent for approval-required ones, so only those reach
-# the human. Policy-denied commands are blocked earlier by the PreToolUse hook.
-approval_policy = "untrusted"
+# Keydris blocks rejected and approval-required commands in PreToolUse.
+# Codex cannot reliably force a policy approval prompt; native approval settings
+# must never turn a policy decision into permission to execute.
+approval_policy = "on-request"
+
+[windows]
+# Required for the managed networking enabled by `keydris codex` on Windows.
+# Complete Codex's administrator-approved sandbox setup before launching.
+sandbox = "elevated"
 
 [sandbox_workspace_write]
 # Permit sandboxed commands to reach the authenticated Keydris proxy inherited

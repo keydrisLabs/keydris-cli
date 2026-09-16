@@ -1,10 +1,9 @@
 package sandbox
 
 // Codex command gating lives in $CODEX_HOME/hooks.json rather than the Claude
-// settings file. Two events cooperate because Codex's PreToolUse cannot answer
-// "ask" (see internal/cli/pretool.go): PreToolUse carries explicit denials,
-// PermissionRequest resolves policy-allowed commands, and everything else
-// falls through to the interactive prompt. Codex requires a one-time `/hooks`
+// settings file. PreToolUse blocks policy denials, approval-required commands,
+// and authorization errors. PermissionRequest auto-allows policy-allowed
+// commands and denies everything else. Codex requires a one-time `/hooks`
 // trust confirmation before it runs commands from this file.
 
 // CodexHookOptions names the hook commands `keydris init codex` wires.
@@ -130,6 +129,13 @@ func eventHasMatcherCommand(value any, matcher, command string) bool {
 		for _, handler := range handlers {
 			hook, _ := handler.(map[string]any)
 			configuredCommand, _ := hook["command"].(string)
+			// A Windows override must not replace the command that was verified.
+			if override, exists := hook["commandWindows"]; exists && override != command {
+				continue
+			}
+			if override, exists := hook["command_windows"]; exists && override != command {
+				continue
+			}
 			hookType, _ := hook["type"].(string)
 			async, _ := hook["async"].(bool)
 			if configuredCommand == command && hookType == "command" && !async &&

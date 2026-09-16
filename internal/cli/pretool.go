@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
@@ -24,17 +25,9 @@ import (
 // emits an explicit deny verdict and exits 0. Keep the configured hook timeout
 // well above preToolUseTimeout.
 //
-// Codex needs the decision split across two hook events, because its
-// PreToolUse cannot answer "ask" (an ask verdict is rejected at runtime, which
-// would fail open):
-//
-//   - `__pretool-use --codex` (PreToolUse) emits ONLY explicit denials —
-//     policy rejections and every authorization error path. Allowed and
-//     approval-required commands print nothing and fall through.
-//   - `__permission-request` (PermissionRequest) emits an allow decision for
-//     policy-allowed commands and prints nothing otherwise, so
-//     approval-required commands land on the interactive prompt (pair with
-//     `approval_policy = "untrusted"` in the Codex config).
+// Codex cannot force an approval prompt from PreToolUse. Only an explicit
+// policy allow may proceed: approval-required decisions and errors deny at
+// both hook events, independently of the user's Codex approval settings.
 
 const (
 	preToolUseTimeout  = 5 * time.Second
@@ -68,17 +61,8 @@ func runPreToolUse(args []string) int {
 	}
 	verdict, reason := decidePreToolUse(os.Stdin, harness)
 	if codex {
-		// Codex PreToolUse is deny-only; anything else falls through to the
-		// PermissionRequest hook (and, for "ask", the interactive prompt).
-		if verdict == "deny" {
-			emitPreToolVerdict("deny", reason)
-		}
+		writeCodexPreToolVerdict(os.Stdout, verdict, reason)
 		return 0
-	}
-	if verdict == "skip" {
-		// The Claude matcher restricts this hook to shell tools, so a payload
-		// without a command is malformed input, not another tool: refuse.
-		verdict, reason = "deny", "keydris: hook payload carries no command"
 	}
 	emitPreToolVerdict(verdict, reason)
 	return 0
@@ -86,18 +70,16 @@ func runPreToolUse(args []string) int {
 
 // runPermissionRequest implements `keydris __permission-request`, the Codex
 // hook that resolves policy-allowed commands without an interactive prompt.
-// Everything else prints nothing, falling through to the human at the TUI.
+// A policy denial must not become an overridable native approval prompt.
 func runPermissionRequest(args []string) int {
-	verdict, _ := decidePreToolUse(os.Stdin, hookHarnessCodex)
-	if verdict == "allow" {
-		emitPermissionRequestAllow(os.Stdout)
-	}
+	verdict, reason := decidePreToolUse(os.Stdin, hookHarnessCodex)
+	writeCodexPermissionVerdict(os.Stdout, verdict, reason)
 	return 0
 }
 
 // decidePreToolUse resolves the session and asks the control plane. It only
-// ever returns ("allow"|"ask"|"deny"|"skip", reason); "skip" means the payload
-// carries no shell command, so there is nothing to gate.
+// ever returns ("allow"|"ask"|"deny", reason). Both integrations register this
+// hook only for shell commands, so missing commands are malformed input.
 func decidePreToolUse(stdin io.Reader, harness hookHarness) (string, string) {
 	raw, err := io.ReadAll(io.LimitReader(stdin, maxHookInputBytes+1))
 	if err != nil {
@@ -113,8 +95,8 @@ func decidePreToolUse(stdin io.Reader, harness hookHarness) (string, string) {
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "deny", "keydris: invalid hook payload"
 	}
-	if input.ToolInput.Command == "" {
-		return "skip", ""
+	if strings.TrimSpace(input.ToolInput.Command) == "" {
+		return "deny", "keydris: hook payload carries no command"
 	}
 
 	sid := resolveHookSessionID(input.SessionID, harness)
@@ -223,15 +205,50 @@ func authorizeCommand(
 	return out.Decision, out.ReasonCode, nil
 }
 
-func emitPermissionRequestAllow(writer io.Writer) {
-	fmt.Fprintln(writer, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`)
+func codexCommandVerdict(verdict, reason string) (string, string) {
+	if verdict == "allow" {
+		return verdict, reason
+	}
+	if verdict == "ask" {
+		reason = "keydris: this command requires policy approval; Codex cannot reliably request that approval, so execution is blocked"
+	}
+	if reason == "" {
+		reason = "keydris: command authorization did not return an allow decision"
+	}
+	return "deny", reason
+}
+
+func writeCodexPreToolVerdict(writer io.Writer, verdict, reason string) {
+	verdict, reason = codexCommandVerdict(verdict, reason)
+	if verdict == "deny" {
+		writePreToolVerdict(writer, verdict, reason)
+	}
+}
+
+func writeCodexPermissionVerdict(writer io.Writer, verdict, reason string) {
+	verdict, reason = codexCommandVerdict(verdict, reason)
+	decision := map[string]string{"behavior": verdict}
+	if verdict == "deny" {
+		decision["message"] = reason
+	}
+	output := map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName": "PermissionRequest",
+			"decision":      decision,
+		},
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		fmt.Fprintln(writer, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"keydris: verdict encoding failed"}}}`)
+		return
+	}
+	fmt.Fprintln(writer, string(encoded))
 }
 
 // emitPreToolVerdict prints the Claude Code PreToolUse hook response. Codex's
 // PreToolUse accepts the same permissionDecision vocabulary except "ask"
-// (rejected at runtime, which would fail open) — its config pairs this hook
-// with a PermissionRequest fall-through instead, so "ask" is only ever
-// emitted to harnesses that honor it.
+// (rejected at runtime, which would fail open). The Codex adapter converts
+// "ask" to "deny"; Claude retains its native approval workflow.
 func emitPreToolVerdict(verdict, reason string) {
 	writePreToolVerdict(os.Stdout, verdict, reason)
 }

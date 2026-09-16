@@ -155,6 +155,8 @@ func entryReferencesKeydris(entry any) bool {
 
 func isKeydrisCommand(command string) bool {
 	command = strings.TrimSpace(command)
+	// Native Codex hooks invoke quoted paths with PowerShell's call operator.
+	command = strings.TrimSpace(strings.TrimPrefix(command, "& "))
 	var executable strings.Builder
 	var quote byte
 	for i := 0; i < len(command); i++ {

@@ -289,7 +289,9 @@ keydris proxy up
 keydris codex                        # normal Codex arguments follow
 ```
 
-Run `/hooks` once inside Codex to trust the new entries, and pair the integration with `approval_policy = "untrusted"` (see [`examples/codex/config.toml`](examples/codex/config.toml)). Launch through `keydris codex`, never `codex` directly, when governance is required.
+Run `/hooks` once inside Codex to trust the new entries (see [`examples/codex/config.toml`](examples/codex/config.toml)). Launch through `keydris codex`, never `codex` directly, when governance is required. After upgrading, rerun `keydris init codex <agent-id>` to migrate old hook commands and review their updated trust entries in `/hooks`.
+
+Before opening a session, the wrapper executes both command hooks with a sessionless probe and requires explicit denials. On native Windows it uses PowerShell-compatible hook commands and selects Codex's `elevated` sandbox for managed networking. Complete Codex's administrator-approved sandbox setup first; the wrapper does not disable the sandbox or change your saved Codex configuration.
 
 ### Without a harness
 
@@ -483,9 +485,9 @@ A policy can also carry **command rules** — glob patterns over the full shell 
 | Harness | Hooks wired by `keydris init` | Where |
 | --- | --- | --- |
 | **Claude Code** | `PreToolUse` → `keydris __pretool-use`, matcher `Bash` (`Bash\|PowerShell` on Windows), alongside SessionStart/SessionEnd | `~/.claude/settings.json` |
-| **Codex** | `PreToolUse` → `keydris __pretool-use --codex` (deny-only) and `PermissionRequest` → `keydris __permission-request` (auto-allows policy-allowed commands, silent otherwise, so approval-required ones reach the interactive prompt) | `$CODEX_HOME/hooks.json`, default `~/.codex/hooks.json` |
+| **Codex** | `PreToolUse` → `keydris __pretool-use --codex` (blocks every non-allow decision) and `PermissionRequest` → `keydris __permission-request` (allows policy-allowed commands, denies everything else) | `$CODEX_HOME/hooks.json`, default `~/.codex/hooks.json` |
 
-The split on Codex is not stylistic: its `PreToolUse` cannot answer `ask` — that verdict is rejected at runtime, which would fail *open* — so approval decisions are routed to `PermissionRequest` and the human instead.
+Codex's `PreToolUse` cannot force an approval prompt, and `PermissionRequest` only runs when Codex independently needs approval. Consequently, `require_approval` commands are explicitly blocked in Codex with an explanation; changing native approval settings cannot grant policy authority. Claude Code retains its native `ask` workflow.
 
 **Fail-closed by construction.** Both harnesses fail open when a hook crashes, times out, or prints invalid JSON, so every error path here — no active session, control plane unreachable, oversized payload, ambiguous JSON, a daemon session that does not match the hook session — emits an explicit deny and exits 0. Keep the configured hook timeout well above the 5-second authorization deadline.
 

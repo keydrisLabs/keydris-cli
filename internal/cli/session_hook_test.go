@@ -318,3 +318,22 @@ func TestCodexHookFlagsCannotBeOverridden(t *testing.T) {
 		t.Fatalf("ordinary Codex args were rejected: %v", err)
 	}
 }
+
+func TestCodexWindowsManagedNetworkingUsesElevatedSandbox(t *testing.T) {
+	args := strings.Join(codexCommandArgs(nil), " ")
+	if got := strings.Contains(args, `windows.sandbox="elevated"`); got != (runtime.GOOS == "windows") {
+		t.Fatalf("platform %s has incorrect sandbox arguments: %s", runtime.GOOS, args)
+	}
+	for _, config := range []string{
+		`windows.sandbox="unelevated"`,
+		`"windows"."sandbox" = 'unelevated'`,
+		`windows = { sandbox = "unelevated" }`,
+	} {
+		for _, args := range [][]string{{"-c", config}, {"--config=" + config}, {"-c" + config}} {
+			err := validateCodexHookArgs(args)
+			if (err != nil) != (runtime.GOOS == "windows") {
+				t.Fatalf("platform %s: sandbox override %v returned %v", runtime.GOOS, args, err)
+			}
+		}
+	}
+}

@@ -34,7 +34,17 @@ func codexHookOptions() (sandbox.CodexHookOptions, error) {
 	if err != nil {
 		return sandbox.CodexHookOptions{}, err
 	}
-	return sandbox.CodexHookOptions{PreToolUseHook: quoted + " __pretool-use --codex", PermissionRequestHook: quoted + " __permission-request", SessionStartHook: quoted + " __agent-context"}, nil
+	return codexHooks(quoted), nil
+}
+
+func codexHooks(quoted string) sandbox.CodexHookOptions {
+	// Codex runs native Windows hooks in PowerShell. A quoted executable is
+	// a string expression until the call operator invokes it; Claude uses a
+	// different shell, so keep this adaptation local to the Codex integration.
+	if runtime.GOOS == "windows" {
+		quoted = "& " + quoted
+	}
+	return sandbox.CodexHookOptions{PreToolUseHook: quoted + " __pretool-use --codex", PermissionRequestHook: quoted + " __permission-request", SessionStartHook: quoted + " __agent-context"}
 }
 
 func hookExecutable() (string, error) {
