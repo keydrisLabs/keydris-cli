@@ -167,3 +167,33 @@ func TestEventsForUnknownSessionsAreDropped(t *testing.T) {
 		t.Fatalf("events without a session credential must be dropped, shipped %v", sizes)
 	}
 }
+
+// TestCloseFlushesBufferedEvents covers the daemon shutdown path: buffered
+// counters are shipped before Close returns, then the session state is gone.
+func TestCloseFlushesBufferedEvents(t *testing.T) {
+	server := &usageServer{}
+	m, _ := newTestMeter(t, server)
+
+	m.Record(testHandle, testEvent("llm-close"))
+	m.Close()
+
+	if sizes := server.batchSizes(); len(sizes) != 1 || sizes[0] != 1 {
+		t.Fatalf("Close did not flush buffered events: %v", sizes)
+	}
+	m.mu.Lock()
+	remaining := len(m.buffers[testHandle])
+	m.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("events left buffered after Close: %d", remaining)
+	}
+}
+
+// TestNilMeterIsInert pins the nil-receiver checks the daemon relies on when
+// metering is disabled: it still passes (nil *Meter).FlushSessionFinal to the
+// renewal loop, and that call must not panic.
+func TestNilMeterIsInert(t *testing.T) {
+	var m *Meter
+	m.Record(testHandle, testEvent("llm-1"))
+	m.FlushSessionFinal(attest.Session{Handle: testHandle, SVID: "kit"})
+	m.Close()
+}

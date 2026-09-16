@@ -34,6 +34,7 @@ type fakeSessionRenewalAPI struct {
 	routesValue *runtimecontract.RuntimeRoutes
 	revoked     []string
 	onRoutes    func()
+	onRevoke    func()
 }
 
 func (api *fakeSessionRenewalAPI) create(
@@ -56,6 +57,9 @@ func (api *fakeSessionRenewalAPI) routes(
 
 func (api *fakeSessionRenewalAPI) revoke(_ context.Context, sessionID string) error {
 	api.revoked = append(api.revoked, sessionID)
+	if api.onRevoke != nil {
+		api.onRevoke()
+	}
 	return nil
 }
 
@@ -134,6 +138,55 @@ func TestRetireExitedSessionRevokesLatestAndRemovesState(t *testing.T) {
 	}
 	if _, err := sessionstate.Load(dir, current.SessionID); err == nil {
 		t.Fatal("exited session state was not removed")
+	}
+}
+
+// TestRetireExitedSessionFlushesBeforeRevoke pins the ordering the usage meter
+// relies on: the departing session's buffered counters are shipped with the
+// credential Take() returned, before the control plane revokes it. A nil
+// callback is also passed through to cover the variadic nil guard.
+func TestRetireExitedSessionFlushesBeforeRevoke(t *testing.T) {
+	cfg := &config.Config{DataDir: t.TempDir()}
+	registry := attest.NewSessionRegistry()
+	snapshot := testRenewSession(time.Now().Add(time.Minute))
+	current := snapshot
+	current.ULID = testRenewNewULID
+	current.SVID = "renewed-kit"
+	registry.Register(current)
+	api := testRenewalAPI()
+
+	var order []string
+	api.onRevoke = func() { order = append(order, "revoke") }
+	flush := func(session attest.Session) {
+		if session.ULID != testRenewNewULID || session.SVID != "renewed-kit" {
+			t.Errorf("flush saw a stale session: %+v", session)
+		}
+		order = append(order, "flush")
+	}
+
+	if err := retireExitedSession(context.Background(), cfg, registry, snapshot, api, flush, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 2 || order[0] != "flush" || order[1] != "revoke" {
+		t.Fatalf("callback order = %v; want flush before revoke", order)
+	}
+}
+
+func TestRetireExitedSessionSkipsFlushWhenSessionAlreadyTaken(t *testing.T) {
+	cfg := &config.Config{DataDir: t.TempDir()}
+	registry := attest.NewSessionRegistry()
+	snapshot := testRenewSession(time.Now().Add(time.Minute))
+	api := testRenewalAPI()
+	called := false
+
+	if err := retireExitedSession(context.Background(), cfg, registry, snapshot, api, func(attest.Session) { called = true }); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("flush ran for a session that was not registered")
+	}
+	if len(api.revoked) != 0 {
+		t.Fatalf("revoked an unregistered session: %v", api.revoked)
 	}
 }
 
