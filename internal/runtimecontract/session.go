@@ -11,10 +11,9 @@ import (
 )
 
 const (
-	ContractBundleVersion = "1.2.0"
-	SchemaVersion         = 1
-	KitFormatJWT          = "jwt_svid"
-	maxResponseBytes      = 1024*1024 + 4096
+	SchemaVersion    = 1
+	KitFormatJWT     = "jwt_svid"
+	maxResponseBytes = 1024*1024 + 4096
 )
 
 var ulidPattern = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
