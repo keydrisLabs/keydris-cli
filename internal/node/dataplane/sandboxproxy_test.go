@@ -1,13 +1,21 @@
 package dataplane
 
 import (
+	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/node/meter"
+	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
 	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
@@ -19,6 +27,78 @@ func reqWithToken(token string) *http.Request {
 		r.Header.Set("Proxy-Authorization", "Basic "+cred)
 	}
 	return r
+}
+
+func TestPolicyManagedOriginsStillTakePrecedenceOverMetering(t *testing.T) {
+	scope, err := proxyscope.New(proxyscope.ModeSelected, []string{"chatgpt.com:443", "api.openai.com:443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &sandboxPlane{scope: scope, meterOrigins: meter.NewOrigins(nil)}
+	for _, host := range []string{"chatgpt.com", "api.openai.com"} {
+		if !p.managesSessionOrigin(nil, "https", host, 443) {
+			t.Fatalf("metered %s bypassed policy scope", host)
+		}
+		if _, metered := p.meterOrigins.Provider(host, 443); !metered {
+			t.Fatal("test did not cover overlap")
+		}
+	}
+}
+
+func TestMeteredManagedCONNECTStillReachesPolicyDenial(t *testing.T) {
+	// A loopback-only origin exercises the same overlapping route without
+	// ever contacting a provider, even if routing regresses.
+	scope, err := proxyscope.New(proxyscope.ModeSelected, []string{"127.0.0.1:443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := proxy.GenerateCA("policy test", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := attest.NewSessionRegistry()
+	reg.Register(attest.Session{Handle: "test-session", SVID: "test-kit"})
+	m := meter.New(http.DefaultClient, "http://127.0.0.1:1", reg, t.Logf)
+	defer m.Close()
+	p := &sandboxPlane{scope: scope, ca: ca, reg: reg, meter: m,
+		meterOrigins: meter.NewOrigins([]string{"127.0.0.1=openai"}), logf: t.Logf, leaves: map[string]*tls.Certificate{}}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	client.SetDeadline(time.Now().Add(3 * time.Second))
+	server.SetDeadline(time.Now().Add(3 * time.Second))
+	denied := make(chan error, 1)
+	go func() {
+		flow, ok := p.build(server)
+		if !ok {
+			denied <- fmt.Errorf("managed request bypassed policy routing")
+			return
+		}
+		denied <- p.Reject(flow, "test policy denial")
+	}()
+	credential := base64.StdEncoding.EncodeToString([]byte("keydris:test-session"))
+	if _, err := fmt.Fprintf(client, "CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\nProxy-Authorization: Basic %s\r\n\r\n", credential); err != nil {
+		t.Fatal(err)
+	}
+	connect, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil || connect.StatusCode != http.StatusOK {
+		t.Fatal(connect, err)
+	}
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(ca.CertPEM())
+	secured := tls.Client(client, &tls.Config{ServerName: "127.0.0.1", RootCAs: roots, MinVersion: tls.VersionTLS12})
+	if _, err := fmt.Fprint(secured, "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\n\r\n{}"); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(secured), nil)
+	if err != nil || response.StatusCode != http.StatusForbidden {
+		t.Fatal(response, err)
+	}
+	response.Body.Close()
+	client.Close()
+	if err := <-denied; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestMatchSessionTokenAndSoleGate(t *testing.T) {

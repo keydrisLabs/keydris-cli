@@ -5,7 +5,8 @@
 //
 // The meter-only guarantee: nothing content-shaped is retained or transmitted —
 // only model ids, token counts, stop reasons, and latencies. Metered origins
-// are never policy-enforced and every failure degrades to plain forwarding.
+// use this path only after managed-policy routing. Observation failures leave
+// forwarding untouched; network/TLS setup failures cannot be hidden.
 package meter
 
 import (
@@ -18,6 +19,7 @@ import (
 var builtinOrigins = map[string]string{
 	"api.anthropic.com": "anthropic",
 	"api.openai.com":    "openai",
+	"chatgpt.com":       "openai",
 }
 
 // Origins matches CONNECT targets against the metered set.

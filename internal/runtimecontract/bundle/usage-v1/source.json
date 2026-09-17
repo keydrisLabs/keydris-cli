@@ -1,10 +1,10 @@
 {
-  "contract_bundle_version": "1.4.0",
+  "contract_bundle_version": "1.5.0",
   "runtime_schema_version": 1,
   "artifacts": {
     "session-usage-report.schema.json": {
       "source": "packages/contracts/schemas/v1/session-usage-report.schema.json",
-      "sha256": "12ccab10388d2e672424870d5147d54f5194c0e39ad566eb63ec899fcc135e33"
+      "sha256": "9bbbd8ef72db0c8cfea0f76410fb62966e0c38dbb819a71e076d8a65097661ee"
     },
     "session-usage-report-response.schema.json": {
       "source": "packages/contracts/schemas/v1/session-usage-report-response.schema.json",
