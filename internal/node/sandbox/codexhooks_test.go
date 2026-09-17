@@ -129,6 +129,14 @@ func TestCodexHookVerificationRejectsInertHandlers(t *testing.T) {
 			t.Fatalf("inert hook handler passed verification: %v", handler)
 		}
 	}
+	// An override equal to the verified command does not replace it, so it must
+	// not by itself disqualify the handler.
+	for _, key := range []string{"commandWindows", "command_windows"} {
+		handler := map[string]any{"type": "command", "command": command, "timeout": 30, key: command}
+		if !eventHasMatcherCommand(entry(handler), codexShellMatcher, command) {
+			t.Fatalf("matching %s override was rejected: %v", key, handler)
+		}
+	}
 }
 
 func TestKeydrisCommandRecognitionHandlesQuotedAbsolutePath(t *testing.T) {
