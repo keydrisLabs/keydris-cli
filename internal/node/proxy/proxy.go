@@ -120,17 +120,6 @@ func ForwardTLSOneTapped(
 	tap func(*http.Response) io.Writer,
 	clientReaders ...io.Reader,
 ) error {
-	return ForwardTLSObserved(client, req, dst, sni, ResponseObservers{HTTP: tap}, clientReaders...)
-}
-
-// ResponseObservers are passive, non-failing taps. They neither decide policy
-// nor own upstream connections. WebSocket receives raw server frames only.
-type ResponseObservers struct {
-	HTTP      func(*http.Response) io.Writer
-	WebSocket func(*http.Response) io.Writer
-}
-
-func ForwardTLSObserved(client net.Conn, req *http.Request, dst, sni string, observers ResponseObservers, clientReaders ...io.Reader) error {
 	prepareOriginRequest(req)
 
 	upstream, err := tls.Dial("tcp", dst, &tls.Config{
@@ -143,14 +132,10 @@ func ForwardTLSObserved(client net.Conn, req *http.Request, dst, sni string, obs
 	}
 	defer upstream.Close()
 
-	return forwardObserved(client, req, upstream, observers, clientReaders...)
+	return forwardOneTapped(client, req, upstream, tap, clientReaders...)
 }
 
 func forwardOneTapped(client net.Conn, req *http.Request, upstream net.Conn, tap func(*http.Response) io.Writer, clientReaders ...io.Reader) error {
-	return forwardObserved(client, req, upstream, ResponseObservers{HTTP: tap}, clientReaders...)
-}
-
-func forwardObserved(client net.Conn, req *http.Request, upstream net.Conn, observers ResponseObservers, clientReaders ...io.Reader) error {
 	req.RequestURI = ""
 	upgrade := strings.EqualFold(req.Header.Get("Upgrade"), "websocket") && headerToken(req.Header.Get("Connection"), "upgrade")
 	if !upgrade {
@@ -177,25 +162,19 @@ func forwardObserved(client net.Conn, req *http.Request, upstream net.Conn, obse
 		if len(clientReaders) > 0 && clientReaders[0] != nil {
 			clientReader = clientReaders[0]
 		}
-		var serverReader io.Reader = upstreamReader
-		if observers.WebSocket != nil {
-			if sink := observers.WebSocket(resp); sink != nil {
-				serverReader = observedReader{Reader: serverReader, sink: sink}
-			}
-		}
 		done := make(chan struct{}, 2)
 		go func() { _, _ = io.Copy(upstream, clientReader); done <- struct{}{} }()
-		go func() { _, _ = io.Copy(client, serverReader); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(client, upstreamReader); done <- struct{}{} }()
 		<-done
 		_ = upstream.Close()
 		_ = client.Close()
 		<-done
 		return nil
 	}
-	if observers.HTTP != nil {
-		if sink := observers.HTTP(resp); sink != nil {
+	if tap != nil {
+		if sink := tap(resp); sink != nil {
 			resp.Body = teedBody{
-				Reader: observedReader{Reader: resp.Body, sink: sink},
+				Reader: io.TeeReader(resp.Body, sink),
 				closer: resp.Body,
 			}
 		}
@@ -208,19 +187,6 @@ func forwardObserved(client net.Conn, req *http.Request, upstream net.Conn, obse
 		return fmt.Errorf("copy upstream response: %w", err)
 	}
 	return nil
-}
-
-type observedReader struct {
-	io.Reader
-	sink io.Writer
-}
-
-func (r observedReader) Read(p []byte) (int, error) {
-	n, err := r.Reader.Read(p)
-	if n > 0 {
-		_, _ = r.sink.Write(p[:n])
-	}
-	return n, err
 }
 
 func headerToken(value, token string) bool {

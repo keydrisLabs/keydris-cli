@@ -442,7 +442,7 @@ The response is the frozen decision envelope: `allow`, `deny`, or `approval_requ
 | # | Situation | Control plane called | Result |
 | --- | --- | --- | --- |
 | 1 | Origin outside the session's governed set, and not metered | No | Opaque CONNECT tunnel: no TLS termination, no body read, no header touched |
-| 2 | Metered LLM origin, request attributed to an active session | No (usage batched separately) | TLS terminated for counters only; HTTP forwarded unchanged apart from `Accept-Encoding: identity`. No metering-based policy decisions; network/TLS errors still apply |
+| 2 | Metered LLM origin, request attributed to an active session | No (usage batched separately) | TLS terminated for counters only; forwarded unchanged apart from `Accept-Encoding: identity`. Never evaluated, never blocked |
 | 3 | Governed origin, no route covers the path | No | Rejected — *runtime routes have no route for this path* |
 | 4 | Two routes match one request | No | Rejected — *runtime route is ambiguous* |
 | 5 | Matched route's `availability` is not `ready` | No | Rejected — *runtime route unavailable*, with the status reason when present |
@@ -486,7 +486,7 @@ This is separate from Claude Code's `sandbox.network.allowedDomains`: that list 
 
 ## Cost metering
 
-Alongside policy scope, the proxy meters the agent's **LLM API usage** so the dashboard's Cost page can show estimated spend per session. Known origins (`api.anthropic.com`, `api.openai.com`, and `chatgpt.com` for ChatGPT-backed Codex) are TLS-terminated for **metering only**, and only when attributed to an active session. Managed policy origins always take precedence over metering. ChatGPT usage is collected only from `/backend-api/codex/responses`; authentication, model listings, and other paths are forwarded without usage extraction.
+Alongside policy scope, the proxy meters the agent's **LLM API usage** so the dashboard's Cost page can show estimated spend per session. Known LLM provider origins (`api.anthropic.com`, `api.openai.com`) are TLS-terminated for **metering only** — never policy-enforced, never blocked — and only when the request is attributed to an active session.
 
 **Meter-only guarantee.** What leaves the machine per model call: the model id, token counts (input / output / cache), the stop reason, and latency — batched to `POST /v1/runtime/sessions/usage` under the session's KIT. Prompt and completion content is spliced through to the provider and discarded; the wire contract has no field that could carry it. A response whose usage cannot be read (for example an OpenAI stream without `stream_options.include_usage`) is recorded with an unknown output count — never estimated.
 
@@ -494,15 +494,11 @@ Usage parsing and reporting errors do not fail the forwarded model response. Eve
 
 OpenAI events use the response's actual model and service tier. Anthropic events report fast mode (`usage.speed`) under the priority tier, and a Priority Tier commitment as unknown because its pricing is contractual. Cached reads and cache writes are split out of inclusive input counts. Response metadata is scanned incrementally, including large Responses API payloads, without retaining generated content. Missing tiers remain unknown; incomplete or invalid token counts remain unpriced.
 
-HTTP inference streaming and non-streaming responses are metered. OpenAI Responses and ChatGPT-backed Codex WebSockets are observed passively, including fragmentation and negotiated `permessage-deflate` with or without context takeover. Each terminal model response is recorded immediately rather than waiting for the socket to close; response-derived IDs deduplicate replay across reconnects and HTTP fallback. Invalid or unsupported observation formats leave traffic forwarding unchanged and log a metering gap. Compressed observation is bounded to 4 MiB per compressed message, 64 MiB inflated, and a 32 KiB compression history; exceeding a limit disables observation for that connection. No content is persisted or reported.
-
-Usage reports identify `usage_source` (`provider_api` or `codex_chatgpt`) and `usage_transport` (`http` or `websocket`). ChatGPT subscription cost is an **API-equivalent estimate**, not an invoice; the backend owns pricing. Unknown models or missing/invalid counts remain unpriced. Background polling, compaction, Batch, audio/image endpoints, tool fees and regional surcharges are outside this estimate. The client does not add `stream_options.include_usage`; callers must opt in for Chat Completions stream totals.
-
-`keydris codex` supplies `CODEX_CA_CERTIFICATE` to its child process for native HTTPS and WebSocket trust, combining the proxy CA bundle with any existing custom Codex CA (or `SSL_CERT_FILE` fallback). The temporary per-launch bundle is removed on ordinary exit. No global certificate-store changes or insecure TLS flags are used. Missing/invalid custom trust stops startup with an error instead of silently discarding it. TLS setup failures cannot be recovered by switching an already-started handshake back to an opaque tunnel.
+HTTP inference streaming and non-streaming responses are metered. WebSocket upgrades and their buffered frames are forwarded bidirectionally without metering. Background polling, Batch, audio/image endpoints, tool fees and regional surcharges are outside this token estimate. The client does not add `stream_options.include_usage`; callers must opt in for Chat Completions stream totals.
 
 Buffers are bounded and best effort. Session unregister joins in-flight reports and retries their unsent events with the departing KIT before revocation, within a 15-second reporting budget. The unregister socket allows 30 seconds for that cleanup. Final network failure is logged and may leave usage gaps; there is no durable spool.
 
-Deploy the platform's contracts 1.5.0 and existing Codex usage-basis pricing migration before this CLI version. Upgrade the background proxy binary as well as the launcher, restarting it between active sessions. Administrators manage supplied rates, organization overrides and historical recalculation in Settings → Model pricing. `keydris status` reports whether metering is enabled, not delivery success: proxy logs distinguish `usage observed`, `report accepted=...`, and observation/reporting failures without logging content or credentials.
+Deploy the platform's contracts 1.4.0 and pricing migrations before this CLI version. Administrators manage supplied rates, organization overrides and historical recalculation in Settings → Model pricing.
 
 ```bash
 KEYDRIS_COST_METERING=off      # disable metering entirely
@@ -549,8 +545,8 @@ Three planes ship in this binary behind one interface. **`sandbox` is the defaul
 ### Guaranteed
 
 - **The real credential never reaches the agent.** On governed origins it is either applied by the control plane's own executor or injected by the proxy on the wire. The agent presents only its per-session handle.
-- **Only governed origins are enforced.** Policy evaluation, credential injection, and blocking happen only on origins the session's routes govern. Managed routing takes precedence over metering. Other metered LLM origins are terminated for counters alone; observation errors do not block forwarding, but network/TLS failures still can. Everything else is an opaque tunnel: no TLS termination, no body read, no header mutation, and certificate pinning outside those two sets is unaffected.
-- **Metering carries no content.** Only model/usage metadata, source, transport, stop reason, and latency leave the machine. HTTP inference requests use `Accept-Encoding: identity`; WebSocket frames and extension negotiation remain unchanged. Metadata-parser and reporting failures do not affect forwarding or policy enforcement. Normal network/TLS failures still terminate the affected connection.
+- **Only governed origins are enforced.** Policy evaluation, credential injection, and blocking happen only on origins the session's routes govern. Metered LLM origins are terminated for counters alone — never evaluated against policy, never blocked. Everything else is an opaque tunnel: no TLS termination, no body read, no header mutation, and certificate pinning outside those two sets is unaffected.
+- **Metering carries no content.** On a metered origin only the model id, token counts, stop reason, and latency leave the machine; prompt and completion bytes are spliced through and discarded, and the usage wire contract has no field that could carry them. The single mutation is `Accept-Encoding: identity` on inference requests, which keeps the usage tail parseable. Every metering failure degrades to plain forwarding.
 - **Discovery is free.** MCP `initialize`, `tools/list`, `ping`, and the rest pass through untouched and never consume a decision.
 - **One session, one identity.** Concurrent sessions never borrow each other's identity, and a repeated SessionStart revokes the previous instance before replacing it.
 - **Ambiguous input fails closed.** Duplicate JSON keys, oversized bodies, unknown response fields, and decision/reason-code mismatches are refused at the boundary rather than interpreted.

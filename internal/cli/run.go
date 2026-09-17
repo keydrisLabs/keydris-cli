@@ -79,34 +79,26 @@ func runRun(args []string) int {
 		"KEYDRIS_SESSION="+sid,
 		sessionOwnerEnv+"="+sessionOwnerRun,
 	)
-	proxyURL := ""
 	switch cfg.DataPlane {
 	case "proxyenv":
-		proxyURL = proxyAuthURL(cfg.ProxyPort, token)
-	case "sandbox", "claude-code":
-		// Outside the real Claude Code sandbox, point the command at the Keydris
-		// proxy explicitly and trust the CA so the MITM path verifies. Inside a
-		// real session the sandbox does this routing itself.
-		proxyURL = proxyAuthURL(cfg.HTTPProxyPort, token)
-	}
-	if proxyURL != "" {
 		if err := sandbox.BuildCABundle(cfg.CAPath, cfg.CABundlePath); err != nil {
 			fmt.Fprintf(os.Stderr, "keydris run: CA bundle: %v\n", err)
 			_ = endSession()
 			return 1
 		}
-		if agentRuntimeForCommand(cmd[0]) == agentRuntimeCodex {
-			// Preserve original custom trust before generic tool variables are
-			// added; the merged bundle is scoped to this child's lifetime.
-			trustEnv, cleanup, trustErr := codexTrustEnvironment(child.Env, cfg.CABundlePath, cfg.DataDir)
-			if trustErr != nil {
-				fmt.Fprintf(os.Stderr, "keydris run: %v\n", trustErr)
-				return 1
-			}
-			defer cleanup()
-			child.Env = trustEnv
+		p := proxyAuthURL(cfg.ProxyPort, token)
+		child.Env = appendProxyEnvironment(child.Env, p, cfg.CABundlePath)
+	case "sandbox", "claude-code":
+		// Outside the real Claude Code sandbox, point the command at the Keydris
+		// proxy explicitly and trust the CA so the MITM path verifies. Inside a
+		// real session the sandbox does this routing itself.
+		if err := sandbox.BuildCABundle(cfg.CAPath, cfg.CABundlePath); err != nil {
+			fmt.Fprintf(os.Stderr, "keydris run: CA bundle: %v\n", err)
+			_ = endSession()
+			return 1
 		}
-		child.Env = appendProxyEnvironment(child.Env, proxyURL, cfg.CABundlePath)
+		p := proxyAuthURL(cfg.HTTPProxyPort, token)
+		child.Env = appendProxyEnvironment(child.Env, p, cfg.CABundlePath)
 	}
 
 	if err := child.Start(); err != nil {

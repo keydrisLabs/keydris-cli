@@ -83,8 +83,8 @@ type SandboxOptions struct {
 	// Scope selects destinations that Keydris should MITM and authorize.
 	Scope *proxyscope.Scope
 	// Meter, when set, records LLM usage counters for attributed sessions on
-	// MeteredOrigins (ENG-261), after managed policy routing. Observation
-	// failures do not interrupt forwarding; network/TLS failures still can.
+	// MeteredOrigins (ENG-261). Metered origins are never policy-enforced and
+	// every metering failure degrades to plain forwarding.
 	Meter *meter.Meter
 	// MeteredOrigins matches CONNECT targets that should be usage-metered.
 	MeteredOrigins *meter.Origins

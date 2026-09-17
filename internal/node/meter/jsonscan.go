@@ -50,8 +50,6 @@ func metadataContainer(path string) bool {
 
 func metadataScalar(path string) bool {
 	switch path {
-	case "id", "response.id", "stream_id":
-		return true
 	case "model", "type", "status", "stop_reason", "message.model", "response.model", "service_tier", "response.service_tier",
 		"response.status", "delta.stop_reason", "choices.*.finish_reason",
 		"incomplete_details.reason", "response.incomplete_details.reason":
@@ -112,10 +110,6 @@ func (s *metadataJSON) saveToken() {
 	}
 	if s.values == nil {
 		s.values = make(map[string]json.RawMessage)
-	}
-	if _, duplicate := s.values[s.tokenPath]; duplicate && !strings.Contains(s.tokenPath, "*") {
-		s.bad = true
-		return
 	}
 	s.values[s.tokenPath] = append(json.RawMessage(nil), s.token...)
 }
@@ -257,13 +251,9 @@ func (s *metadataJSON) write(p []byte) {
 			if !metadataContainer(path) {
 				path = "!"
 			}
-			if path != "!" && !strings.Contains(path, "*") {
+			if b == '{' && (path == "usage" || strings.HasSuffix(path, ".usage")) {
 				if s.values == nil {
 					s.values = make(map[string]json.RawMessage)
-				}
-				if _, duplicate := s.values[path]; duplicate {
-					s.bad = true
-					return
 				}
 				s.values[path] = json.RawMessage("{}")
 			}

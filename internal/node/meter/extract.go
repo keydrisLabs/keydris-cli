@@ -22,10 +22,7 @@ const unknownModel = "unknown"
 
 // RequestInfo is what the meter learns from one intercepted LLM API request.
 type RequestInfo struct {
-	Model     string
-	Source    string
-	Transport string
-	Responses bool
+	Model string
 	// Inference is true only for completion-generating endpoints; anything else
 	// on a metered origin (model listings, token counting) is forwarded
 	// unmetered.
@@ -48,34 +45,9 @@ var inferencePaths = map[string]map[string]bool{
 // restoring the body for forwarding. It never fails the request: any parse
 // trouble degrades to model "unknown".
 func ExtractRequest(provider string, req *http.Request) RequestInfo {
-	return ExtractRequestAt(provider, "", req)
-}
-
-// ExtractRequestAt classifies using the CONNECT destination, never a client
-// header claiming a provider or login method. ChatGPT's other endpoints are
-// forwarded without collecting metadata.
-func ExtractRequestAt(provider, host string, req *http.Request) RequestInfo {
 	info := RequestInfo{
-		Model: unknownModel, Source: "provider_api", Transport: "http",
-	}
-	if req == nil {
-		return info
-	}
-	path := requestPath(req)
-	allowed := inferencePaths[provider][path]
-	info.Responses = provider == "openai" && path == "/v1/responses"
-	if strings.EqualFold(host, "chatgpt.com") {
-		info.Source = "codex_chatgpt"
-		allowed = provider == "openai" && path == "/backend-api/codex/responses"
-		info.Responses = allowed
-	}
-	info.Inference = allowed && req.Method == http.MethodPost
-	if info.Responses && req.Method == http.MethodGet && strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
-		for _, token := range strings.Split(req.Header.Get("Connection"), ",") {
-			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
-				info.Inference, info.Transport = true, "websocket"
-			}
-		}
+		Model:     unknownModel,
+		Inference: req != nil && req.Method == http.MethodPost && inferencePaths[provider][requestPath(req)],
 	}
 	if !info.Inference || req.Body == nil || req.Body == http.NoBody {
 		return info
@@ -427,25 +399,16 @@ func (a *accumulator) observeBlock(block *usageBlock) {
 }
 
 // Both response formats use the same incremental, content-discarding parser.
-type jsonSink struct {
-	parser  metadataJSON
-	observe func(metadataJSON)
-}
+type jsonSink struct{ parser metadataJSON }
 
 func (s *jsonSink) Write(p []byte) (int, error) { s.parser.write(p); return len(p), nil }
 func (s *jsonSink) Totals() UsageTotals {
-	if s.observe != nil {
-		s.observe(s.parser)
-		s.observe = nil
-	}
 	var acc accumulator
 	s.parser.observe(&acc)
 	return acc.totals
 }
 
 type sseSink struct {
-	observe   func(metadataJSON)
-	eventData bool
 	acc       accumulator
 	parser    metadataJSON
 	prefix    []byte
@@ -492,13 +455,11 @@ func (s *sseSink) writeLine(p []byte) {
 func (s *sseSink) finishLine() {
 	if s.data {
 		s.parser.write([]byte{'\n'})
-		s.eventData = true
-		if s.observe == nil && (s.parser.done || s.parser.bad) {
+		if s.parser.done || s.parser.bad {
 			s.parser.observe(&s.acc)
 			s.parser = metadataJSON{}
 		}
 	} else if s.lineBytes == 0 || (s.lineBytes == 1 && bytes.Equal(s.prefix, []byte{'\r'})) {
-		s.dispatchEvent()
 		s.parser = metadataJSON{}
 	}
 	s.prefix = s.prefix[:0]
@@ -506,12 +467,4 @@ func (s *sseSink) finishLine() {
 	s.ignore = false
 	s.lineBytes = 0
 }
-
-func (s *sseSink) dispatchEvent() {
-	if s.observe != nil && s.eventData {
-		s.observe(s.parser)
-	}
-	s.eventData = false
-}
-
-func (s *sseSink) Totals() UsageTotals { s.finishLine(); s.dispatchEvent(); return s.acc.totals }
+func (s *sseSink) Totals() UsageTotals { s.finishLine(); return s.acc.totals }

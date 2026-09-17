@@ -38,20 +38,6 @@
               "unknown"
             ]
           },
-          "usage_source": {
-            "type": "string",
-            "enum": [
-              "provider_api",
-              "codex_chatgpt"
-            ]
-          },
-          "usage_transport": {
-            "type": "string",
-            "enum": [
-              "http",
-              "websocket"
-            ]
-          },
           "input_tokens": {
             "type": "integer",
             "minimum": 0,
