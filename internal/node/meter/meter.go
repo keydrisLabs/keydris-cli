@@ -76,12 +76,15 @@ func (m *Meter) Record(handle string, event runtimecontract.SessionUsageEvent) {
 	if m == nil || handle == "" {
 		return
 	}
+	// Coordinate registry validation with the final flush. Otherwise a Record
+	// paused before this lock could recreate a buffer after revocation.
+	m.mu.Lock()
 	if m.registry != nil {
 		if _, ok := m.registry.Lookup(handle); !ok {
+			m.mu.Unlock()
 			return
 		}
 	}
-	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return
@@ -100,6 +103,9 @@ func (m *Meter) Record(handle string, event runtimecontract.SessionUsageEvent) {
 		}
 	}
 	m.buffers[handle] = append(buffer, event)
+	if len(buffer) == 0 {
+		m.logf("meter: usage observed provider=%s source=%s transport=%s", event.Provider, event.UsageSource, event.UsageTransport)
+	}
 	if len(m.buffers[handle]) >= flushBatchTrigger && !s.scheduled {
 		s.scheduled = true
 		m.workers.Add(1)
@@ -231,7 +237,10 @@ func (m *Meter) flushHandle(handle string, fallback *attest.Session) {
 }
 
 func (m *Meter) ship(ctx context.Context, token string, batch []runtimecontract.SessionUsageEvent) error {
-	_, err := runtimecontract.ReportSessionUsage(ctx, m.client, m.baseURL, token, batch)
+	result, err := runtimecontract.ReportSessionUsage(ctx, m.client, m.baseURL, token, batch)
+	if err == nil {
+		m.logf("meter: report accepted=%d duplicates=%d", result.Accepted, result.Duplicates)
+	}
 	return err
 }
 

@@ -10,13 +10,14 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 	"github.com/keydrisLabs/keydris-cli/internal/node/meter"
 	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
+	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
 
-// Metered-origin handling (ENG-261): LLM provider APIs (api.anthropic.com,
-// api.openai.com) are MITM'd for METERING ONLY — no policy evaluation, no
-// blocking, no header/body mutation beyond forcing an uncompressed response so
-// usage is parseable. Every failure degrades to plain forwarding; a metering
-// bug must never break an agent's model call.
+// Metered-origin handling: provider APIs and ChatGPT-backed Codex are
+// TLS-terminated for METERING ONLY after managed policy routing — no additional
+// policy evaluation, no blocking, no mutation beyond an uncompressed response so
+// usage is parseable. Observation failures leave forwarding untouched; normal
+// network and TLS failures can still terminate the connection.
 //
 // Only counters leave the machine: model id, token counts, stop reason,
 // latency. Prompt and completion bytes are spliced through and discarded.
@@ -45,16 +46,33 @@ func (p *sandboxPlane) meterConnect(
 	}
 
 	started := time.Now()
-	info := meter.ExtractRequest(provider, req)
+	info := meter.ExtractRequestAt(provider, host, req)
 
 	var sink meter.ResponseSink
-	var tap func(*http.Response) io.Writer
+	var observers proxy.ResponseObservers
+	warn := func(reason string) {
+		p.logf("meter: observation unavailable provider=%s source=%s transport=%s: %s", provider, info.Source, info.Transport, reason)
+	}
 	if info.Inference && p.meter != nil {
 		// An uncompressed response keeps the usage tail parseable; the client
 		// never sees a difference beyond transfer size.
-		req.Header.Set("Accept-Encoding", "identity")
-		tap = func(resp *http.Response) io.Writer {
+		if info.Transport == "http" {
+			req.Header.Set("Accept-Encoding", "identity")
+		}
+		var collector *meter.ResponsesCollector
+		if info.Responses {
+			collector = meter.NewResponsesCollector(provider, info, func(event runtimecontract.SessionUsageEvent) { p.meter.Record(sess.Handle, event) }, warn)
+			observers.WebSocket = collector.WebSocketSink
+		}
+		observers.HTTP = func(resp *http.Response) io.Writer {
+			if info.Transport == "websocket" {
+				warn("WebSocket upgrade was not accepted")
+				return nil
+			}
 			sink = meter.NewResponseSink(resp)
+			if collector != nil {
+				sink = collector.HTTPSink(resp)
+			}
 			if sink == nil {
 				return nil
 			}
@@ -62,13 +80,20 @@ func (p *sandboxPlane) meterConnect(
 		}
 	}
 
-	forwardErr := proxy.ForwardTLSOneTapped(tconn, req, target, host, tap, requestReader)
+	forwardErr := proxy.ForwardTLSObserved(tconn, req, target, host, observers, requestReader)
 	if !info.Inference || p.meter == nil {
 		return
 	}
 	var totals meter.UsageTotals
 	if sink != nil {
 		totals = sink.Totals()
+	}
+	if info.Responses {
+		// The per-response observer already recorded usage.
+		if forwardErr != nil {
+			warn("response forwarding failed")
+		}
+		return
 	}
 	if forwardErr != nil && !totals.Observed {
 		// Nothing reached the model (or nothing came back): no usage to book.

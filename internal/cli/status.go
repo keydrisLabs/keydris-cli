@@ -228,7 +228,7 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 		add("Policy scope", "warning", "Policy scope has not been detected", "keydris init")
 	}
 	if cfg.CostMetering {
-		add("Cost metering", "ok", "LLM usage counters (model, tokens) are reported per session; never prompt content", "")
+		add("Cost metering", "ok", "Enabled; delivery is not verified here. Proxy logs distinguish observed usage, accepted reports, and gaps", "")
 	} else {
 		add("Cost metering", "inactive", "Disabled (KEYDRIS_COST_METERING=off)", "")
 	}

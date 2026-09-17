@@ -23,6 +23,15 @@ On native Windows, the wrapper selects Codex's `elevated` sandbox because its
 managed networking requires that backend. Complete Codex's administrator-approved
 sandbox setup first. The selection applies to the wrapped process only.
 
+For usage metering, the wrapper supplies a process-scoped `CODEX_CA_CERTIFICATE`
+bundle that preserves existing custom trust. The proxy observes ChatGPT-backed
+Codex's HTTP and WebSocket Responses traffic; no API key or login-method change
+is required. Deploy backend contracts 1.5.0 and the Codex usage-basis migration,
+and restart the upgraded Keydris proxy between active sessions. Check proxy logs
+for `usage observed` and `report accepted`; enabled metering alone does not prove
+that reports have reached the backend. Subscription cost is an API-equivalent
+estimate, not actual billing.
+
 Command rules that require approval are blocked with an explanation: Codex cannot
 reliably force a policy approval prompt from `PreToolUse`. Policy-denied commands
 and authorization errors also block, regardless of Codex's approval settings.

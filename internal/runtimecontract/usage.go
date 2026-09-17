@@ -22,17 +22,19 @@ const SessionUsagePath = "/v1/runtime/sessions/usage"
 
 // The usage additions are independently pinned; older runtime contracts retain
 // their existing bundle version and checksums.
-const UsageContractBundleVersion = "1.4.0"
+const UsageContractBundleVersion = "1.5.0"
 
 // MaxUsageEventsPerReport caps one report batch (contract limit).
 const MaxUsageEventsPerReport = 100
 
 // SessionUsageEvent is one observed LLM API request.
 type SessionUsageEvent struct {
-	RequestID   string `json:"request_id"`
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	ServiceTier string `json:"service_tier,omitempty"`
+	RequestID      string `json:"request_id"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	ServiceTier    string `json:"service_tier,omitempty"`
+	UsageSource    string `json:"usage_source,omitempty"`
+	UsageTransport string `json:"usage_transport,omitempty"`
 	// InputTokens excludes cache reads/writes (Anthropic semantics; for OpenAI
 	// the cached share of prompt_tokens is moved to CacheReadTokens).
 	InputTokens int `json:"input_tokens"`

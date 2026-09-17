@@ -1,6 +1,8 @@
 package meter
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
@@ -51,6 +53,8 @@ func BuildEvent(
 		Provider:            provider,
 		Model:               model,
 		ServiceTier:         tier,
+		UsageSource:         info.Source,
+		UsageTransport:      info.Transport,
 		InputTokens:         totals.InputTokens,
 		OutputTokens:        totals.OutputTokens,
 		CacheCreationTokens: totals.CacheCreationTokens,
@@ -60,4 +64,10 @@ func BuildEvent(
 		OccurredAt:          started.UTC().Format(time.RFC3339Nano),
 	}
 	return event
+}
+
+// Response identity is stable across reconnects and HTTP/WebSocket fallback.
+// The backend scopes deduplication to the authenticated session owner/handle.
+func responseRequestID(provider, source, responseID string) string {
+	return fmt.Sprintf("llm-%x", sha256.Sum256([]byte(provider+"\x00"+source+"\x00"+responseID)))
 }
