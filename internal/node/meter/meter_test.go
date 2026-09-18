@@ -95,6 +95,29 @@ func TestFlushShipsWithTheLiveToken(t *testing.T) {
 	}
 }
 
+// TestMeterRejectsLateEventsAfterSessionFinalFlush pins that a Record landing
+// after the departing session was taken from the registry cannot recreate its
+// buffer or ship state.
+func TestMeterRejectsLateEventsAfterSessionFinalFlush(t *testing.T) {
+	server := &usageServer{}
+	m, registry := newTestMeter(t, server)
+	m.Record(testHandle, testEvent("before-exit"))
+	departed, ok := registry.Take(testHandle)
+	if !ok {
+		t.Fatal("session missing")
+	}
+	m.FlushSessionFinal(departed)
+	m.Record(testHandle, testEvent("after-exit"))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.buffers) != 0 || len(m.ships) != 0 {
+		t.Fatal("late event resurrected retired session")
+	}
+	if got := server.batchSizes(); len(got) != 1 || got[0] != 1 {
+		t.Fatal(got)
+	}
+}
+
 func TestFlushChunksToTheContractLimit(t *testing.T) {
 	server := &usageServer{}
 	m, _ := newTestMeter(t, server)
