@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestStatusReportsCostMetering pins the user-visible state of the metering
 // switch: enabled reports the counter guarantee, disabled names the opt-out.
@@ -23,6 +26,9 @@ func TestStatusReportsCostMetering(t *testing.T) {
 			found = true
 			if check.State != tc.state {
 				t.Errorf("Cost metering state with enabled=%v = %q, want %q", tc.enabled, check.State, tc.state)
+			}
+			if tc.enabled && !strings.Contains(check.Detail, "never prompt content") {
+				t.Errorf("enabled Cost metering detail = %q, want the content guarantee", check.Detail)
 			}
 		}
 		if !found {

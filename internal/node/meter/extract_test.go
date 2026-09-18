@@ -177,3 +177,25 @@ func TestExtractRequestUnknownModelAndNonInferencePaths(t *testing.T) {
 		t.Fatal("count_tokens is not an inference request")
 	}
 }
+
+// TestExtractRequestMetersOnlyPOSTInferenceCalls pins the reverted classifier:
+// inference is exactly a POST to the provider's inference path. A WebSocket
+// upgrade (a GET) and a nil request are not metered HTTP calls and must never
+// reach the response sink.
+func TestExtractRequestMetersOnlyPOSTInferenceCalls(t *testing.T) {
+	upgrade := httptest.NewRequest(http.MethodGet, "https://api.openai.com/v1/responses", nil)
+	upgrade.Header.Set("Connection", "Upgrade")
+	upgrade.Header.Set("Upgrade", "websocket")
+	if info := ExtractRequest("openai", upgrade); info.Inference {
+		t.Fatalf("WebSocket upgrade classified as inference: %+v", info)
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "https://api.openai.com/v1/chat/completions", nil)
+	if info := ExtractRequest("openai", get); info.Inference {
+		t.Fatalf("GET classified as inference: %+v", info)
+	}
+
+	if info := ExtractRequest("openai", nil); info.Inference || info.Model != unknownModel {
+		t.Fatalf("nil request = %+v, want model %q and no inference", info, unknownModel)
+	}
+}

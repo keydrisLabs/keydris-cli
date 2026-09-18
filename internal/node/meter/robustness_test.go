@@ -1,7 +1,7 @@
 package meter
 
 import (
-	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 )
 
 func TestLargeResponsesUsageAndModel(t *testing.T) {
@@ -139,6 +141,44 @@ func TestIncompleteOrInvalidUsageCannotProducePricedEvent(t *testing.T) {
 		event := BuildEvent("openai", RequestInfo{Model: "gpt-6-astra"}, totals, time.Now())
 		if event.OutputTokens != nil || event.ServiceTier != "unknown" {
 			t.Fatalf("%s: %+v", body, event)
+		}
+	}
+}
+
+// TestBuildEventWireShape pins the 1.4.0 usage event contract: the outbound
+// event carries only provider counters. The Codex-specific usage_source and
+// usage_transport fields the reverted release added must not reappear.
+func TestBuildEventWireShape(t *testing.T) {
+	output := 5
+	req := httptest.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages",
+		strings.NewReader(`{"model":"claude-opus-5"}`))
+	info := ExtractRequest("anthropic", req)
+	totals := UsageTotals{
+		Observed:     true,
+		HasInput:     true,
+		Model:        "claude-opus-5",
+		InputTokens:  10,
+		OutputTokens: &output,
+	}
+	raw, err := json.Marshal(BuildEvent("anthropic", info, totals, time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"request_id": true, "provider": true, "model": true, "service_tier": true,
+		"input_tokens": true, "output_tokens": true, "cache_creation_tokens": true,
+		"cache_read_tokens": true, "occurred_at": true,
+	}
+	if len(fields) != len(want) {
+		t.Fatalf("event fields = %v", fields)
+	}
+	for name := range fields {
+		if !want[name] {
+			t.Fatalf("unexpected wire field %q in %s", name, raw)
 		}
 	}
 }
