@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
@@ -335,5 +336,72 @@ func TestCodexWindowsManagedNetworkingUsesElevatedSandbox(t *testing.T) {
 				t.Fatalf("platform %s: sandbox override %v returned %v", runtime.GOOS, args, err)
 			}
 		}
+	}
+}
+
+// TestRunCodexRefusesToLaunchWhenTheStartupProbeDoesNotDeny covers the gate
+// added with the Codex hook probe: configuration that verifies on paper but
+// executes without issuing an explicit denial must stop the wrapper before it
+// mints a session or launches Codex.
+func TestRunCodexRefusesToLaunchWhenTheStartupProbeDoesNotDeny(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake codex shim is a POSIX script")
+	}
+	uxConfig(t)
+	dataDir := t.TempDir()
+	t.Setenv("KEYDRIS_DATA_DIR", dataDir)
+	t.Setenv("KEYDRIS_AGENT_ID", "11111111-1111-4111-8111-111111111111")
+	t.Setenv("KEYDRIS_SESSION_SOCKET", filepath.Join(dataDir, "missing.sock"))
+	if err := os.WriteFile(filepath.Join(dataDir, "ca.crt"), []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var mints int
+	oldMint, oldRevoke, oldSend, oldExchange, oldRoutes := mintSessionInstance, revokeSessionInstance, sendSessionMessage, exchangeSessionMessage, fetchSessionRoutes
+	mintSessionInstance = func(*config.Config, string, string, string) (*mintedInstance, error) {
+		mints++
+		return &mintedInstance{SPIFFEID: "spiffe://keydris.test/codex", KIT: "test-kit", SessionID: "test-ulid"}, nil
+	}
+	revokeSessionInstance = func(*config.Config, string) error { return nil }
+	sendSessionMessage = func(string, sessionsock.Message) error { return nil }
+	exchangeSessionMessage = func(string, sessionsock.Message) (*sessionsock.SessionSnapshot, error) {
+		return nil, nil
+	}
+	fetchSessionRoutes = func(cfg *config.Config, _ string) (*runtimecontract.RuntimeRoutes, error) {
+		return testSessionRoutes(cfg.AgentID), nil
+	}
+	defer func() {
+		mintSessionInstance, revokeSessionInstance, sendSessionMessage, exchangeSessionMessage, fetchSessionRoutes = oldMint, oldRevoke, oldSend, oldExchange, oldRoutes
+	}()
+
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := exec.LookPath("codex"); err != nil {
+		t.Fatalf("fake codex shim is not on PATH: %v", err)
+	}
+
+	cfg := config.Load()
+	opt, err := codexHookOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.ConfigureCodexHooks(cfg.CodexHooksPath, opt); err != nil {
+		t.Fatal(err)
+	}
+	if wired, err := sandbox.VerifyCodexHooks(cfg.CodexHooksPath, opt); err != nil || !wired {
+		t.Fatalf("fixture hooks are not wired: %v, %v", wired, err)
+	}
+
+	// Run the real hook commands, but have them exit without a verdict.
+	t.Setenv("KEYDRIS_TEST_CODEX_HOOK_PROCESS", "1")
+	t.Setenv("KEYDRIS_TEST_CODEX_HOOK_SILENT", "1")
+	if code := runCodex(nil); code != 1 {
+		t.Fatalf("runCodex code = %d, want 1 when the startup probe does not deny", code)
+	}
+	if mints != 0 {
+		t.Fatalf("runCodex minted %d session(s) despite the failed probe", mints)
 	}
 }

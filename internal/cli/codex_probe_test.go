@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,7 +22,19 @@ func TestMain(m *testing.M) {
 		if os.Getenv("KEYDRIS_SESSION") != "" {
 			os.Exit(99) // The startup probe must not inherit an active session.
 		}
+		if os.Getenv("KEYDRIS_TEST_CODEX_HOOK_SILENT") == "1" {
+			os.Exit(0) // A hook that runs but issues no verdict.
+		}
 		os.Exit(Execute())
+	}
+	if os.Getenv("KEYDRIS_TEST_CODEX_ENV_DUMP") == "1" {
+		for _, entry := range os.Environ() {
+			key, _, _ := strings.Cut(entry, "=")
+			if strings.EqualFold(key, "KEYDRIS_SESSION") || strings.EqualFold(key, "KEYDRIS_SESSION_ID") {
+				fmt.Println(entry)
+			}
+		}
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }
@@ -138,5 +151,40 @@ func TestCodexProbeCancellation(t *testing.T) {
 	cancel()
 	if _, err := runCodexHookProbe(ctx, opt.PreToolUseHook); err == nil {
 		t.Fatal("cancelled probe started successfully")
+	}
+}
+
+// TestCodexHookProbeStripsSessionAliases pins the case-insensitive credential
+// strip the startup probe depends on: Windows environment names are
+// case-insensitive, so a session credential under any spelling would let the
+// probe run as an authenticated session. Unrelated variables must survive.
+func TestCodexHookProbeStripsSessionAliases(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted := shellQuote(executable)
+	if runtime.GOOS == "windows" {
+		quoted = "\"" + filepath.ToSlash(executable) + "\""
+	}
+	command := codexHooks(quoted).PreToolUseHook
+	t.Setenv("KEYDRIS_TEST_CODEX_ENV_DUMP", "1")
+	t.Setenv("KEYDRIS_SESSION", "exact")
+	t.Setenv("Keydris_Session", "mixed")
+	t.Setenv("keydris_session", "lower")
+	t.Setenv("KEYDRIS_SESSION_ID", "kept")
+
+	output, err := runCodexHookProbe(context.Background(), command)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		key, value, _ := strings.Cut(line, "=")
+		if strings.EqualFold(key, "KEYDRIS_SESSION") {
+			t.Fatalf("probe inherited the session credential %q", value)
+		}
+	}
+	if !strings.Contains(string(output), "KEYDRIS_SESSION_ID=kept") {
+		t.Fatalf("probe dropped unrelated environment variables: %q", output)
 	}
 }
