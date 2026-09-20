@@ -147,9 +147,13 @@ func HTTPClient(dir, serverCAPath string, timeout time.Duration) (*http.Client, 
 	}, nil
 }
 
-// Logout removes the stored identity material.
+// Logout removes authentication material while retaining the installation ID.
 func Logout(dir string) error {
 	var firstErr error
+	if _, err := os.Stat(filepath.Join(dir, WhoamiFile)); err == nil {
+		// Migrate older installations before deleting their only device reference.
+		_, firstErr = enrollmentDeviceID(dir)
+	}
 	for _, f := range []string{KeyFile, CertFile, CAFile, WhoamiFile} {
 		if err := os.Remove(filepath.Join(dir, f)); err != nil && !os.IsNotExist(err) && firstErr == nil {
 			firstErr = err

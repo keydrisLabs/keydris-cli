@@ -200,6 +200,7 @@ func hookSessionStart(cfg *config.Config, blueprintFlag, sid, agentRuntime strin
 		return 1
 	}
 
+	reportMCPInventories(cfg, os.Stderr)
 	fmt.Fprintf(os.Stderr, "keydris: session %s bound to %s\n", sid, inst.SPIFFEID)
 	return 0
 }
