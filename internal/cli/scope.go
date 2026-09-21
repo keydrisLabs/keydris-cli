@@ -50,23 +50,6 @@ func detectPolicyScope(cfg *config.Config, agentID string, w io.Writer) ([]strin
 	return origins, true
 }
 
-// printPolicyScope renders the scope in init's summary. detected separates
-// "the policy governs nothing" from "we could not ask".
-func printPolicyScope(w io.Writer, origins []string, detected bool) {
-	if !detected {
-		fmt.Fprintf(w, "  policy scope: not detected\n")
-		return
-	}
-	if len(origins) == 0 {
-		fmt.Fprintf(w, "  policy scope: no governed origins (this agent's policy grants no integrations)\n")
-		return
-	}
-	fmt.Fprintf(w, "  policy scope: %s\n", pluralOrigins(len(origins)))
-	for _, origin := range origins {
-		fmt.Fprintf(w, "    %s\n", origin)
-	}
-}
-
 // refreshPolicyScope updates the scope from already-fetched routes. Never
 // fails the session: per-session routes govern it regardless of this cache.
 func refreshPolicyScope(cfg *config.Config, routes *runtimecontract.RuntimeRoutes, w io.Writer) {
