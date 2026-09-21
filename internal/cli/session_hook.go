@@ -22,11 +22,8 @@ import (
 // invoke them — Claude Code does, passing its hook payload on stdin. The command
 // strings contain "keydris" so `keydris deinit` reliably strips them.
 const (
-	internalSessionStartCmd = "keydris __session-start"
-	internalSessionEndCmd   = "keydris __session-end"
-	internalPreToolUseCmd   = "keydris __pretool-use"
-	sessionOwnerEnv         = "KEYDRIS_SESSION_OWNER"
-	sessionOwnerRun         = "keydris-run"
+	sessionOwnerEnv = "KEYDRIS_SESSION_OWNER"
+	sessionOwnerRun = "keydris-run"
 )
 
 func codexHookOptions() (sandbox.CodexHookOptions, error) {
