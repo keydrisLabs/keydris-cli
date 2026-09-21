@@ -41,3 +41,27 @@ func TestInventoryRefusesRedirect(t *testing.T) {
 		t.Fatal("redirect accepted")
 	}
 }
+
+// TestReportMCPInventoryFailurePaths pins that a report is never silently
+// dropped: a missing client, an unusable runtime URL, a rejected status, and an
+// unreachable control plane all surface an error to the caller.
+func TestReportMCPInventoryFailurePaths(t *testing.T) {
+	if err := ReportMCPInventory(context.Background(), nil, "https://example.com", MCPInventoryReport{}); err == nil {
+		t.Fatal("nil inventory client accepted")
+	}
+	if err := ReportMCPInventory(context.Background(), http.DefaultClient, "://bad", MCPInventoryReport{}); err == nil {
+		t.Fatal("invalid runtime URL accepted")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	baseURL := server.URL
+	if err := ReportMCPInventory(context.Background(), server.Client(), baseURL, MCPInventoryReport{}); err == nil {
+		t.Fatal("HTTP failure accepted")
+	}
+	server.Close()
+	if err := ReportMCPInventory(context.Background(), server.Client(), baseURL, MCPInventoryReport{}); err == nil {
+		t.Fatal("unreachable control plane accepted")
+	}
+}
