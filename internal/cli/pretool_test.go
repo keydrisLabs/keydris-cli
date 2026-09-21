@@ -163,3 +163,66 @@ func TestPreToolPayloadRejectsDuplicateKeysAndOversizeInput(t *testing.T) {
 		t.Fatalf("oversize verdict = %q, want deny", verdict)
 	}
 }
+
+// TestCodexHookWritersPreserveDenialReasons pins the fail-closed messaging: a
+// policy denial must reach Codex with the policy-authored box intact, and an
+// allowed command must not carry rejection text into the PermissionRequest
+// decision.
+func TestCodexHookWritersPreserveDenialReasons(t *testing.T) {
+	verdict, reason := commandVerdict(runtimecontract.DecisionDeny, denialBoxReasonCode, "terraform destroy")
+	if verdict != "deny" || !strings.Contains(reason, "COMMAND DENIED") {
+		t.Fatalf("policy denial fixture = %q, %q", verdict, reason)
+	}
+
+	var preTool bytes.Buffer
+	writeCodexPreToolVerdict(&preTool, verdict, reason)
+	var preToolOut struct {
+		HookSpecificOutput struct {
+			Event    string `json:"hookEventName"`
+			Decision string `json:"permissionDecision"`
+			Reason   string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(preTool.Bytes(), &preToolOut); err != nil {
+		t.Fatal(err)
+	}
+	if preToolOut.HookSpecificOutput.Event != "PreToolUse" ||
+		preToolOut.HookSpecificOutput.Decision != "deny" ||
+		preToolOut.HookSpecificOutput.Reason != reason {
+		t.Fatalf("PreToolUse denial lost its reason: %s", preTool.String())
+	}
+
+	type permissionOutput struct {
+		HookSpecificOutput struct {
+			Event    string            `json:"hookEventName"`
+			Decision map[string]string `json:"decision"`
+		} `json:"hookSpecificOutput"`
+	}
+	decodePermission := func(raw []byte) permissionOutput {
+		t.Helper()
+		var decoded permissionOutput
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+
+	var permission bytes.Buffer
+	writeCodexPermissionVerdict(&permission, verdict, reason)
+	denied := decodePermission(permission.Bytes())
+	if denied.HookSpecificOutput.Event != "PermissionRequest" ||
+		denied.HookSpecificOutput.Decision["behavior"] != "deny" ||
+		denied.HookSpecificOutput.Decision["message"] != reason {
+		t.Fatalf("PermissionRequest denial lost its reason: %s", permission.String())
+	}
+
+	var allowed bytes.Buffer
+	writeCodexPermissionVerdict(&allowed, "allow", "keydris: allowed by policy")
+	passthrough := decodePermission(allowed.Bytes())
+	if passthrough.HookSpecificOutput.Decision["behavior"] != "allow" {
+		t.Fatalf("allowed command was not passed through: %s", allowed.String())
+	}
+	if _, present := passthrough.HookSpecificOutput.Decision["message"]; present {
+		t.Fatalf("allowed command carries a rejection message: %s", allowed.String())
+	}
+}
