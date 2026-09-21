@@ -27,3 +27,16 @@ func TestOriginsBuiltinsAndOverrides(t *testing.T) {
 		t.Fatal("unlisted origins are never metered")
 	}
 }
+
+// TestOriginsMeterOnlyProviderAPIs pins the metered set after the Codex revert:
+// chatgpt.com is not a provider API origin, so ChatGPT-backend traffic is
+// policy-routed or tunneled and never handed to the usage parser.
+func TestOriginsMeterOnlyProviderAPIs(t *testing.T) {
+	origins := NewOrigins(nil)
+	if provider, ok := origins.Provider("chatgpt.com", 443); ok {
+		t.Fatalf("chatgpt.com must not be metered, got provider %q", provider)
+	}
+	if provider, ok := origins.Provider("api.openai.com", 443); !ok || provider != "openai" {
+		t.Fatalf("api.openai.com = %q, %v", provider, ok)
+	}
+}
