@@ -217,6 +217,11 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 			}
 		}
 	}
+	if target == "" || target == "claude-desktop" {
+		if addDesktopStatus(cfg, target, add) {
+			configured++
+		}
+	}
 	if configured == 0 {
 		add("Integration", "warning", "No selected integration is configured", "keydris init")
 	}
@@ -249,8 +254,8 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 		}
 	}
 	if verbose {
-		report.Paths = map[string]string{"data": cfg.DataDir, "identity": cfg.IdentityDir, "ca": cfg.CAPath, "bundle": cfg.CABundlePath, "claude": cfg.ClaudeSettingsPath, "codex": cfg.CodexHooksPath, "proxy_log": filepath.Join(cfg.DataDir, "proxy.log")}
-		for _, integration := range []string{"claude-code", "codex"} {
+		report.Paths = map[string]string{"data": cfg.DataDir, "identity": cfg.IdentityDir, "ca": cfg.CAPath, "bundle": cfg.CABundlePath, "claude": cfg.ClaudeSettingsPath, "codex": cfg.CodexHooksPath, "claude_desktop": desktopSettingsPath(cfg), "proxy_log": filepath.Join(cfg.DataDir, "proxy.log")}
+		for _, integration := range []string{"claude-code", "codex", "claude-desktop"} {
 			if path, err := agentSkillPath(cfg, integration); err == nil {
 				report.Paths[integration+"_skill"] = path
 			}
@@ -259,20 +264,62 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 	return report
 }
 
+func addDesktopStatus(cfg *config.Config, target string, add func(string, string, string, string)) bool {
+	path := desktopSettingsPath(cfg)
+	present, err := sandbox.HasKeydrisHooks(path)
+	if err != nil {
+		add("claude-desktop", "error", "Cannot read Claude Desktop settings", "keydris init claude-desktop")
+		return false
+	}
+	if !present {
+		if target == "" {
+			add("claude-desktop", "inactive", "Not configured", "")
+			return false
+		}
+		add("claude-desktop", "error", "Not configured", "keydris init claude-desktop")
+		return false
+	}
+	detail := "Hooks configured; launch with keydris claude-desktop"
+	if rec, err := readDesktopLaunch(cfg); err == nil {
+		if desktopSessionLive(rec) {
+			detail = "Session active"
+		} else {
+			add("claude-desktop", "warning", "A previous session left the egress proxy pinned", "keydris claude-desktop")
+			return true
+		}
+	}
+	add("claude-desktop", "ok", detail, "")
+	skillPath, pathErr := agentSkillPath(cfg, "claude-desktop")
+	if pathErr != nil {
+		add("Agent skill", "warning", pathErr.Error(), "keydris init claude-desktop")
+	} else if raw, err := readAgentSkill(skillPath); err != nil {
+		add("Agent skill", "warning", "Cannot read "+skillPath+"; bundled guidance is available via keydris skill", "keydris init claude-desktop")
+	} else if !bytes.Equal(raw, bundledSkill()) {
+		add("Agent skill", "warning", "Older or user-edited skill at "+skillPath+"; local edits are preserved", "Review the skill, then run keydris init claude-desktop")
+	} else {
+		add("Agent skill", "ok", "claude-desktop: bundled skill installed", "")
+	}
+	return true
+}
+
 func runStatus(args ...string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
 	verbose := fs.Bool("verbose", false, "include resolved configuration paths")
 	offline := fs.Bool("offline", false, "skip the control-plane connectivity check")
-	target := fs.String("target", "", "check claude-code or codex only")
+	target := fs.String("target", "", "check claude-code, codex, or claude-desktop only")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
-	if *target != "" && *target != "claude-code" && *target != "codex" {
-		fmt.Fprintln(os.Stderr, "status: --target must be claude-code or codex")
+	if *target != "" && *target != "claude-code" && *target != "codex" && *target != "claude-desktop" {
+		fmt.Fprintln(os.Stderr, "status: --target must be claude-code, codex, or claude-desktop")
 		return 2
 	}
-	report := collectStatus(config.Load(), *target, *offline, *verbose)
+	cfg := config.Load()
+	if err := sweepDesktopLaunch(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris status: desktop session cleanup: %v\n", err)
+	}
+	report := collectStatus(cfg, *target, *offline, *verbose)
 	if *jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")

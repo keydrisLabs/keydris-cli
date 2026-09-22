@@ -21,7 +21,7 @@ import (
 var agentUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 func runInit(args []string) int {
-	const usage = "Usage: keydris init [claude-code|codex] [agent-id] [--strict=false] [--trust-store] [--no-start] [--no-browser]"
+	const usage = "Usage: keydris init [claude-code|codex|claude-desktop] [agent-id] [--strict=false] [--trust-store] [--no-start] [--no-browser]"
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		fmt.Fprintln(os.Stdout, usage)
 		return 0
@@ -39,7 +39,7 @@ func runInit(args []string) int {
 	if target == "openai" {
 		target = "codex"
 	}
-	if target != "claude-code" && target != "codex" {
+	if target != "claude-code" && target != "codex" && target != "claude-desktop" {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
@@ -80,7 +80,7 @@ func runInit(args []string) int {
 		ui.row("error", "Environment", err.Error())
 		return 1
 	}
-	if hostenv.Current().WSL != "" {
+	if hostenv.Current().WSL != "" && target != "claude-desktop" {
 		command := "claude"
 		if target == "codex" {
 			command = "codex"
@@ -140,10 +140,13 @@ func runInit(args []string) int {
 		return 1
 	}
 	finish = ui.progress("Configuring " + target)
-	if target == "claude-code" {
+	switch target {
+	case "claude-code":
 		err = sandbox.Configure(cfg.ClaudeSettingsPath, claudeOptions)
-	} else {
+	case "codex":
 		err = sandbox.ConfigureCodexHooks(cfg.CodexHooksPath, codexOptions)
+	default:
+		err = configureClaudeDesktop(cfg, claudeOptions)
 	}
 	finish(err)
 	if err != nil {
@@ -170,6 +173,15 @@ func runInit(args []string) int {
 	if scopeOutput.Len() > 0 {
 		ui.row("warning", "Policy scope", scopeOutput.String())
 	}
+	if target == "claude-desktop" {
+		finish = ui.progress("Installing system trust")
+		err = sandbox.InstallSystemTrustStore(cfg.CAPath)
+		finish(err)
+		if err != nil {
+			ui.row("warning", "Setup incomplete", "System keychain trust is required for Claude Desktop")
+			return 1
+		}
+	}
 	if *trust {
 		finish = ui.progress("Installing OS trust")
 		err = sandbox.InstallTrustStore(cfg.CAPath)
@@ -185,7 +197,8 @@ func runInit(args []string) int {
 			return code
 		}
 	}
-	if target == "claude-code" {
+	switch target {
+	case "claude-code":
 		verified, err := sandbox.Verify(cfg.ClaudeSettingsPath, cfg.HTTPProxyPort, claudeOptions)
 		if err != nil || (!verified.OK() && *strict) {
 			ui.row("error", "Verification", "Claude configuration needs attention")
@@ -194,10 +207,16 @@ func runInit(args []string) int {
 		if !*strict {
 			ui.row("warning", "Sandbox", "Non-strict mode permits unsandboxed commands")
 		}
-	} else {
+	case "codex":
 		verified, err := sandbox.VerifyCodexHooks(cfg.CodexHooksPath, codexOptions)
 		if err != nil || !verified {
 			ui.row("error", "Verification", "Codex hooks need attention")
+			return 1
+		}
+	default:
+		present, err := sandbox.HasKeydrisHooks(desktopSettingsPath(cfg))
+		if err != nil || !present {
+			ui.row("error", "Verification", "Claude Desktop hooks need attention")
 			return 1
 		}
 	}
@@ -206,6 +225,8 @@ func runInit(args []string) int {
 		ui.next("keydris proxy up")
 	} else if target == "claude-code" {
 		ui.next("keydris run -- claude")
+	} else if target == "claude-desktop" {
+		ui.next("keydris claude-desktop")
 	} else {
 		ui.next("keydris codex")
 	}
@@ -221,10 +242,10 @@ func promptInit() ([]string, bool) {
 	}
 	printInitBanner(os.Stdout)
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Fprintln(os.Stdout, "Choose an integration:\n  1) Claude Code\n  2) OpenAI Codex")
+	fmt.Fprintln(os.Stdout, "Choose an integration:\n  1) Claude Code\n  2) OpenAI Codex\n  3) Claude Desktop")
 	target := ""
 	for target == "" {
-		fmt.Fprint(os.Stdout, "Selection [1-2]: ")
+		fmt.Fprint(os.Stdout, "Selection [1-3]: ")
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			return nil, false
@@ -234,8 +255,10 @@ func promptInit() ([]string, bool) {
 			target = "claude-code"
 		case "2", "codex", "openai":
 			target = "codex"
+		case "3", "claude-desktop", "desktop":
+			target = "claude-desktop"
 		default:
-			newUI(os.Stdout).row("warning", "Selection", "Enter 1 or 2 (Ctrl+C to cancel)")
+			newUI(os.Stdout).row("warning", "Selection", "Enter 1, 2, or 3 (Ctrl+C to cancel)")
 		}
 	}
 	existing := config.Load().AgentID

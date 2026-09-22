@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 )
@@ -102,4 +103,23 @@ func samePath(a, b string) bool {
 // portable default and is always applied by Configure.
 func InstallTrustStore(caPath string) error {
 	return installTrustStore(caPath)
+}
+
+// InstallSystemTrustStore installs the CA as a full root in the macOS System
+// keychain. Claude Desktop's engine reads that keychain and ignores a
+// certificate trusted only for SSL, which is why the login-keychain install
+// used for Claude Code is not enough.
+func InstallSystemTrustStore(caPath string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("Claude Desktop system trust is installed on macOS; CA env vars are set instead (CA at %s)", caPath)
+	}
+	cmd := exec.Command("security", "add-trusted-cert",
+		"-d", "-r", "trustRoot",
+		"-k", "/Library/Keychains/System.keychain",
+		caPath,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("security add-trusted-cert: %w: %s", err, out)
+	}
+	return nil
 }

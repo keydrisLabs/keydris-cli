@@ -24,6 +24,8 @@ func agentSkillPath(cfg *config.Config, target string) (string, error) {
 	switch target {
 	case "claude-code":
 		root = filepath.Join(filepath.Dir(cfg.ClaudeSettingsPath), "skills")
+	case "claude-desktop":
+		root = filepath.Join(desktopSettingsDir(cfg), "skills")
 	case "codex":
 		home, err := os.UserHomeDir()
 		if err != nil {

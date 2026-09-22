@@ -10,8 +10,9 @@ import (
 // tool that produced them. Values mirror the control plane's `agent_runtime`
 // enum; an unknown tool is reported as "" (omitted) rather than guessed.
 const (
-	agentRuntimeClaudeCode = "claude_code"
-	agentRuntimeCodex      = "codex"
+	agentRuntimeClaudeCode    = "claude_code"
+	agentRuntimeClaudeDesktop = "claude_desktop"
+	agentRuntimeCodex         = "codex"
 )
 
 // agentRuntimeForCommand maps the executable `keydris run` wraps to a runtime

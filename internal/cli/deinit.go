@@ -9,16 +9,17 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 )
 
-// runDeinit implements `keydris deinit claude-code|codex`, the inverse of
-// `keydris init`. It strips the Keydris configuration for the chosen target —
-// the Claude Code sandbox routing, CA env, and hooks, or the Codex command
-// hooks — preserving unrelated settings. Shared agent and policy state is
-// cleared only when neither integration retains Keydris hooks.
+// runDeinit implements `keydris deinit claude-code|codex|claude-desktop`, the
+// inverse of `keydris init`. It strips the Keydris configuration for the chosen
+// target — the Claude Code sandbox routing, CA env, and hooks, the Codex
+// command hooks, or the Claude Desktop settings directory — preserving
+// unrelated settings. Shared agent and policy state is cleared only when no
+// other integration retains Keydris hooks.
 // The Keydris CA files are left in place so a later `init` reuses them; if you
 // installed the CA into the OS trust store with `--trust-store`, remove it
 // there manually or use keydris reset.
 func runDeinit(args []string) int {
-	const usage = "usage: keydris deinit claude-code|codex"
+	const usage = "usage: keydris deinit claude-code|codex|claude-desktop"
 
 	if len(args) == 0 || args[0] == "" || args[0][0] == '-' {
 		fmt.Fprintln(os.Stderr, usage)
@@ -28,8 +29,8 @@ func runDeinit(args []string) int {
 	if target == "openai" {
 		target = "codex"
 	}
-	if target != "claude-code" && target != "codex" {
-		fmt.Fprintf(os.Stderr, "keydris deinit: unknown target %q (want claude-code or codex)\n", target)
+	if target != "claude-code" && target != "codex" && target != "claude-desktop" {
+		fmt.Fprintf(os.Stderr, "keydris deinit: unknown target %q (want claude-code, codex, or claude-desktop)\n", target)
 		return 1
 	}
 
@@ -43,11 +44,7 @@ func runDeinit(args []string) int {
 		newUI(os.Stderr).row("error", "Paths", err.Error())
 		return 1
 	}
-	otherPath := cfg.CodexHooksPath
-	if target == "codex" {
-		otherPath = cfg.ClaudeSettingsPath
-	}
-	shared, inspectErr := sandbox.HasKeydrisHooks(otherPath)
+	shared, inspectErr := otherIntegrationsRemain(cfg, target)
 	if inspectErr != nil {
 		newUI(os.Stderr).row("error", "Integration", "Cannot inspect the other integration; shared setup retained")
 		return 1
@@ -56,30 +53,34 @@ func runDeinit(args []string) int {
 	var changed bool
 	var err error
 	var configPath string
-	if target == "claude-code" {
+	switch target {
+	case "claude-code":
 		configPath = cfg.ClaudeSettingsPath
 		changed, err = sandbox.Deconfigure(configPath, sandbox.RemoveOptions{
 			HTTPProxyPort:  cfg.HTTPProxyPort,
 			CAPath:         cfg.CABundlePath,
 			AllowedDomains: cfg.AllowedDomains,
 		})
-	} else {
+	case "codex":
 		configPath = cfg.CodexHooksPath
 		changed, err = sandbox.DeconfigureCodexHooks(configPath)
+	default:
+		configPath, changed, err = deinitClaudeDesktop(cfg)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris deinit: %v\n", err)
 		return 1
 	}
 	// Only the entries Keydris wrote; hand-added servers are left alone.
-	if target == "claude-code" {
+	switch target {
+	case "claude-code":
 		if err := sandbox.RemoveManagedMcpServers(
 			cfg.ClaudeMcpConfigPath,
 		); err != nil {
 			fmt.Fprintf(os.Stderr, "keydris deinit: clear MCP servers: %v\n", err)
 			return 1
 		}
-	} else {
+	case "codex":
 		if _, err := sandbox.RemoveManagedCodexMcpServers(
 			cfg.CodexConfigPath,
 		); err != nil {
@@ -114,4 +115,25 @@ func runDeinit(args []string) int {
 	cleanupAgentSkill(cfg, target)
 	fmt.Printf("  cleared agent id, legacy policy id and the detected proxy scope; left the Keydris CA at %s in place\n", cfg.CAPath)
 	return 0
+}
+
+func otherIntegrationsRemain(cfg *config.Config, target string) (bool, error) {
+	checks := []struct{ name, path string }{
+		{"claude-code", cfg.ClaudeSettingsPath},
+		{"codex", cfg.CodexHooksPath},
+		{"claude-desktop", desktopSettingsPath(cfg)},
+	}
+	for _, check := range checks {
+		if check.name == target {
+			continue
+		}
+		present, err := sandbox.HasKeydrisHooks(check.path)
+		if err != nil {
+			return false, err
+		}
+		if present {
+			return true, nil
+		}
+	}
+	return false, nil
 }

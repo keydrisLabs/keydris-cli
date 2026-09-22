@@ -125,6 +125,12 @@ func planReset(cfg *config.Config, all bool) ([]resetTarget, error) {
 	if err := add(sessionstate.Dir(cfg.DataDir), true); err != nil {
 		return nil, err
 	}
+	if err := add(desktopSettingsDir(cfg), true); err != nil {
+		return nil, err
+	}
+	if err := add(desktopLaunchRecordPath(cfg), false); err != nil {
+		return nil, err
+	}
 	if all && !withinPath(cfg.DataDir, cfg.LedgerPath) {
 		if err := add(cfg.LedgerPath, false); err != nil {
 			return nil, err
