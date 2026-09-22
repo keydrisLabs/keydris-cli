@@ -12,6 +12,7 @@ import (
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
 )
 
@@ -220,5 +221,38 @@ func TestUXResetRefusesNewDirectoryContents(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "new.json")); err != nil {
 		t.Fatal("new file was removed")
+	}
+}
+
+// TestUXResetRemovesInstallationDeviceID pins the reset half of the device
+// identity lifecycle: an explicit reset drops the otherwise logout-preserved
+// installation ID so a later enrollment starts as a new device.
+func TestUXResetRemovesInstallationDeviceID(t *testing.T) {
+	cfg := uxConfig(t)
+	if err := os.MkdirAll(cfg.IdentityDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfg.IdentityDir, login.DeviceIDFile)
+	if err := os.WriteFile(path, []byte("11111111-1111-4111-8111-111111111111\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	targets, err := planReset(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planned *resetTarget
+	for i := range targets {
+		if targets[i].path == path {
+			planned = &targets[i]
+		}
+	}
+	if planned == nil {
+		t.Fatalf("device ID %s missing from reset plan", path)
+	}
+	if err := removeResetTarget(*planned); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("reset retained the installation device ID")
 	}
 }

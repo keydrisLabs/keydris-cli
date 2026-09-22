@@ -59,3 +59,52 @@ func TestDeviceIDDoesNotReplaceCorruptMetadata(t *testing.T) {
 		t.Fatal("corrupt metadata must not create a duplicate device")
 	}
 }
+
+// TestDeviceIDRejectsInvalidOrUnreadableState pins the fail-closed enrollment
+// gate: malformed state stops enrollment instead of allocating a second
+// installation identity the server would treat as a new device.
+func TestDeviceIDRejectsInvalidOrUnreadableState(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write(DeviceIDFile, "not-a-uuid\n")
+	if _, err := enrollmentDeviceID(dir); err == nil {
+		t.Fatal("invalid stored device ID was replaced")
+	}
+	if err := os.Remove(filepath.Join(dir, DeviceIDFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	write(WhoamiFile, `{"device_id":"not-a-uuid"}`)
+	if _, err := enrollmentDeviceID(dir); err == nil {
+		t.Fatal("invalid identity metadata device ID was replaced")
+	}
+	if _, err := os.Stat(filepath.Join(dir, DeviceIDFile)); !os.IsNotExist(err) {
+		t.Fatal("rejected metadata still created a device ID file")
+	}
+	if err := os.Remove(filepath.Join(dir, WhoamiFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	// An unreadable entry point (a directory) is an error, not absence.
+	if err := os.Mkdir(filepath.Join(dir, DeviceIDFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enrollmentDeviceID(dir); err == nil {
+		t.Fatal("unreadable device ID path was treated as absent")
+	}
+	if err := os.Remove(filepath.Join(dir, DeviceIDFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, WhoamiFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enrollmentDeviceID(dir); err == nil {
+		t.Fatal("unreadable identity metadata was treated as absent")
+	}
+}
