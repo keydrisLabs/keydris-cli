@@ -174,13 +174,14 @@ func runInit(args []string) int {
 		ui.row("warning", "Policy scope", scopeOutput.String())
 	}
 	if target == "claude-desktop" {
-		finish = ui.progress("Installing system trust")
+		ui.row("working", "System trust", "Enter your administrator password to update the System keychain")
 		err = sandbox.InstallSystemTrustStore(cfg.CAPath)
-		finish(err)
 		if err != nil {
+			ui.row("error", "System trust", err.Error())
 			ui.row("warning", "Setup incomplete", "System keychain trust is required for Claude Desktop")
 			return 1
 		}
+		ui.row("ok", "System trust", "CA installed in the System keychain")
 	}
 	if *trust {
 		finish = ui.progress("Installing OS trust")
