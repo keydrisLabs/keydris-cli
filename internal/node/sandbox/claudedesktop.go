@@ -170,7 +170,13 @@ func ApplyEgressProxyPin(configLibraryDir, proxyURL string) (EgressSnapshot, err
 	if err := writeSettings(configPath, map[string]any{"egressProxyUrl": proxyURL}); err != nil {
 		return snap, err
 	}
-	if err := writeSettings(metaPath, map[string]any{"appliedId": id}); err != nil {
+	// Desktop's config library code expects entries to list the applied
+	// document; it writes the same shape when it creates the library itself.
+	meta := map[string]any{
+		"appliedId": id,
+		"entries":   []any{map[string]any{"id": id, "name": "Keydris session"}},
+	}
+	if err := writeSettings(metaPath, meta); err != nil {
 		return snap, err
 	}
 	return snap, nil

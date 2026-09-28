@@ -196,6 +196,13 @@ func TestApplyEgressProxyPinEmptyDirCreateAndRestore(t *testing.T) {
 	if !appliedIDPattern.MatchString(id) {
 		t.Fatalf("appliedId %q does not match pattern", id)
 	}
+	listed, _ := meta["entries"].([]any)
+	if len(listed) != 1 {
+		t.Fatalf("entries = %v, want only the applied document", meta["entries"])
+	}
+	if entry, _ := listed[0].(map[string]any); entry["id"] != id {
+		t.Fatalf("entries[0] = %v, want id %s", listed[0], id)
+	}
 	if snap.ConfigName != id+".json" {
 		t.Fatalf("ConfigName=%q, want %s.json", snap.ConfigName, id)
 	}
