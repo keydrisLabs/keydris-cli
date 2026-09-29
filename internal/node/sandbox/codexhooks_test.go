@@ -130,8 +130,8 @@ func TestCodexHookOverrides(t *testing.T) {
 		SessionStartHook:      "keydris __agent-context",
 	})
 	want := []string{
-		`hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command="'/opt/key dris/keydris' __pretool-use --codex",timeout=660}]}]`,
-		`hooks.PermissionRequest=[{matcher="^Bash$",hooks=[{type="command",command="keydris \"__permission-request\"",timeout=660}]}]`,
+		`hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command="'/opt/key dris/keydris' __pretool-use --codex",timeout=660,statusMessage="Keydris policy check — approve or reject in the Keydris console if requested"}]}]`,
+		`hooks.PermissionRequest=[{matcher="^Bash$",hooks=[{type="command",command="keydris \"__permission-request\"",timeout=660,statusMessage="Keydris policy check — approve or reject in the Keydris console if requested"}]}]`,
 		`hooks.SessionStart=[{hooks=[{type="command",command="keydris __agent-context",timeout=30}]}]`,
 	}
 	if len(got) != len(want) {

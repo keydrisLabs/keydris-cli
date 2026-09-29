@@ -63,11 +63,22 @@ func runPreToolUse(args []string) int {
 	}
 	verdict, reason := decidePreToolUse(os.Stdin, harness)
 	if codex {
-		emitPreToolVerdict(verdict, reason)
+		// Codex treats a zero exit with no output as success. A bare
+		// permissionDecision:"allow" is unsupported unless updatedInput is
+		// also supplied, so only emit a structured response for denials.
+		writeHarnessPreToolVerdict(os.Stdout, harness, verdict, reason)
 		return 0
 	}
-	emitPreToolVerdict(verdict, reason)
+	writeHarnessPreToolVerdict(os.Stdout, harness, verdict, reason)
 	return 0
+}
+
+func writeHarnessPreToolVerdict(writer io.Writer, harness hookHarness, verdict, reason string) {
+	if harness == hookHarnessCodex {
+		writeCodexPreToolVerdict(writer, verdict, reason)
+		return
+	}
+	writePreToolVerdict(writer, verdict, reason)
 }
 
 // runPermissionRequest implements `keydris __permission-request`, the Codex
@@ -296,12 +307,6 @@ func writeCodexPermissionVerdict(writer io.Writer, verdict, reason string) {
 		return
 	}
 	fmt.Fprintln(writer, string(encoded))
-}
-
-// emitPreToolVerdict prints the Claude Code PreToolUse hook response. Codex's
-// PreToolUse accepts the allow/deny permissionDecision vocabulary used here.
-func emitPreToolVerdict(verdict, reason string) {
-	writePreToolVerdict(os.Stdout, verdict, reason)
 }
 
 func writePreToolVerdict(writer io.Writer, verdict, reason string) {

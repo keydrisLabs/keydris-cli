@@ -99,6 +99,19 @@ func TestPermissionRequestAllowUsesCodexHookSchema(t *testing.T) {
 	}
 }
 
+func TestCodexPreToolAllowExitsSilently(t *testing.T) {
+	var output bytes.Buffer
+	writeHarnessPreToolVerdict(&output, hookHarnessCodex, "allow", "allowed by policy")
+	if output.Len() != 0 {
+		t.Fatalf("Codex allow must produce no PreToolUse output: %s", output.String())
+	}
+
+	writeHarnessPreToolVerdict(&output, hookHarnessClaude, "allow", "allowed by policy")
+	if !strings.Contains(output.String(), `"permissionDecision":"allow"`) {
+		t.Fatalf("Claude allow response missing: %s", output.String())
+	}
+}
+
 func TestUnresolvedApprovalDecisionFailsClosed(t *testing.T) {
 	verdict, reason := commandVerdict(
 		runtimecontract.DecisionApprovalRequired,
