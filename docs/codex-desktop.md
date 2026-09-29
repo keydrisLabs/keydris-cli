@@ -21,7 +21,7 @@ keydris codex-desktop
 
 Quit the app first. Electron hands a second launch to the running instance, and that instance's app-server has no session, so the command stops and says so. Otherwise it mints one session, launches the app, and stays in the foreground until the app quits. Ctrl-C asks the app to quit and forces it after ten seconds or a second Ctrl-C. The session is then revoked.
 
-A Dock launch is ordinary Codex. One exception comes from the CLI integration: when `keydris init codex` wired `~/.codex/hooks.json` and those hooks are trusted, they run in every Codex process, including a Dock launch of the app, and deny each shell command because there is no session.
+A Dock launch is ordinary Codex. One exception: Keydris hooks that an earlier release of `keydris init codex` wrote to `~/.codex/hooks.json` run in every Codex process that trusts them, including a Dock launch of the app, and deny each shell command because there is no session. Rerunning `keydris init codex` removes them.
 
 ## How the app is governed
 
@@ -30,7 +30,7 @@ The app runs its agent as `codex app-server`, a child process that inherits the 
 `keydris codex-desktop` points `CODEX_CLI_PATH` at `~/.keydris-data/codex-desktop/bin/codex`. That shim execs the app's own codex with the Keydris overrides added as `-c` options:
 
 - The settings `keydris codex` passes: hooks enabled, and sandboxed network through Codex's proxy, which honors the Keydris upstream proxy.
-- The Keydris `PreToolUse`, `PermissionRequest`, and `SessionStart` hooks, as session-flag hooks with the same commands `keydris init codex` writes to `hooks.json`.
+- The Keydris `PreToolUse`, `PermissionRequest`, and `SessionStart` hooks, as session-flag hooks, the same ones `keydris codex` passes.
 - `hooks.state`, which marks those hooks trusted by their current hashes, and enabled.
 
 Codex keeps only the last group of `-c` options: a `-c` after the subcommand discards every `-c` before it, and the app puts its plugin flags there. The shim therefore adds its options right after the caller's last `-c`, never after `--`, or first when there is none. The app's own options keep the effect they would have without the shim.

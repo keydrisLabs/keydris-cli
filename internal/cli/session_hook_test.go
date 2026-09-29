@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
-	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
@@ -386,7 +386,7 @@ func TestSessionIDRejectsPaths(t *testing.T) {
 }
 
 func TestCodexCommandArgsEnableSandboxedUpstreamProxy(t *testing.T) {
-	got := codexCommandArgs([]string{"--model", "example"})
+	got := codexCommandArgs([]string{"--model", "example"}, codexEnforcementOverrides())
 	joined := strings.Join(got, " ")
 	for _, want := range []string{
 		"features.hooks=true",
@@ -398,6 +398,17 @@ func TestCodexCommandArgsEnableSandboxedUpstreamProxy(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("Codex args missing %q: %v", want, got)
 		}
+	}
+}
+
+// A -c after the subcommand discards every -c before it, so the governed
+// values follow the user's last one.
+func TestCodexCommandArgsFollowTheUsersLastConfig(t *testing.T) {
+	got := codexCommandArgs([]string{"exec", "-c", `approval_policy="never"`, "--json", "list files"}, []string{"features.hooks=true"})
+	joined := strings.Join(got, " ")
+	if !strings.HasPrefix(joined, `exec -c approval_policy="never" -c features.hooks=true`) ||
+		!strings.HasSuffix(joined, "--json list files") {
+		t.Fatalf("arguments = %q", got)
 	}
 }
 
@@ -420,7 +431,7 @@ func TestCodexHookFlagsCannotBeOverridden(t *testing.T) {
 }
 
 func TestCodexWindowsManagedNetworkingUsesElevatedSandbox(t *testing.T) {
-	args := strings.Join(codexCommandArgs(nil), " ")
+	args := strings.Join(codexCommandArgs(nil, codexEnforcementOverrides()), " ")
 	if got := strings.Contains(args, `windows.sandbox="elevated"`); got != (runtime.GOOS == "windows") {
 		t.Fatalf("platform %s has incorrect sandbox arguments: %s", runtime.GOOS, args)
 	}
@@ -438,14 +449,10 @@ func TestCodexWindowsManagedNetworkingUsesElevatedSandbox(t *testing.T) {
 	}
 }
 
-// TestRunCodexRefusesToLaunchWhenTheStartupProbeDoesNotDeny covers the gate
-// added with the Codex hook probe: configuration that verifies on paper but
-// executes without issuing an explicit denial must stop the wrapper before it
-// mints a session or launches Codex.
-func TestRunCodexRefusesToLaunchWhenTheStartupProbeDoesNotDeny(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake codex shim is a POSIX script")
-	}
+// codexWrapperFixture stubs the session calls `keydris codex` makes and puts a
+// fake codex on PATH. It returns the config and the number of minted sessions.
+func codexWrapperFixture(t *testing.T) (*config.Config, *int) {
+	t.Helper()
 	uxConfig(t)
 	dataDir := t.TempDir()
 	t.Setenv("KEYDRIS_DATA_DIR", dataDir)
@@ -455,10 +462,10 @@ func TestRunCodexRefusesToLaunchWhenTheStartupProbeDoesNotDeny(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var mints int
+	mints := new(int)
 	oldMint, oldRevoke, oldSend, oldExchange, oldRoutes := mintSessionInstance, revokeSessionInstance, sendSessionMessage, exchangeSessionMessage, fetchSessionRoutes
 	mintSessionInstance = func(*config.Config, string, string, string) (*mintedInstance, error) {
-		mints++
+		*mints++
 		return &mintedInstance{SPIFFEID: "spiffe://keydris.test/codex", KIT: "test-kit", SessionID: "test-ulid"}, nil
 	}
 	revokeSessionInstance = func(*config.Config, string) error { return nil }
@@ -469,9 +476,9 @@ func TestRunCodexRefusesToLaunchWhenTheStartupProbeDoesNotDeny(t *testing.T) {
 	fetchSessionRoutes = func(cfg *config.Config, _ string) (*runtimecontract.RuntimeRoutes, error) {
 		return testSessionRoutes(cfg.AgentID), nil
 	}
-	defer func() {
+	t.Cleanup(func() {
 		mintSessionInstance, revokeSessionInstance, sendSessionMessage, exchangeSessionMessage, fetchSessionRoutes = oldMint, oldRevoke, oldSend, oldExchange, oldRoutes
-	}()
+	})
 
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -481,26 +488,90 @@ func TestRunCodexRefusesToLaunchWhenTheStartupProbeDoesNotDeny(t *testing.T) {
 	if _, err := exec.LookPath("codex"); err != nil {
 		t.Fatalf("fake codex shim is not on PATH: %v", err)
 	}
+	return config.Load(), mints
+}
 
-	cfg := config.Load()
-	opt, err := codexHookOptions()
-	if err != nil {
+// TestRunCodexRefusesToLaunchWhenTheStartupProbeDoesNotDeny covers the gate
+// added with the Codex hook probe: hooks that execute without issuing an
+// explicit denial must stop the wrapper before it mints a session or launches
+// Codex.
+func TestRunCodexRefusesToLaunchWhenTheStartupProbeDoesNotDeny(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake codex shim is a POSIX script")
+	}
+	cfg, mints := codexWrapperFixture(t)
+	if _, err := configureCodex(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if err := sandbox.ConfigureCodexHooks(cfg.CodexHooksPath, opt); err != nil {
-		t.Fatal(err)
-	}
-	if wired, err := sandbox.VerifyCodexHooks(cfg.CodexHooksPath, opt); err != nil || !wired {
-		t.Fatalf("fixture hooks are not wired: %v, %v", wired, err)
-	}
-
 	// Run the real hook commands, but have them exit without a verdict.
 	t.Setenv("KEYDRIS_TEST_CODEX_HOOK_PROCESS", "1")
 	t.Setenv("KEYDRIS_TEST_CODEX_HOOK_SILENT", "1")
 	if code := runCodex(nil); code != 1 {
 		t.Fatalf("runCodex code = %d, want 1 when the startup probe does not deny", code)
 	}
-	if mints != 0 {
-		t.Fatalf("runCodex minted %d session(s) despite the failed probe", mints)
+	if *mints != 0 {
+		t.Fatalf("runCodex minted %d session(s) despite the failed probe", *mints)
+	}
+}
+
+// Codex skips an untrusted hook without an error, so a launch whose codex does
+// not report every Keydris hook trusted and enabled must not start.
+func TestRunCodexRefusesWhenCodexDoesNotTrustTheHooks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake codex shim is a POSIX script")
+	}
+	cfg, mints := codexWrapperFixture(t)
+	if _, err := configureCodex(cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEYDRIS_TEST_CODEX_HOOK_PROCESS", "1")
+	previous := codexSessionFlagHooks
+	t.Cleanup(func() { codexSessionFlagHooks = previous })
+	var listings int
+	codexSessionFlagHooks = func(string, []string) ([]codexListedHook, error) {
+		listings++
+		var hooks []codexListedHook
+		for _, event := range []string{"preToolUse", "permissionRequest", "sessionStart"} {
+			hooks = append(hooks, codexListedHook{Key: "/<session-flags>/config.toml:" + event + ":0:0", EventName: event, Source: "sessionFlags", CurrentHash: "sha256:" + event, TrustStatus: "untrusted", Enabled: true})
+		}
+		return hooks, nil
+	}
+	if code := runCodex(nil); code != 1 {
+		t.Fatalf("runCodex code = %d, want 1 when Codex does not trust the hooks", code)
+	}
+	if listings != 2 || *mints != 0 {
+		t.Fatalf("listings = %d, sessions minted = %d", listings, *mints)
+	}
+}
+
+// Trusted hooks.json entries from an earlier release would run beside the
+// per-launch hooks. The wrapper leaves the file alone and asks for init.
+func TestRunCodexRefusesHooksFromAnEarlierRelease(t *testing.T) {
+	cfg, mints := codexWrapperFixture(t)
+	if _, err := configureCodex(cfg); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[{"type":"command","command":"'/usr/local/bin/keydris' __pretool-use --codex","timeout":30}]}]}}`)
+	if err := os.MkdirAll(filepath.Dir(cfg.CodexHooksPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.CodexHooksPath, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runCodex(nil); code != 1 {
+		t.Fatalf("runCodex code = %d, want 1 with hooks from an earlier release", code)
+	}
+	if raw, err := os.ReadFile(cfg.CodexHooksPath); err != nil || !bytes.Equal(raw, legacy) {
+		t.Fatalf("hooks.json changed: %s, %v", raw, err)
+	}
+	if *mints != 0 {
+		t.Fatalf("runCodex minted %d session(s)", *mints)
+	}
+}
+
+func TestRunCodexRequiresInit(t *testing.T) {
+	_, mints := codexWrapperFixture(t)
+	if code := runCodex(nil); code != 1 || *mints != 0 {
+		t.Fatalf("runCodex code = %d, sessions minted = %d, want 1 and 0 before init", code, *mints)
 	}
 }

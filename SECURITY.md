@@ -64,7 +64,7 @@ Once 1.0 ships, this table will name a supported range rather than a channel tip
 
 - The `keydris` binary and everything under [`internal/`](internal/) and [`cmd/`](cmd/)
 - The proxy daemon and all three data planes
-- The harness integrations: what `keydris init` writes into `~/.claude/settings.json` and `~/.codex/hooks.json`, and the hooks themselves
+- The harness integrations: what `keydris init` writes into `~/.claude/settings.json`, the hook options and trust `keydris codex` and `keydris codex-desktop` pass to Codex, and the hooks themselves
 - The session socket, the session state files, and the evidence ledger
 - The runtime contract decoders in [`internal/runtimecontract/`](internal/runtimecontract/)
 - The published artifacts — the S3/CloudFront installer, `install.sh`, and the seven `@keydris` npm packages — and [`release.yml`](.github/workflows/release.yml)
@@ -104,6 +104,7 @@ Findings we especially want to hear about:
 - **Origin smuggling.** The inner request's authority must match the CONNECT target, and a present TLS SNI must match it too. Origins are canonicalized for case, trailing dots, IP-literal form, and port before any comparison.
 - **A token replayed for a different action.** The MCP action intent is canonicalized with RFC 8785 and hashed, so the control plane binds the minted token to the exact action and parameters. A token whose `expires_at` is not in the future is refused before injection.
 - **Fail-open hooks.** Both harnesses fail open when a hook crashes, times out, or prints invalid JSON, so every error path in the gating hooks emits an explicit deny and exits 0 — including the verdict-encoding failure path, which has a hard-coded literal.
+- **Hooks Codex never runs.** Codex skips a hook it does not trust, or one turned off in `config.toml`, without an error. `keydris codex` and `keydris codex-desktop` pass the Keydris hooks with their trust and `enabled = true`, place them in the `-c` group Codex keeps, and refuse to launch unless the codex they run reports every Keydris hook trusted and enabled.
 - **An unrecorded allow.** On the legacy broker path the audit record is appended *before* the decision is acted on, and a failed append rejects the request.
 - **A silently edited ledger.** Records are hash-chained; `keydris logs` recomputes the chain and reports the first inconsistency.
 - **PID reuse.** `proxy down` and the renewal loop compare an OS process-creation identity, not just a PID, so a recycled PID is never signalled or trusted.
@@ -117,7 +118,7 @@ These are properties of the environment, not of this code. No change here can cr
 1. **Un-bypassability comes from the sandbox.** The strong guarantee holds only while Claude Code's OS sandbox (bubblewrap on Linux/WSL2, Seatbelt on macOS) is enabled and routed to the Keydris proxy, or while the Linux `transparent` plane's iptables redirect is installed. `keydris init --strict` locks the sandbox as a hard gate and `keydris status` surfaces drift, but a user with write access to their own settings can turn it off and lose enforcement.
 2. **The `proxyenv` plane is intentionally bypassable.** `HTTP_PROXY` is opt-in by construction. It exists for environments with no kernel hook and no sandbox; it makes the fallback *honest* (fully attributed), not *mandatory*.
 3. **Launching outside the wrapper is not governed.** Starting `codex` directly, rather than through `keydris codex`, creates no Keydris session at all.
-4. **Codex hook trust is a user convenience, not an administrator boundary.** For managed environments where users must not be able to disable governance, deploy the same absolute hook paths through Codex `requirements.toml`.
+4. **Codex hook trust comes with the wrapped launch, not with the machine.** `keydris codex` carries the hooks and their trust into each launch it starts; Codex started any other way runs no Keydris hooks. For managed environments where users must not be able to run ungoverned Codex, deploy the same absolute hook paths through Codex `requirements.toml`.
 5. **`~/.keydris-data` is as trustworthy as the account that owns it.** Anything running as that user can read the session state, the identity key, and the ledger. Owner-only permissions are enforced (`0700` directory, `0600` files); they do not defend against the user's own processes.
 6. **The Claude Code coupling is undocumented surface.** The Claude path relies on `$CLAUDE_ENV_FILE` and on a hook-set `HTTP_PROXY` composing with the sandbox's own `httpProxyPort` routing. That composition is not documented by Anthropic and may vary by Claude Code version — re-verify on upgrades. `keydris run` does not depend on it.
 7. **macOS `enableWeakerNetworkIsolation` is required for TLS termination** under Seatbelt, and is itself a documented exfiltration vector; the Claude Code documentation calls this out.
@@ -182,7 +183,7 @@ The CLI governs **which requests reach an upstream, and with what authority**. I
 - **Point `KEYDRIS_CONTROL_MTLS_URL` at an HTTPS endpoint** and leave `KEYDRIS_MTLS_SERVER_CA` unset in production, so the server certificate verifies against the system roots. Pin an extra CA only for a local or self-signed control plane.
 - **Leave `KEYDRIS_MANAGED_MODE` and `KEYDRIS_MANAGED_DESTINATIONS` unset.** Scope is derived from the policy and refreshed every session; setting them by hand overrides that detection and lets local configuration widen what gets terminated.
 - **Do not set `KEYDRIS_TRUST_PROJECT_CONFIG=1`** on a machine that opens untrusted repositories.
-- **Deploy the Codex hooks through `requirements.toml`** in managed fleets, and verify with `keydris status` that they are wired.
+- **Deploy the Codex hooks through `requirements.toml`** in managed fleets where ungoverned Codex must not run.
 - **Keep the harness's hook timeout well above 5 seconds**, so a slow control plane produces a deny rather than a timeout the harness treats as no answer.
 - **Treat `~/.keydris-data` as a secret store.** Exclude it from backups, sync clients, crash reporters, and log shippers, and do not copy `evidence.jsonl` or `proxy.log` into a shared tracker without scrubbing them.
 - **Verify what you installed.** The installer checks `SHA256SUMS`; if you mirror artifacts, keep that verification. Do not install with `--omit=optional` from npm — it removes the native package.

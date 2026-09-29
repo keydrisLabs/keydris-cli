@@ -154,17 +154,14 @@ func TestCleanupAgentSkillKeepsSharedCopyWhileOtherIntegrationActive(t *testing.
 	if err := installAgentSkill(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.CodexHooksPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfg.CodexHooksPath, []byte(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"keydris __agent-context"}]}]}}`), 0o644); err != nil {
+	if _, err := configureCodex(cfg); err != nil {
 		t.Fatal(err)
 	}
 	cleanupAgentSkill(cfg, "claude-code")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("shared skill removed while Codex still used Keydris: %v", err)
 	}
-	if err := os.WriteFile(cfg.CodexHooksPath, []byte(`{"hooks":{}}`), 0o644); err != nil {
+	if _, _, err := deinitCodex(cfg); err != nil {
 		t.Fatal(err)
 	}
 	cleanupAgentSkill(cfg, "claude-code")

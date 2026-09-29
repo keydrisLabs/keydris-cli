@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -84,13 +85,25 @@ func TestCodexHooksExecuteFromPathWithSpaces(t *testing.T) {
 			t.Fatal("legacy PowerShell string expression passed the execution probe")
 		}
 	}
-	// Configuration migration must recognize the invocation it just generated.
+	// Earlier releases wrote these commands to hooks.json. Cleanup must
+	// recognize them there.
 	settings := filepath.Join(dir, "hooks.json")
-	if err := sandbox.ConfigureCodexHooks(settings, opt); err != nil {
+	group := func(matcher, command string) map[string]any {
+		return map[string]any{"matcher": matcher, "hooks": []any{map[string]any{"type": "command", "command": command, "timeout": 30}}}
+	}
+	raw, err := json.Marshal(map[string]any{"hooks": map[string]any{
+		"PreToolUse":        []any{group("^Bash$", opt.PreToolUseHook)},
+		"PermissionRequest": []any{group("^Bash$", opt.PermissionRequestHook)},
+		"SessionStart":      []any{group("", opt.SessionStartHook)},
+	}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if wired, err := sandbox.VerifyCodexHooks(settings, opt); err != nil || !wired {
-		t.Fatalf("generated configuration failed verification: %v, %v", wired, err)
+	if err := os.WriteFile(settings, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if present, err := sandbox.HasKeydrisHooks(settings); err != nil || !present {
+		t.Fatalf("generated hooks were not recognized: %v, %v", present, err)
 	}
 	if removed, err := sandbox.DeconfigureCodexHooks(settings); err != nil || !removed {
 		t.Fatalf("generated hook could not be removed: %v, %v", removed, err)
