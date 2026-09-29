@@ -128,6 +128,7 @@ func TestUnresolvedApprovalDecisionFailsClosed(t *testing.T) {
 
 func TestCommandApprovalRetriesIdenticalRequestAfterConsoleApproval(t *testing.T) {
 	var requests []map[string]any
+	var notices bytes.Buffer
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case commandsAuthorizeP:
@@ -156,7 +157,7 @@ func TestCommandApprovalRetriesIdenticalRequestAfterConsoleApproval(t *testing.T
 	input := preToolInput{ToolName: "Bash", CWD: "/workspace"}
 	input.ToolInput.Command = "npm publish"
 	decision, reason, err := authorizeCommandWithClient(
-		server.Client(), server.URL, "kit-token", input,
+		server.Client(), server.URL, "kit-token", input, &notices,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +167,16 @@ func TestCommandApprovalRetriesIdenticalRequestAfterConsoleApproval(t *testing.T
 	}
 	if len(requests) != 2 || !reflect.DeepEqual(requests[0], requests[1]) {
 		t.Fatalf("authorization retry changed request: %+v", requests)
+	}
+	for _, want := range []string{
+		"approval required",
+		"Open the Keydris console",
+		"waiting up to 10 minutes",
+		"approval granted; continuing",
+	} {
+		if !strings.Contains(notices.String(), want) {
+			t.Fatalf("approval notice %q missing %q", notices.String(), want)
+		}
 	}
 }
 

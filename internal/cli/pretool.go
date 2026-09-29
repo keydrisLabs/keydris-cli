@@ -123,7 +123,7 @@ func decidePreToolUse(stdin io.Reader, harness hookHarness) (string, string) {
 		}
 		kit = current.SVID
 	}
-	decision, reason, err := authorizeCommand(cfg, kit, input)
+	decision, reason, err := authorizeCommand(cfg, kit, input, os.Stderr)
 	if err != nil {
 		return "deny", "keydris: command authorization unavailable: " + err.Error()
 	}
@@ -170,18 +170,20 @@ func authorizeCommand(
 	cfg *config.Config,
 	kit string,
 	input preToolInput,
+	approvalWriter io.Writer,
 ) (decision runtimecontract.NormalizedDecision, reasonCode string, err error) {
 	client, err := mTLSClient(cfg)
 	if err != nil {
 		return "", "", err
 	}
-	return authorizeCommandWithClient(client, cfg.ControlMTLSURL, kit, input)
+	return authorizeCommandWithClient(client, cfg.ControlMTLSURL, kit, input, approvalWriter)
 }
 
 func authorizeCommandWithClient(
 	client *http.Client,
 	baseURL, kit string,
 	input preToolInput,
+	approvalWriter io.Writer,
 ) (decision runtimecontract.NormalizedDecision, reasonCode string, err error) {
 	requestID := "cli-" + newProxyToken()
 	body, err := json.Marshal(map[string]any{
@@ -200,13 +202,22 @@ func authorizeCommandWithClient(
 	if err != nil || decision != runtimecontract.DecisionApprovalRequired {
 		return decision, reasonCode, err
 	}
+	if approvalWriter != nil {
+		fmt.Fprintln(approvalWriter, "keydris: approval required. Open the Keydris console to allow or reject this action; waiting up to 10 minutes.")
+	}
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), approvalWaitTimeout)
 	defer waitCancel()
 	if err := runtimecontract.WaitForApproval(
 		waitCtx, client, baseURL, kit, requestID,
 	); err != nil {
+		if approvalWriter != nil {
+			fmt.Fprintf(approvalWriter, "keydris: approval was not granted: %v\n", err)
+		}
 		return "", "", err
+	}
+	if approvalWriter != nil {
+		fmt.Fprintln(approvalWriter, "keydris: approval granted; continuing.")
 	}
 	return authorizeCommandOnce(client, baseURL, kit, requestID, body)
 }
