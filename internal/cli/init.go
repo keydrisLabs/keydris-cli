@@ -21,7 +21,7 @@ import (
 var agentUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 func runInit(args []string) int {
-	const usage = "Usage: keydris init [claude-code|codex|claude-desktop] [agent-id] [--strict=false] [--trust-store] [--no-start] [--no-browser]"
+	const usage = "Usage: keydris init [claude-code|codex|claude-desktop|codex-desktop] [agent-id] [--strict=false] [--trust-store] [--no-start] [--no-browser]"
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		fmt.Fprintln(os.Stdout, usage)
 		return 0
@@ -39,7 +39,7 @@ func runInit(args []string) int {
 	if target == "openai" {
 		target = "codex"
 	}
-	if target != "claude-code" && target != "codex" && target != "claude-desktop" {
+	if !knownIntegration(target) {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
@@ -80,7 +80,7 @@ func runInit(args []string) int {
 		ui.row("error", "Environment", err.Error())
 		return 1
 	}
-	if hostenv.Current().WSL != "" && target != "claude-desktop" {
+	if hostenv.Current().WSL != "" && (target == "claude-code" || target == "codex") {
 		command := "claude"
 		if target == "codex" {
 			command = "codex"
@@ -145,8 +145,10 @@ func runInit(args []string) int {
 		err = sandbox.Configure(cfg.ClaudeSettingsPath, claudeOptions)
 	case "codex":
 		err = sandbox.ConfigureCodexHooks(cfg.CodexHooksPath, codexOptions)
-	default:
+	case "claude-desktop":
 		err = configureClaudeDesktop(cfg, claudeOptions)
+	default:
+		err = configureCodexDesktop(cfg)
 	}
 	finish(err)
 	if err != nil {
@@ -214,10 +216,18 @@ func runInit(args []string) int {
 			ui.row("error", "Verification", "Codex hooks need attention")
 			return 1
 		}
-	default:
+	case "claude-desktop":
 		present, err := sandbox.HasKeydrisHooks(desktopSettingsPath(cfg))
 		if err != nil || !present {
 			ui.row("error", "Verification", "Claude Desktop hooks need attention")
+			return 1
+		}
+	default:
+		finish = ui.progress("Checking the Keydris hooks in the Codex app")
+		err := verifyCodexDesktop(codexOptions)
+		finish(err)
+		if err != nil {
+			ui.row("error", "Verification", "Codex Desktop hooks need attention: "+err.Error())
 			return 1
 		}
 	}
@@ -228,6 +238,8 @@ func runInit(args []string) int {
 		ui.next("keydris run -- claude")
 	} else if target == "claude-desktop" {
 		ui.next("keydris claude-desktop")
+	} else if target == "codex-desktop" {
+		ui.next("keydris codex-desktop")
 	} else {
 		ui.next("keydris codex")
 	}
@@ -243,10 +255,10 @@ func promptInit() ([]string, bool) {
 	}
 	printInitBanner(os.Stdout)
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Fprintln(os.Stdout, "Choose an integration:\n  1) Claude Code\n  2) OpenAI Codex\n  3) Claude Desktop")
+	fmt.Fprintln(os.Stdout, "Choose an integration:\n  1) Claude Code\n  2) OpenAI Codex\n  3) Claude Desktop\n  4) Codex Desktop")
 	target := ""
 	for target == "" {
-		fmt.Fprint(os.Stdout, "Selection [1-3]: ")
+		fmt.Fprint(os.Stdout, "Selection [1-4]: ")
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			return nil, false
@@ -258,8 +270,10 @@ func promptInit() ([]string, bool) {
 			target = "codex"
 		case "3", "claude-desktop", "desktop":
 			target = "claude-desktop"
+		case "4", "codex-desktop":
+			target = "codex-desktop"
 		default:
-			newUI(os.Stdout).row("warning", "Selection", "Enter 1, 2, or 3 (Ctrl+C to cancel)")
+			newUI(os.Stdout).row("warning", "Selection", "Enter 1, 2, 3, or 4 (Ctrl+C to cancel)")
 		}
 	}
 	existing := config.Load().AgentID

@@ -13,6 +13,7 @@ const (
 	agentRuntimeClaudeCode    = "claude_code"
 	agentRuntimeClaudeDesktop = "claude_desktop"
 	agentRuntimeCodex         = "codex"
+	agentRuntimeCodexDesktop  = "codex_desktop"
 )
 
 // agentRuntimeForCommand maps the executable `keydris run` wraps to a runtime

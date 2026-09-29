@@ -1,5 +1,7 @@
 package sandbox
 
+import "fmt"
+
 // Codex command gating lives in $CODEX_HOME/hooks.json rather than the Claude
 // settings file. PreToolUse blocks policy denials, approval-required commands,
 // and authorization errors. PermissionRequest auto-allows policy-allowed
@@ -15,6 +17,28 @@ type CodexHookOptions struct {
 
 const codexShellMatcher = "^Bash$"
 const minCodexHookTimeoutSeconds = 10
+const codexHookTimeoutSeconds = 30
+
+// CodexHookOverrides returns the same hooks as Codex -c values. Codex loads
+// them with source "sessionFlags" for one launch, so hooks.json is untouched.
+// Each value is a TOML array of matcher groups.
+func CodexHookOverrides(opt CodexHookOptions) []string {
+	group := func(matcher, command string) string {
+		handler := fmt.Sprintf(`{type="command",command=%q,timeout=%d}`, command, codexHookTimeoutSeconds)
+		if matcher == "" {
+			return fmt.Sprintf(`[{hooks=[%s]}]`, handler)
+		}
+		return fmt.Sprintf(`[{matcher=%q,hooks=[%s]}]`, matcher, handler)
+	}
+	overrides := []string{
+		"hooks.PreToolUse=" + group(codexShellMatcher, opt.PreToolUseHook),
+		"hooks.PermissionRequest=" + group(codexShellMatcher, opt.PermissionRequestHook),
+	}
+	if opt.SessionStartHook != "" {
+		overrides = append(overrides, "hooks.SessionStart="+group("", opt.SessionStartHook))
+	}
+	return overrides
+}
 
 // ConfigureCodexHooks merges the Keydris command-gating hooks into the Codex
 // hooks file, replacing stale Keydris entries and preserving user hooks.
@@ -39,7 +63,7 @@ func ConfigureCodexHooks(path string, opt CodexHookOptions) error {
 		hooks[event] = append(kept, map[string]any{
 			"matcher": matcher,
 			"hooks": []any{map[string]any{
-				"type": "command", "command": command, "timeout": 30,
+				"type": "command", "command": command, "timeout": codexHookTimeoutSeconds,
 			}},
 		})
 	}

@@ -173,19 +173,28 @@ func runCodex(args []string) int {
 		fmt.Fprintf(os.Stderr, "keydris codex: %v; repair the hooks with `keydris init codex <agent-id>` before retrying\n", err)
 		return 1
 	}
-	// Enable Codex's own sandboxed-network proxy and let it honor the Keydris
-	// upstream proxy inherited below. The public wildcard is constrained again
-	// by Keydris; explicit loopback entries permit the local upstream endpoint.
 	wrapped := append([]string{"--", executable}, codexCommandArgs(args)...)
 	return runRun(wrapped)
 }
 
+// codexEnforcementOverrides are the -c values every governed Codex launch
+// carries. They enable Codex's own sandboxed-network proxy and let it honor
+// the Keydris upstream proxy inherited from the session. The public wildcard
+// is constrained again by Keydris; explicit loopback entries permit the local
+// upstream endpoint.
+func codexEnforcementOverrides() []string {
+	return []string{
+		"features.hooks=true",
+		"sandbox_workspace_write.network_access=true",
+		"features.network_proxy.enabled=true",
+		`features.network_proxy.domains={"*"="allow","127.0.0.1"="allow","localhost"="allow"}`,
+	}
+}
+
 func codexCommandArgs(args []string) []string {
-	codexArgs := []string{
-		"-c", "features.hooks=true",
-		"-c", "sandbox_workspace_write.network_access=true",
-		"-c", "features.network_proxy.enabled=true",
-		"-c", `features.network_proxy.domains={"*"="allow","127.0.0.1"="allow","localhost"="allow"}`,
+	var codexArgs []string
+	for _, override := range codexEnforcementOverrides() {
+		codexArgs = append(codexArgs, "-c", override)
 	}
 	if runtime.GOOS == "windows" {
 		// Managed networking cannot run in Codex's unelevated backend. Scope

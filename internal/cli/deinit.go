@@ -9,17 +9,17 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 )
 
-// runDeinit implements `keydris deinit claude-code|codex|claude-desktop`, the
-// inverse of `keydris init`. It strips the Keydris configuration for the chosen
-// target — the Claude Code sandbox routing, CA env, and hooks, the Codex
-// command hooks, or the Claude Desktop settings directory — preserving
+// runDeinit implements `keydris deinit claude-code|codex|claude-desktop|codex-desktop`,
+// the inverse of `keydris init`. It strips the Keydris configuration for the
+// chosen target — the Claude Code sandbox routing, CA env, and hooks, the Codex
+// command hooks, or the Claude Desktop or Codex Desktop directory — preserving
 // unrelated settings. Shared agent and policy state is cleared only when no
-// other integration retains Keydris hooks.
+// other integration remains configured.
 // The Keydris CA files are left in place so a later `init` reuses them; if you
 // installed the CA into the OS trust store with `--trust-store`, remove it
 // there manually or use keydris reset.
 func runDeinit(args []string) int {
-	const usage = "usage: keydris deinit claude-code|codex|claude-desktop"
+	const usage = "usage: keydris deinit claude-code|codex|claude-desktop|codex-desktop"
 
 	if len(args) == 0 || args[0] == "" || args[0][0] == '-' {
 		fmt.Fprintln(os.Stderr, usage)
@@ -29,8 +29,8 @@ func runDeinit(args []string) int {
 	if target == "openai" {
 		target = "codex"
 	}
-	if target != "claude-code" && target != "codex" && target != "claude-desktop" {
-		fmt.Fprintf(os.Stderr, "keydris deinit: unknown target %q (want claude-code, codex, or claude-desktop)\n", target)
+	if !knownIntegration(target) {
+		fmt.Fprintf(os.Stderr, "keydris deinit: unknown target %q (want claude-code, codex, claude-desktop, or codex-desktop)\n", target)
 		return 1
 	}
 
@@ -64,8 +64,10 @@ func runDeinit(args []string) int {
 	case "codex":
 		configPath = cfg.CodexHooksPath
 		changed, err = sandbox.DeconfigureCodexHooks(configPath)
-	default:
+	case "claude-desktop":
 		configPath, changed, err = deinitClaudeDesktop(cfg)
+	default:
+		configPath, changed, err = deinitCodexDesktop(cfg)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris deinit: %v\n", err)
@@ -80,7 +82,15 @@ func runDeinit(args []string) int {
 			fmt.Fprintf(os.Stderr, "keydris deinit: clear MCP servers: %v\n", err)
 			return 1
 		}
-	case "codex":
+	case "codex", "codex-desktop":
+		// The Codex CLI and the desktop app read the same config.toml.
+		other := "codex-desktop"
+		if target == "codex-desktop" {
+			other = "codex"
+		}
+		if inUse, _ := integrationConfigured(cfg, other); inUse {
+			break
+		}
 		if _, err := sandbox.RemoveManagedCodexMcpServers(
 			cfg.CodexConfigPath,
 		); err != nil {
@@ -117,17 +127,40 @@ func runDeinit(args []string) int {
 	return 0
 }
 
-func otherIntegrationsRemain(cfg *config.Config, target string) (bool, error) {
-	checks := []struct{ name, path string }{
-		{"claude-code", cfg.ClaudeSettingsPath},
-		{"codex", cfg.CodexHooksPath},
-		{"claude-desktop", desktopSettingsPath(cfg)},
+// integrationNames are the `keydris init` targets.
+var integrationNames = []string{"claude-code", "codex", "claude-desktop", "codex-desktop"}
+
+func knownIntegration(name string) bool {
+	for _, known := range integrationNames {
+		if name == known {
+			return true
+		}
 	}
-	for _, check := range checks {
-		if check.name == target {
+	return false
+}
+
+// integrationConfigured reports whether `keydris init <name>` left its
+// configuration in place.
+func integrationConfigured(cfg *config.Config, name string) (bool, error) {
+	switch name {
+	case "claude-code":
+		return sandbox.HasKeydrisHooks(cfg.ClaudeSettingsPath)
+	case "codex":
+		return sandbox.HasKeydrisHooks(cfg.CodexHooksPath)
+	case "claude-desktop":
+		return sandbox.HasKeydrisHooks(desktopSettingsPath(cfg))
+	case "codex-desktop":
+		return codexDesktopConfigured(cfg), nil
+	}
+	return false, fmt.Errorf("unknown integration %q", name)
+}
+
+func otherIntegrationsRemain(cfg *config.Config, target string) (bool, error) {
+	for _, name := range integrationNames {
+		if name == target {
 			continue
 		}
-		present, err := sandbox.HasKeydrisHooks(check.path)
+		present, err := integrationConfigured(cfg, name)
 		if err != nil {
 			return false, err
 		}

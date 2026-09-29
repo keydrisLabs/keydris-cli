@@ -24,13 +24,19 @@ func reportMCPInventories(cfg *config.Config, w io.Writer) {
 		return
 	}
 	defer client.CloseIdleConnections()
-	sources := []struct {
+	type inventorySource struct {
 		runtime string
 		path    string
 		read    func(string) ([]runtimecontract.MCPInventoryEntry, error)
-	}{
+	}
+	sources := []inventorySource{
 		{"claude_code", cfg.ClaudeMcpConfigPath, sandbox.ReadClaudeMCPInventory},
 		{"codex", cfg.CodexConfigPath, sandbox.ReadCodexMCPInventory},
+	}
+	// The desktop app reads the CLI's config.toml. Report it under the app's
+	// runtime as well, so the console can match Codex Desktop sessions.
+	if codexDesktopConfigured(cfg) {
+		sources = append(sources, inventorySource{agentRuntimeCodexDesktop, cfg.CodexConfigPath, sandbox.ReadCodexMCPInventory})
 	}
 	for _, source := range sources {
 		observedAt := time.Now().UTC().Format(time.RFC3339Nano)

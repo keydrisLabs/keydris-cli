@@ -88,6 +88,8 @@ func Execute() int {
 		return runCodex(args[1:])
 	case "claude-desktop":
 		return runClaudeDesktop(args[1:])
+	case "codex-desktop":
+		return runCodexDesktop(args[1:])
 	case "init":
 		return runInit(args[1:])
 	case "deinit":
@@ -140,7 +142,9 @@ Usage:
                                        [--trust-store] [--no-start] [--no-browser]
   keydris init claude-desktop <agent>  Configure Claude Desktop hooks + CA
                                        [--trust-store] [--no-start] [--no-browser]
-  keydris deinit claude-code|codex|claude-desktop
+  keydris init codex-desktop <agent>   Configure the Codex desktop app (macOS) + CA
+                                       [--trust-store] [--no-start] [--no-browser]
+  keydris deinit claude-code|codex|claude-desktop|codex-desktop
                                      Undo init: remove the Keydris config
   keydris proxy up                   Start the brokered egress proxy in the background
   keydris proxy down                 Stop the background proxy
@@ -151,8 +155,9 @@ Usage:
   keydris run -- <cmd...>            Run a command inside a keydris session
   keydris codex [args...]            Run OpenAI Codex inside a keydris session
   keydris claude-desktop             Run Claude Desktop inside a keydris session
+  keydris codex-desktop              Run the Codex desktop app inside a keydris session
   keydris status                     Check identity, proxy, integrations and control plane
-                                       [--json] [--verbose] [--offline] [--target codex|claude-code|claude-desktop]
+                                       [--json] [--verbose] [--offline] [--target codex|claude-code|claude-desktop|codex-desktop]
   keydris doctor                     Detailed read-only status and recovery guidance
   keydris skill [--brief]            Read the bundled agent skill or session briefing
   keydris reset                      Preview and confirm removal of local setup and certificates
