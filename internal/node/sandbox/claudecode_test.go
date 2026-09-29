@@ -120,3 +120,23 @@ func TestVerifyReportsDrift(t *testing.T) {
 		t.Errorf("missing settings should not be OK")
 	}
 }
+
+func TestConfigurePreToolUseShowsApprovalStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := Configure(path, Options{PreToolUseHook: "keydris __pretool-use"}); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := readSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := settings["hooks"].(map[string]any)["PreToolUse"].([]any)
+	group := entries[len(entries)-1].(map[string]any)
+	handler := group["hooks"].([]any)[0].(map[string]any)
+	if got := handler["statusMessage"]; got != keydrisApprovalStatusMessage {
+		t.Fatalf("statusMessage = %q, want %q", got, keydrisApprovalStatusMessage)
+	}
+	if got := handler["timeout"]; got != float64(660) {
+		t.Fatalf("timeout = %v, want 660", got)
+	}
+}
