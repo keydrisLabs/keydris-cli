@@ -340,11 +340,13 @@ func (router *runtimeRouter) handleProviderExecutor(
 		return
 	}
 	if result.Decision.Decision == string(runtimecontract.DecisionApprovalRequired) {
+		log.Printf("runtime provider approval required route=%s; open the Keydris console to allow or reject the action (waiting up to 10 minutes)", route.RouteID)
 		if err := router.waitForApproval(parent, flow.SVID, requestID); err != nil {
 			log.Printf("runtime provider approval route=%s: %v", route.RouteID, err)
 			rejectRuntime(dp, flow, target.providerLabel+" approval was not granted")
 			return
 		}
+		log.Printf("runtime provider approval granted route=%s; continuing", route.RouteID)
 		result, err = execute()
 		if err != nil {
 			log.Printf("runtime provider retry route=%s: %v", route.RouteID, err)
@@ -674,11 +676,13 @@ func (router *runtimeRouter) handleMCPGateway(
 		return
 	}
 	if result.Decision.Decision == string(runtimecontract.DecisionApprovalRequired) {
+		log.Printf("runtime MCP gateway approval required route=%s; open the Keydris console to allow or reject the action (waiting up to 10 minutes)", route.RouteID)
 		if err := router.waitForApproval(parent, flow.SVID, requestID); err != nil {
 			log.Printf("runtime MCP gateway approval route=%s: %v", route.RouteID, err)
 			rejectRuntime(dp, flow, "MCP approval was not granted")
 			return
 		}
+		log.Printf("runtime MCP gateway approval granted route=%s; continuing", route.RouteID)
 		result, err = execute()
 		if err != nil {
 			log.Printf("runtime MCP gateway retry route=%s: %v", route.RouteID, err)
