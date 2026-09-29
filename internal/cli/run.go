@@ -155,25 +155,36 @@ func runCodex(args []string) int {
 		return 1
 	}
 	cfg := config.Load()
+	legacy, err := legacyCodexHooks(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "keydris codex: read %s: %v\n", cfg.CodexHooksPath, err)
+		return 1
+	}
+	if legacy {
+		fmt.Fprintf(os.Stderr, "keydris codex: %s still holds Keydris hooks from an earlier release; run `keydris init codex <agent-id>` once to remove them\n", cfg.CodexHooksPath)
+		return 1
+	}
+	if !codexConfigured(cfg) {
+		fmt.Fprintln(os.Stderr, "keydris codex: run `keydris init codex <agent-id>` first")
+		return 1
+	}
 	hookOptions, err := codexHookOptions()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris codex: %v\n", err)
-		return 1
-	}
-	wired, err := sandbox.VerifyCodexHooks(cfg.CodexHooksPath, hookOptions)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "keydris codex: verify command hooks: %v\n", err)
-		return 1
-	}
-	if !wired {
-		fmt.Fprintln(os.Stderr, "keydris codex: command or session-briefing hooks need updating; run `keydris init codex <agent-id>` and review /hooks")
 		return 1
 	}
 	if err := verifyCodexHookExecution(hookOptions); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris codex: %v; repair the hooks with `keydris init codex <agent-id>` before retrying\n", err)
 		return 1
 	}
-	wrapped := append([]string{"--", executable}, codexCommandArgs(args)...)
+	// Codex skips an untrusted hook without an error, so the codex about to
+	// run must confirm it trusts and enables every Keydris hook.
+	overrides, err := governedCodexOverrides(executable, hookOptions)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "keydris codex: %v\n", err)
+		return 1
+	}
+	wrapped := append([]string{"--", executable}, codexCommandArgs(args, overrides)...)
 	return runRun(wrapped)
 }
 
@@ -191,17 +202,14 @@ func codexEnforcementOverrides() []string {
 	}
 }
 
-func codexCommandArgs(args []string) []string {
-	var codexArgs []string
-	for _, override := range codexEnforcementOverrides() {
-		codexArgs = append(codexArgs, "-c", override)
-	}
+// codexCommandArgs places the governed overrides among the user's arguments.
+func codexCommandArgs(args, overrides []string) []string {
 	if runtime.GOOS == "windows" {
 		// Managed networking cannot run in Codex's unelevated backend. Scope
 		// the required backend to this launch rather than rewriting user config.
-		codexArgs = append(codexArgs, "-c", `windows.sandbox="elevated"`)
+		overrides = append(append([]string{}, overrides...), `windows.sandbox="elevated"`)
 	}
-	return append(codexArgs, args...)
+	return withCodexConfig(args, overrides)
 }
 
 func validateCodexHookArgs(args []string) error {

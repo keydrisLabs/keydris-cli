@@ -80,15 +80,21 @@ func runInit(args []string) int {
 		ui.row("error", "Environment", err.Error())
 		return 1
 	}
-	if hostenv.Current().WSL != "" && (target == "claude-code" || target == "codex") {
-		command := "claude"
-		if target == "codex" {
-			command = "codex"
-		}
-		if _, err := hostenv.ResolveCommand(command); err != nil {
+	if hostenv.Current().WSL != "" && target == "claude-code" {
+		if _, err := hostenv.ResolveCommand("claude"); err != nil {
 			ui.row("error", "Agent runtime", err.Error())
 			return 1
 		}
+	}
+	// The Codex hook check runs the codex this device launches.
+	var codexExecutable string
+	if target == "codex" {
+		resolved, err := hostenv.ResolveCommand("codex")
+		if err != nil {
+			ui.row("error", "Agent runtime", err.Error())
+			return 1
+		}
+		codexExecutable = resolved
 	}
 	// Resolve the executable before writing any configuration.
 	claudeOptions, err := claudeHookOptions(cfg, *strict)
@@ -140,11 +146,12 @@ func runInit(args []string) int {
 		return 1
 	}
 	finish = ui.progress("Configuring " + target)
+	var removedLegacyHooks bool
 	switch target {
 	case "claude-code":
 		err = sandbox.Configure(cfg.ClaudeSettingsPath, claudeOptions)
 	case "codex":
-		err = sandbox.ConfigureCodexHooks(cfg.CodexHooksPath, codexOptions)
+		removedLegacyHooks, err = configureCodex(cfg)
 	case "claude-desktop":
 		err = configureClaudeDesktop(cfg, claudeOptions)
 	default:
@@ -153,6 +160,9 @@ func runInit(args []string) int {
 	finish(err)
 	if err != nil {
 		return 1
+	}
+	if removedLegacyHooks {
+		ui.row("ok", "Codex hooks", "Removed the entries an earlier release wrote to "+cfg.CodexHooksPath+"; keydris codex now passes them at launch")
 	}
 	if path, pathErr := agentSkillPath(cfg, target); pathErr != nil {
 		ui.row("warning", "Agent skill", pathErr.Error())
@@ -211,9 +221,11 @@ func runInit(args []string) int {
 			ui.row("warning", "Sandbox", "Non-strict mode permits unsandboxed commands")
 		}
 	case "codex":
-		verified, err := sandbox.VerifyCodexHooks(cfg.CodexHooksPath, codexOptions)
-		if err != nil || !verified {
-			ui.row("error", "Verification", "Codex hooks need attention")
+		finish = ui.progress("Checking the Keydris hooks in Codex")
+		_, err := governedCodexOverrides(codexExecutable, codexOptions)
+		finish(err)
+		if err != nil {
+			ui.row("error", "Verification", "Codex hooks need attention: "+err.Error())
 			return 1
 		}
 	case "claude-desktop":
@@ -242,9 +254,6 @@ func runInit(args []string) int {
 		ui.next("keydris codex-desktop")
 	} else {
 		ui.next("keydris codex")
-	}
-	if target == "codex" {
-		ui.row("inactive", "Codex", "Use /hooks once inside Codex to trust the Keydris hooks")
 	}
 	return 0
 }

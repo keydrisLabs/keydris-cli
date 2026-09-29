@@ -62,8 +62,7 @@ func runDeinit(args []string) int {
 			AllowedDomains: cfg.AllowedDomains,
 		})
 	case "codex":
-		configPath = cfg.CodexHooksPath
-		changed, err = sandbox.DeconfigureCodexHooks(configPath)
+		configPath, changed, err = deinitCodex(cfg)
 	case "claude-desktop":
 		configPath, changed, err = deinitClaudeDesktop(cfg)
 	default:
@@ -146,7 +145,12 @@ func integrationConfigured(cfg *config.Config, name string) (bool, error) {
 	case "claude-code":
 		return sandbox.HasKeydrisHooks(cfg.ClaudeSettingsPath)
 	case "codex":
-		return sandbox.HasKeydrisHooks(cfg.CodexHooksPath)
+		if codexConfigured(cfg) {
+			return true, nil
+		}
+		// Hooks an earlier release wrote to hooks.json, before `keydris
+		// init codex` migrates them.
+		return legacyCodexHooks(cfg)
 	case "claude-desktop":
 		return sandbox.HasKeydrisHooks(desktopSettingsPath(cfg))
 	case "codex-desktop":

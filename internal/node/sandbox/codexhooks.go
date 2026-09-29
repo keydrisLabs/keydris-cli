@@ -2,13 +2,14 @@ package sandbox
 
 import "fmt"
 
-// Codex command gating lives in $CODEX_HOME/hooks.json rather than the Claude
-// settings file. PreToolUse blocks policy denials, approval-required commands,
-// and authorization errors. PermissionRequest auto-allows policy-allowed
-// commands and denies everything else. Codex requires a one-time `/hooks`
-// trust confirmation before it runs commands from this file.
+// Codex command gating runs as Codex hooks. PreToolUse blocks policy denials,
+// approval-required commands, and authorization errors. PermissionRequest
+// auto-allows policy-allowed commands and denies everything else. The hooks
+// are passed per launch as -c session flags together with their trust.
+// Earlier releases wrote them to $CODEX_HOME/hooks.json, where Codex skipped
+// them until a user trusted them in /hooks.
 
-// CodexHookOptions names the hook commands `keydris init codex` wires.
+// CodexHookOptions names the Keydris hook commands.
 type CodexHookOptions struct {
 	PreToolUseHook        string
 	PermissionRequestHook string
@@ -16,12 +17,11 @@ type CodexHookOptions struct {
 }
 
 const codexShellMatcher = "^Bash$"
-const minCodexHookTimeoutSeconds = 10
 const codexHookTimeoutSeconds = 30
 
-// CodexHookOverrides returns the same hooks as Codex -c values. Codex loads
-// them with source "sessionFlags" for one launch, so hooks.json is untouched.
-// Each value is a TOML array of matcher groups.
+// CodexHookOverrides returns the Keydris hooks as Codex -c values. Codex loads
+// them with source "sessionFlags" for one launch. Each value is a TOML array
+// of matcher groups.
 func CodexHookOverrides(opt CodexHookOptions) []string {
 	group := func(matcher, command string) string {
 		handler := fmt.Sprintf(`{type="command",command=%q,timeout=%d}`, command, codexHookTimeoutSeconds)
@@ -40,45 +40,9 @@ func CodexHookOverrides(opt CodexHookOptions) []string {
 	return overrides
 }
 
-// ConfigureCodexHooks merges the Keydris command-gating hooks into the Codex
-// hooks file, replacing stale Keydris entries and preserving user hooks.
-func ConfigureCodexHooks(path string, opt CodexHookOptions) error {
-	settings, err := readSettings(path)
-	if err != nil {
-		return err
-	}
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = map[string]any{}
-	}
-	merge := func(event, matcher, command string) {
-		existing, _ := hooks[event].([]any)
-		kept := make([]any, 0, len(existing)+1)
-		for _, candidate := range existing {
-			filtered, changed := stripKeydrisHandlers(candidate)
-			if !changed || filtered != nil {
-				kept = append(kept, filtered)
-			}
-		}
-		hooks[event] = append(kept, map[string]any{
-			"matcher": matcher,
-			"hooks": []any{map[string]any{
-				"type": "command", "command": command, "timeout": codexHookTimeoutSeconds,
-			}},
-		})
-	}
-	merge("PreToolUse", codexShellMatcher, opt.PreToolUseHook)
-	merge("PermissionRequest", codexShellMatcher, opt.PermissionRequestHook)
-	if opt.SessionStartHook != "" {
-		merge("SessionStart", "", opt.SessionStartHook)
-	}
-	settings["hooks"] = hooks
-	return writeSettings(path, settings)
-}
-
-// DeconfigureCodexHooks removes every Keydris hook entry from the Codex hooks
-// file, preserving user hooks. It reports whether anything changed and never
-// creates a missing file.
+// DeconfigureCodexHooks removes every Keydris hook entry an earlier release
+// wrote to the Codex hooks file, preserving user hooks. It reports whether
+// anything changed and never creates a missing file.
 func DeconfigureCodexHooks(path string) (bool, error) {
 	settings, err := readSettings(path)
 	if err != nil {
@@ -122,62 +86,4 @@ func DeconfigureCodexHooks(path string) (bool, error) {
 		return false, nil
 	}
 	return true, writeSettings(path, settings)
-}
-
-// VerifyCodexHooks reports whether both Keydris command-gating hooks are wired
-// in the Codex hooks file.
-func VerifyCodexHooks(path string, opt CodexHookOptions) (bool, error) {
-	settings, err := readSettings(path)
-	if err != nil {
-		return false, err
-	}
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		return false, nil
-	}
-	if opt.SessionStartHook != "" && !eventHasMatcherCommand(hooks["SessionStart"], "", opt.SessionStartHook) {
-		return false, nil
-	}
-	return eventHasMatcherCommand(hooks["PreToolUse"], codexShellMatcher, opt.PreToolUseHook) &&
-		eventHasMatcherCommand(hooks["PermissionRequest"], codexShellMatcher, opt.PermissionRequestHook), nil
-}
-
-func eventHasMatcherCommand(value any, matcher, command string) bool {
-	entries, _ := value.([]any)
-	for _, entry := range entries {
-		group, _ := entry.(map[string]any)
-		if configuredMatcher, _ := group["matcher"].(string); configuredMatcher != matcher {
-			continue
-		}
-		handlers, _ := group["hooks"].([]any)
-		for _, handler := range handlers {
-			hook, _ := handler.(map[string]any)
-			configuredCommand, _ := hook["command"].(string)
-			// A Windows override must not replace the command that was verified.
-			if override, exists := hook["commandWindows"]; exists && override != command {
-				continue
-			}
-			if override, exists := hook["command_windows"]; exists && override != command {
-				continue
-			}
-			hookType, _ := hook["type"].(string)
-			async, _ := hook["async"].(bool)
-			if configuredCommand == command && hookType == "command" && !async &&
-				hookTimeoutSeconds(hook["timeout"]) >= minCodexHookTimeoutSeconds {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func hookTimeoutSeconds(value any) float64 {
-	switch timeout := value.(type) {
-	case float64:
-		return timeout
-	case int:
-		return float64(timeout)
-	default:
-		return 0
-	}
 }

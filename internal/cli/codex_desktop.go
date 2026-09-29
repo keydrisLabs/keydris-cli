@@ -1,19 +1,12 @@
 package cli
 
 import (
-	"bufio"
-	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
-	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
@@ -24,8 +17,8 @@ import (
 // and it spawns the executable CODEX_CLI_PATH names in place of the bundled
 // one. `keydris codex-desktop` launches the app inside one Keydris session with
 // CODEX_CLI_PATH pointing at a shim that execs the bundled codex with the
-// Keydris hooks, their trust, and the settings `keydris codex` passes. Nothing
-// is written to ~/.codex, so a Dock launch stays ordinary Codex.
+// Keydris hooks, their trust, and the settings `keydris codex` passes. keydris
+// writes nothing to ~/.codex for it, so a Dock launch stays ordinary Codex.
 
 const (
 	codexDesktopBundleID = "com.openai.codex"
@@ -153,228 +146,10 @@ func defaultCodexDesktopRunning(executable string) bool {
 	return false
 }
 
-// codexListedHook is one hook as `codex app-server` reports it in hooks/list.
-type codexListedHook struct {
-	Key         string `json:"key"`
-	EventName   string `json:"eventName"`
-	Source      string `json:"source"`
-	CurrentHash string `json:"currentHash"`
-	TrustStatus string `json:"trustStatus"`
-	Enabled     bool   `json:"enabled"`
-}
-
-// codexSessionFlagHooks lists the hooks a codex binary loads with overrides.
-// It runs `codex app-server` in a throwaway CODEX_HOME with its proxy pointed
-// at a closed port, so it neither reads the user's ~/.codex nor reaches the
-// network.
-var codexSessionFlagHooks = defaultCodexSessionFlagHooks
-
-func defaultCodexSessionFlagHooks(codexPath string, overrides []string) ([]codexListedHook, error) {
-	// Same position as the shim: global options before the subcommand.
-	var args []string
-	for _, override := range overrides {
-		args = append(args, "-c", override)
-	}
-	return runCodexHookListing(codexPath, append(args, "app-server"))
-}
-
-// runCodexHookListing runs an app-server command line and returns its hooks.
-func runCodexHookListing(executable string, args []string) ([]codexListedHook, error) {
-	home, err := os.MkdirTemp("", "keydris-codex-hooks-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(home)
-	return runCodexHookListingIn(home, executable, args)
-}
-
-// runCodexHookListingIn lists hooks with home as CODEX_HOME and working
-// directory.
-func runCodexHookListingIn(home, executable string, args []string) ([]codexListedHook, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, executable, args...)
-	cmd.Dir = home
-	const closed = "http://127.0.0.1:9"
-	cmd.Env = append(os.Environ(), "CODEX_HOME="+home,
-		"HTTPS_PROXY="+closed, "HTTP_PROXY="+closed, "ALL_PROXY="+closed,
-		"https_proxy="+closed, "http_proxy="+closed, "all_proxy="+closed,
-		"NO_PROXY=", "no_proxy=")
-	cmd.WaitDelay = time.Second
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = stdin.Close()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-	hooks, err := listCodexHooks(stdout, stdin, home)
-	if ctx.Err() != nil {
-		return nil, fmt.Errorf("codex app-server did not list its hooks: %w", ctx.Err())
-	}
-	return hooks, err
-}
-
-// listCodexHooks speaks just enough of the app-server protocol (JSON-RPC over
-// JSON lines) to call hooks/list.
-func listCodexHooks(r io.Reader, w io.Writer, cwd string) ([]codexListedHook, error) {
-	lines := bufio.NewScanner(r)
-	lines.Buffer(make([]byte, 64<<10), 8<<20)
-	send := func(message any) error {
-		raw, err := json.Marshal(message)
-		if err != nil {
-			return err
-		}
-		_, err = w.Write(append(raw, '\n'))
-		return err
-	}
-	if err := send(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{
-		"clientInfo":   map[string]string{"name": "keydris", "version": Version},
-		"capabilities": map[string]bool{"experimentalApi": true},
-	}}); err != nil {
-		return nil, err
-	}
-	if _, err := codexResponse(lines, 1); err != nil {
-		return nil, fmt.Errorf("initialize: %w", err)
-	}
-	if err := send(map[string]any{"method": "initialized"}); err != nil {
-		return nil, err
-	}
-	if err := send(map[string]any{"id": 2, "method": "hooks/list", "params": map[string]any{"cwds": []string{cwd}}}); err != nil {
-		return nil, err
-	}
-	result, err := codexResponse(lines, 2)
-	if err != nil {
-		return nil, fmt.Errorf("hooks/list: %w", err)
-	}
-	var listed struct {
-		Data []struct {
-			Hooks  []codexListedHook `json:"hooks"`
-			Errors []struct {
-				Message string `json:"message"`
-			} `json:"errors"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(result, &listed); err != nil {
-		return nil, fmt.Errorf("hooks/list: %w", err)
-	}
-	var hooks []codexListedHook
-	for _, entry := range listed.Data {
-		if len(entry.Errors) > 0 {
-			return nil, fmt.Errorf("hooks/list: %s", entry.Errors[0].Message)
-		}
-		hooks = append(hooks, entry.Hooks...)
-	}
-	return hooks, nil
-}
-
-// codexResponse reads messages until the response to id. Notifications and
-// requests from the server are skipped.
-func codexResponse(lines *bufio.Scanner, id int) (json.RawMessage, error) {
-	for lines.Scan() {
-		var message struct {
-			ID     *int            `json:"id"`
-			Method string          `json:"method"`
-			Result json.RawMessage `json:"result"`
-			Error  *struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(lines.Bytes(), &message) != nil || message.Method != "" || message.ID == nil || *message.ID != id {
-			continue
-		}
-		if message.Error != nil {
-			return nil, errors.New(message.Error.Message)
-		}
-		return message.Result, nil
-	}
-	if err := lines.Err(); err != nil {
-		return nil, err
-	}
-	return nil, io.ErrUnexpectedEOF
-}
-
-func sessionFlagHooks(hooks []codexListedHook) []codexListedHook {
-	var ours []codexListedHook
-	for _, hook := range hooks {
-		if hook.Source == "sessionFlags" {
-			ours = append(ours, hook)
-		}
-	}
-	return ours
-}
-
-// codexHookTrustOverride marks hooks trusted by their current hashes and
-// enabled. Codex merges this table over the hooks.state in config.toml, where
-// /hooks records a hook the user turned off, so both fields are set. Codex
-// keys hook state by source path and position; the keys contain '.', which a
-// dotted -c path cannot address, so the value is one inline table.
-func codexHookTrustOverride(hooks []codexListedHook) string {
-	entries := make([]string, 0, len(hooks))
-	for _, hook := range hooks {
-		entries = append(entries, fmt.Sprintf("%q={trusted_hash=%q,enabled=true}", hook.Key, hook.CurrentHash))
-	}
-	sort.Strings(entries)
-	return "hooks.state={" + strings.Join(entries, ",") + "}"
-}
-
-// codexDesktopOverrides returns the -c values the shim adds: the settings
-// `keydris codex` passes, the Keydris hooks, and their trust. Codex silently
-// skips a hook that is not trusted, so the bundled codex computes the trust
-// hashes, and a second listing must report every Keydris hook as trusted and
-// enabled.
-func codexDesktopOverrides(codexPath string, opt sandbox.CodexHookOptions) ([]string, error) {
-	hookOverrides := sandbox.CodexHookOverrides(opt)
-	overrides := append(codexEnforcementOverrides(), hookOverrides...)
-	listed, err := codexSessionFlagHooks(codexPath, overrides)
-	if err != nil {
-		return nil, fmt.Errorf("load the Keydris hooks into Codex: %w", err)
-	}
-	ours := sessionFlagHooks(listed)
-	if len(ours) != len(hookOverrides) {
-		return nil, fmt.Errorf("Codex loaded %d of %d Keydris hooks", len(ours), len(hookOverrides))
-	}
-	overrides = append(overrides, codexHookTrustOverride(ours))
-	listed, err = codexSessionFlagHooks(codexPath, overrides)
-	if err != nil {
-		return nil, fmt.Errorf("trust the Keydris hooks in Codex: %w", err)
-	}
-	if err := keydrisHooksReady(listed, len(hookOverrides)); err != nil {
-		return nil, err
-	}
-	return overrides, nil
-}
-
-// keydrisHooksReady reports why Codex would not run every Keydris hook.
-func keydrisHooksReady(listed []codexListedHook, want int) error {
-	ours := sessionFlagHooks(listed)
-	if len(ours) != want {
-		return fmt.Errorf("Codex loaded %d of %d Keydris hooks", len(ours), want)
-	}
-	for _, hook := range ours {
-		if hook.TrustStatus != "trusted" {
-			return fmt.Errorf("Codex reports the Keydris %s hook as %s", hook.EventName, hook.TrustStatus)
-		}
-		if !hook.Enabled {
-			return fmt.Errorf("Codex reports the Keydris %s hook as disabled", hook.EventName)
-		}
-	}
-	return nil
-}
-
 // prepareCodexDesktopShim writes the shim for the app's codex and confirms
 // that codex runs every Keydris hook through it.
 func prepareCodexDesktopShim(shim, codexPath string, opt sandbox.CodexHookOptions) error {
-	overrides, err := codexDesktopOverrides(codexPath, opt)
+	overrides, err := governedCodexOverrides(codexPath, opt)
 	if err != nil {
 		return err
 	}

@@ -134,6 +134,9 @@ func planReset(cfg *config.Config, all bool) ([]resetTarget, error) {
 	if err := add(codexDesktopDir(cfg), true); err != nil {
 		return nil, err
 	}
+	if err := add(codexDir(cfg), true); err != nil {
+		return nil, err
+	}
 	if all && !withinPath(cfg.DataDir, cfg.LedgerPath) {
 		if err := add(cfg.LedgerPath, false); err != nil {
 			return nil, err

@@ -22,8 +22,8 @@ keydris codex
 ```
 
 `init` signs in when needed, configures the integration, discovers governed
-origins, and starts the local proxy. Run `/hooks` once inside Codex to trust its
-new hook entries. For governed Claude work, use `keydris run -- claude`, not
+origins, and starts the local proxy. `keydris codex` passes its hooks and their
+trust at each launch. For governed Claude work, use `keydris run -- claude`, not
 bare `claude`: the wrapper also routes Claude's own remote-MCP and WebFetch
 traffic through Keydris. Use `keydris status` to verify either setup.
 
