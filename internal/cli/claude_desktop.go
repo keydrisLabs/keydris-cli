@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
 	"github.com/keydrisLabs/keydris-cli/internal/node/desktopproxy"
@@ -195,20 +196,27 @@ func deinitClaudeDesktop(cfg *config.Config) (string, bool, error) {
 	if err := sweepDesktopLaunch(cfg); err != nil {
 		return dir, false, err
 	}
+	removed, err := removeKeydrisDir(dir, "claude-desktop")
+	return dir, removed, err
+}
+
+// removeKeydrisDir removes a Keydris-owned directory named name. A symlink or
+// anything other than that directory is refused.
+func removeKeydrisDir(dir, name string) (bool, error) {
 	info, err := os.Lstat(dir)
 	if os.IsNotExist(err) {
-		return dir, false, nil
+		return false, nil
 	}
 	if err != nil {
-		return dir, false, err
+		return false, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !filepath.IsAbs(dir) || filepath.Base(dir) != "claude-desktop" {
-		return dir, false, fmt.Errorf("refusing to remove %s", dir)
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !filepath.IsAbs(dir) || filepath.Base(dir) != name {
+		return false, fmt.Errorf("refusing to remove %s", dir)
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		return dir, false, err
+		return false, err
 	}
-	return dir, true, nil
+	return true, nil
 }
 
 func runClaudeDesktop(args []string) int {
@@ -313,7 +321,7 @@ func runClaudeDesktop(args []string) int {
 	}
 	updateSessionOwner(cfg, sid, cmd.Process.Pid, true)
 
-	code := waitClaudeDesktop(cmd)
+	code := waitDesktopApp("claude-desktop", cmd)
 	if err := finishDesktopLaunch(cfg, rec); err != nil {
 		fmt.Fprintf(os.Stderr, "keydris claude-desktop: restore: %v\n", err)
 		if code == 0 {
@@ -341,7 +349,12 @@ func startClaudeDesktop(configDir, sessionID string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func waitClaudeDesktop(cmd *exec.Cmd) int {
+// desktopQuitGrace is how long a desktop app gets to quit after Ctrl-C.
+const desktopQuitGrace = 10 * time.Second
+
+// waitDesktopApp waits for a launched desktop app. Ctrl-C or SIGTERM asks the
+// app to quit; it is killed after desktopQuitGrace or a second signal.
+func waitDesktopApp(command string, cmd *exec.Cmd) int {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
@@ -356,11 +369,19 @@ func waitClaudeDesktop(cmd *exec.Cmd) int {
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode()
 		}
-		fmt.Fprintf(os.Stderr, "keydris claude-desktop: %v\n", err)
+		fmt.Fprintf(os.Stderr, "keydris %s: %v\n", command, err)
 		return 1
 	case <-sig:
-		_ = cmd.Process.Kill()
-		<-done
+		_ = stopProcess(cmd.Process)
+		select {
+		case <-done:
+		case <-sig:
+			_ = cmd.Process.Kill()
+			<-done
+		case <-time.After(desktopQuitGrace):
+			_ = cmd.Process.Kill()
+			<-done
+		}
 		return 1
 	}
 }
