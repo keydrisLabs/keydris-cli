@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 )
@@ -102,4 +103,36 @@ func samePath(a, b string) bool {
 // portable default and is always applied by Configure.
 func InstallTrustStore(caPath string) error {
 	return installTrustStore(caPath)
+}
+
+// InstallSystemTrustStore installs the CA as a full root in the macOS System
+// keychain. Claude Desktop's engine reads that keychain and ignores a
+// certificate trusted only for SSL, which is why the login-keychain install
+// used for Claude Code is not enough. Writing the System keychain requires
+// an administrator, so a non-root caller is prompted through sudo.
+func InstallSystemTrustStore(caPath string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("Claude Desktop system trust is installed on macOS; CA env vars are set instead (CA at %s)", caPath)
+	}
+	cmd := systemTrustCommand(caPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("install the Keydris CA in the System keychain: %w", err)
+	}
+	return nil
+}
+
+func systemTrustCommand(caPath string) *exec.Cmd {
+	args := []string{
+		"add-trusted-cert",
+		"-d", "-r", "trustRoot",
+		"-k", "/Library/Keychains/System.keychain",
+		caPath,
+	}
+	if os.Geteuid() == 0 {
+		return exec.Command("security", args...)
+	}
+	return exec.Command("sudo", append([]string{"--", "security"}, args...)...)
 }

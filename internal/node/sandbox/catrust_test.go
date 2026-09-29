@@ -7,6 +7,19 @@ import (
 	"testing"
 )
 
+func TestSystemTrustCommandElevatesUnlessRoot(t *testing.T) {
+	cmd := systemTrustCommand("/tmp/keydris-ca.crt")
+	if os.Geteuid() == 0 {
+		if cmd.Args[0] != "security" {
+			t.Fatalf("args = %q", cmd.Args)
+		}
+		return
+	}
+	if len(cmd.Args) < 4 || cmd.Args[0] != "sudo" || cmd.Args[1] != "--" || cmd.Args[2] != "security" {
+		t.Fatalf("args = %q", cmd.Args)
+	}
+}
+
 func TestBuildCABundleKeepsSystemAndKeydrisRoots(t *testing.T) {
 	dir := t.TempDir()
 	systemPath := filepath.Join(dir, "system.pem")

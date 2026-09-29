@@ -22,8 +22,9 @@ import (
 // invoke them — Claude Code does, passing its hook payload on stdin. The command
 // strings contain "keydris" so `keydris deinit` reliably strips them.
 const (
-	sessionOwnerEnv = "KEYDRIS_SESSION_OWNER"
-	sessionOwnerRun = "keydris-run"
+	sessionOwnerEnv   = "KEYDRIS_SESSION_OWNER"
+	sessionOwnerRun   = "keydris-run"
+	desktopSessionEnv = "KEYDRIS_DESKTOP_SESSION"
 )
 
 func codexHookOptions() (sandbox.CodexHookOptions, error) {
@@ -92,6 +93,20 @@ func runInternalSessionHook(phase string, args []string) int {
 	}
 	switch phase {
 	case "start":
+		// Desktop launcher already minted and owns the session. Attach only:
+		// reuse KEYDRIS_DESKTOP_SESSION, never mint/revoke, never rewrite owner.
+		if desktopSID := desktopSessionID(); desktopSID != "" {
+			if err := validateSessionID(desktopSID); err != nil {
+				fmt.Fprintf(os.Stderr, "keydris session: %v\n", err)
+				return 1
+			}
+			if _, err := loadState(cfg, desktopSID); err != nil {
+				fmt.Fprintf(os.Stderr, "keydris session: desktop session state %q: %v\n", desktopSID, err)
+				return 1
+			}
+			writeClaudeProxyEnv(cfg, desktopSID)
+			return claudeSessionBriefing()
+		}
 		sid := sessionID(*session, true)
 		if err := validateSessionID(sid); err != nil {
 			fmt.Fprintf(os.Stderr, "keydris session: %v\n", err)
@@ -122,6 +137,10 @@ func runInternalSessionHook(phase string, args []string) int {
 		return claudeSessionBriefing()
 	case "end":
 		if os.Getenv(sessionOwnerEnv) == sessionOwnerRun {
+			return 0
+		}
+		// Desktop launcher owns revoke; embedded Claude must leave state alone.
+		if desktopSessionID() != "" {
 			return 0
 		}
 		return hookSessionEnd(cfg, sessionID(*session, false))

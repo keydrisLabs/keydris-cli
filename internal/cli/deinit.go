@@ -9,16 +9,17 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 )
 
-// runDeinit implements `keydris deinit claude-code|codex`, the inverse of
-// `keydris init`. It strips the Keydris configuration for the chosen target —
-// the Claude Code sandbox routing, CA env, and hooks, or the Codex command
-// hooks — preserving unrelated settings. Shared agent and policy state is
-// cleared only when neither integration retains Keydris hooks.
+// runDeinit implements `keydris deinit claude-code|codex|claude-desktop|codex-desktop`,
+// the inverse of `keydris init`. It strips the Keydris configuration for the
+// chosen target — the Claude Code sandbox routing, CA env, and hooks, the Codex
+// command hooks, or the Claude Desktop or Codex Desktop directory — preserving
+// unrelated settings. Shared agent and policy state is cleared only when no
+// other integration remains configured.
 // The Keydris CA files are left in place so a later `init` reuses them; if you
 // installed the CA into the OS trust store with `--trust-store`, remove it
 // there manually or use keydris reset.
 func runDeinit(args []string) int {
-	const usage = "usage: keydris deinit claude-code|codex"
+	const usage = "usage: keydris deinit claude-code|codex|claude-desktop|codex-desktop"
 
 	if len(args) == 0 || args[0] == "" || args[0][0] == '-' {
 		fmt.Fprintln(os.Stderr, usage)
@@ -28,8 +29,8 @@ func runDeinit(args []string) int {
 	if target == "openai" {
 		target = "codex"
 	}
-	if target != "claude-code" && target != "codex" {
-		fmt.Fprintf(os.Stderr, "keydris deinit: unknown target %q (want claude-code or codex)\n", target)
+	if !knownIntegration(target) {
+		fmt.Fprintf(os.Stderr, "keydris deinit: unknown target %q (want claude-code, codex, claude-desktop, or codex-desktop)\n", target)
 		return 1
 	}
 
@@ -43,11 +44,7 @@ func runDeinit(args []string) int {
 		newUI(os.Stderr).row("error", "Paths", err.Error())
 		return 1
 	}
-	otherPath := cfg.CodexHooksPath
-	if target == "codex" {
-		otherPath = cfg.ClaudeSettingsPath
-	}
-	shared, inspectErr := sandbox.HasKeydrisHooks(otherPath)
+	shared, inspectErr := otherIntegrationsRemain(cfg, target)
 	if inspectErr != nil {
 		newUI(os.Stderr).row("error", "Integration", "Cannot inspect the other integration; shared setup retained")
 		return 1
@@ -56,30 +53,44 @@ func runDeinit(args []string) int {
 	var changed bool
 	var err error
 	var configPath string
-	if target == "claude-code" {
+	switch target {
+	case "claude-code":
 		configPath = cfg.ClaudeSettingsPath
 		changed, err = sandbox.Deconfigure(configPath, sandbox.RemoveOptions{
 			HTTPProxyPort:  cfg.HTTPProxyPort,
 			CAPath:         cfg.CABundlePath,
 			AllowedDomains: cfg.AllowedDomains,
 		})
-	} else {
+	case "codex":
 		configPath = cfg.CodexHooksPath
 		changed, err = sandbox.DeconfigureCodexHooks(configPath)
+	case "claude-desktop":
+		configPath, changed, err = deinitClaudeDesktop(cfg)
+	default:
+		configPath, changed, err = deinitCodexDesktop(cfg)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "keydris deinit: %v\n", err)
 		return 1
 	}
 	// Only the entries Keydris wrote; hand-added servers are left alone.
-	if target == "claude-code" {
+	switch target {
+	case "claude-code":
 		if err := sandbox.RemoveManagedMcpServers(
 			cfg.ClaudeMcpConfigPath,
 		); err != nil {
 			fmt.Fprintf(os.Stderr, "keydris deinit: clear MCP servers: %v\n", err)
 			return 1
 		}
-	} else {
+	case "codex", "codex-desktop":
+		// The Codex CLI and the desktop app read the same config.toml.
+		other := "codex-desktop"
+		if target == "codex-desktop" {
+			other = "codex"
+		}
+		if inUse, _ := integrationConfigured(cfg, other); inUse {
+			break
+		}
 		if _, err := sandbox.RemoveManagedCodexMcpServers(
 			cfg.CodexConfigPath,
 		); err != nil {
@@ -114,4 +125,48 @@ func runDeinit(args []string) int {
 	cleanupAgentSkill(cfg, target)
 	fmt.Printf("  cleared agent id, legacy policy id and the detected proxy scope; left the Keydris CA at %s in place\n", cfg.CAPath)
 	return 0
+}
+
+// integrationNames are the `keydris init` targets.
+var integrationNames = []string{"claude-code", "codex", "claude-desktop", "codex-desktop"}
+
+func knownIntegration(name string) bool {
+	for _, known := range integrationNames {
+		if name == known {
+			return true
+		}
+	}
+	return false
+}
+
+// integrationConfigured reports whether `keydris init <name>` left its
+// configuration in place.
+func integrationConfigured(cfg *config.Config, name string) (bool, error) {
+	switch name {
+	case "claude-code":
+		return sandbox.HasKeydrisHooks(cfg.ClaudeSettingsPath)
+	case "codex":
+		return sandbox.HasKeydrisHooks(cfg.CodexHooksPath)
+	case "claude-desktop":
+		return sandbox.HasKeydrisHooks(desktopSettingsPath(cfg))
+	case "codex-desktop":
+		return codexDesktopConfigured(cfg), nil
+	}
+	return false, fmt.Errorf("unknown integration %q", name)
+}
+
+func otherIntegrationsRemain(cfg *config.Config, target string) (bool, error) {
+	for _, name := range integrationNames {
+		if name == target {
+			continue
+		}
+		present, err := integrationConfigured(cfg, name)
+		if err != nil {
+			return false, err
+		}
+		if present {
+			return true, nil
+		}
+	}
+	return false, nil
 }

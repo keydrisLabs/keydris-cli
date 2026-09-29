@@ -206,3 +206,27 @@ func TestCodexHooksMigrateWindowsCallOperatorAndPreserveUserHooks(t *testing.T) 
 		t.Fatalf("user hook was changed: %v", handlers)
 	}
 }
+
+func TestCodexHookOverridesMatchHooksFile(t *testing.T) {
+	got := CodexHookOverrides(CodexHookOptions{
+		PreToolUseHook:        `'/opt/key dris/keydris' __pretool-use --codex`,
+		PermissionRequestHook: `keydris "__permission-request"`,
+		SessionStartHook:      "keydris __agent-context",
+	})
+	want := []string{
+		`hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command="'/opt/key dris/keydris' __pretool-use --codex",timeout=30}]}]`,
+		`hooks.PermissionRequest=[{matcher="^Bash$",hooks=[{type="command",command="keydris \"__permission-request\"",timeout=30}]}]`,
+		`hooks.SessionStart=[{hooks=[{type="command",command="keydris __agent-context",timeout=30}]}]`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("overrides = %q", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("override %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+	if withoutBriefing := CodexHookOverrides(CodexHookOptions{PreToolUseHook: "a", PermissionRequestHook: "b"}); len(withoutBriefing) != 2 {
+		t.Fatalf("an empty session hook must not be wired: %q", withoutBriefing)
+	}
+}

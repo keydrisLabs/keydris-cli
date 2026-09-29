@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/config"
@@ -20,13 +24,19 @@ func reportMCPInventories(cfg *config.Config, w io.Writer) {
 		return
 	}
 	defer client.CloseIdleConnections()
-	sources := []struct {
+	type inventorySource struct {
 		runtime string
 		path    string
 		read    func(string) ([]runtimecontract.MCPInventoryEntry, error)
-	}{
+	}
+	sources := []inventorySource{
 		{"claude_code", cfg.ClaudeMcpConfigPath, sandbox.ReadClaudeMCPInventory},
 		{"codex", cfg.CodexConfigPath, sandbox.ReadCodexMCPInventory},
+	}
+	// The desktop app reads the CLI's config.toml. Report it under the app's
+	// runtime as well, so the console can match Codex Desktop sessions.
+	if codexDesktopConfigured(cfg) {
+		sources = append(sources, inventorySource{agentRuntimeCodexDesktop, cfg.CodexConfigPath, sandbox.ReadCodexMCPInventory})
 	}
 	for _, source := range sources {
 		observedAt := time.Now().UTC().Format(time.RFC3339Nano)
@@ -44,4 +54,50 @@ func reportMCPInventories(cfg *config.Config, w io.Writer) {
 			fmt.Fprintf(w, "keydris: %s MCP inventory delivery failed; will retry on the next session\n", source.runtime)
 		}
 	}
+	reportDesktopMCPInventory(cfg, client, w)
+}
+
+func reportDesktopMCPInventory(cfg *config.Config, client *http.Client, w io.Writer) {
+	configPath, roots := desktopMCPInventoryPaths()
+	if configPath == "" && len(roots) == 0 {
+		return
+	}
+	entries, err := sandbox.ReadDesktopMCPInventory(configPath, roots)
+	if err != nil {
+		fmt.Fprintln(w, "keydris: claude_desktop MCP inventory unavailable; keeping the previous report")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	err = runtimecontract.ReportMCPInventory(ctx, client, cfg.ControlMTLSURL, runtimecontract.MCPInventoryReport{
+		SchemaVersion: runtimecontract.SchemaVersion, Runtime: agentRuntimeClaudeDesktop, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Entries: entries,
+	})
+	cancel()
+	if err != nil {
+		fmt.Fprintln(w, "keydris: claude_desktop MCP inventory delivery failed; will retry on the next session")
+	}
+}
+
+func desktopMCPInventoryPaths() (string, []string) {
+	configPath := os.Getenv("KEYDRIS_CLAUDE_DESKTOP_MCP_CONFIG")
+	var roots []string
+	if extra := os.Getenv("KEYDRIS_CLAUDE_DESKTOP_PLUGIN_ROOTS"); extra != "" {
+		roots = append(roots, filepath.SplitList(extra)...)
+	}
+	if runtime.GOOS != "darwin" || (configPath != "" && len(roots) > 0) {
+		return configPath, roots
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return configPath, roots
+	}
+	if configPath == "" {
+		configPath = filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+	}
+	if len(roots) == 0 {
+		roots = []string{
+			"/Library/Application Support/Claude/org-plugins",
+			filepath.Join(home, "Library", "Application Support", "Claude", "Claude Extensions"),
+		}
+	}
+	return configPath, roots
 }

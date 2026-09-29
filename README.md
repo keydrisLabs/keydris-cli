@@ -167,6 +167,26 @@ keydris codex
 Run `/hooks` once inside Codex to trust the new entries. Start governed sessions
 with `keydris codex`, not `codex` directly. See the [full Codex setup](#quickstart--openai-codex).
 
+### Claude Desktop
+
+```bash
+keydris init claude-desktop <agent-id>
+keydris status
+keydris claude-desktop
+```
+
+Quit Claude first. `keydris claude-desktop` opens one governed session and stays running until you quit Claude. A Dock launch does not create a session. Remote MCP from plugins is governed with the rest of the session; a plugin that runs its own local program is not.
+
+### Codex Desktop
+
+```bash
+keydris init codex-desktop <agent-id>
+keydris status
+keydris codex-desktop
+```
+
+Quit the Codex app first. `keydris codex-desktop` opens one governed session and stays running until you quit the app. It runs the app's own codex with the Keydris hooks already trusted, so there is no `/hooks` step, and keydris writes nothing to `~/.codex`. A Dock launch does not create a session. See [Codex Desktop governance](docs/codex-desktop.md).
+
 For a non-agent command, use `keydris run -- <command>`.
 
 ---

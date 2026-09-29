@@ -115,6 +115,105 @@ func TestWrapperOwnedClaudeHooksReuseSession(t *testing.T) {
 	}
 }
 
+func TestDesktopSessionStartAttachesWithoutMint(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{DataDir: dir, HTTPProxyPort: 15001, DataPlane: "sandbox"}
+	const sid = "desktop-sess-1"
+	const token = "desktop-handle"
+	const ulid = "desktop-ulid"
+	if err := saveState(cfg, sessionState{SessionID: sid, Handle: token, ULID: ulid}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	envFile := filepath.Join(dir, "claude.env")
+	t.Setenv("KEYDRIS_DATA_DIR", dir)
+	t.Setenv("KEYDRIS_DATAPLANE", "sandbox")
+	t.Setenv("KEYDRIS_HTTP_PROXY_PORT", "15001")
+	t.Setenv(sessionOwnerEnv, "")
+	t.Setenv(desktopSessionEnv, sid)
+	t.Setenv("CLAUDE_ENV_FILE", envFile)
+	// No control-plane identity: mint would fail if start tried to create a session.
+
+	if code := runInternalSessionHook("start", nil); code != 0 {
+		t.Fatalf("start code = %d", code)
+	}
+	state, err := loadState(cfg, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Handle != token || state.ULID != ulid {
+		t.Fatalf("desktop state was replaced: %+v", state)
+	}
+	body, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "export HTTPS_PROXY='http://keydris:" + token + "@127.0.0.1:15001'"
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("env file missing %q; got:\n%s", want, body)
+	}
+}
+
+func TestDesktopSessionEndLeavesState(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{DataDir: dir, HTTPProxyPort: 15001, DataPlane: "sandbox"}
+	const sid = "desktop-sess-end"
+	if err := saveState(cfg, sessionState{SessionID: sid, Handle: "keep-handle", ULID: "keep-ulid"}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("KEYDRIS_DATA_DIR", dir)
+	t.Setenv("KEYDRIS_DATAPLANE", "sandbox")
+	t.Setenv(sessionOwnerEnv, "")
+	t.Setenv(desktopSessionEnv, sid)
+
+	if code := runInternalSessionHook("end", nil); code != 0 {
+		t.Fatalf("end code = %d", code)
+	}
+	if _, err := loadState(cfg, sid); err != nil {
+		t.Fatalf("desktop end removed state: %v", err)
+	}
+}
+
+func TestNestedRunInsideDesktopKeepsItsOwnSession(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{DataDir: dir, HTTPProxyPort: 15001, DataPlane: "sandbox"}
+	for _, st := range []sessionState{
+		{SessionID: "desktop-outer", Handle: "desktop-handle", ULID: "desktop-ulid"},
+		{SessionID: "run-inner", Handle: "run-handle", ULID: "run-ulid"},
+	} {
+		if err := saveState(cfg, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	envFile := filepath.Join(dir, "claude.env")
+	t.Setenv("KEYDRIS_DATA_DIR", dir)
+	t.Setenv("KEYDRIS_DATAPLANE", "sandbox")
+	t.Setenv("KEYDRIS_HTTP_PROXY_PORT", "15001")
+	t.Setenv(desktopSessionEnv, "desktop-outer")
+	t.Setenv("KEYDRIS_SESSION", "run-inner")
+	t.Setenv(sessionOwnerEnv, sessionOwnerRun)
+	t.Setenv("CLAUDE_ENV_FILE", envFile)
+
+	if code := runInternalSessionHook("start", nil); code != 0 {
+		t.Fatalf("start code = %d", code)
+	}
+	body, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "run-handle") || strings.Contains(string(body), "desktop-handle") {
+		t.Fatalf("nested run exported the wrong session:\n%s", body)
+	}
+}
+
 func TestRunOwnsOneMintAndRevoke(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KEYDRIS_DATA_DIR", dir)

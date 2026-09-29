@@ -3,6 +3,8 @@ package sandbox
 import (
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +28,100 @@ func ReadClaudeMCPInventory(path string) ([]runtimecontract.MCPInventoryEntry, e
 	for _, name := range managedNames(doc) {
 		managed[name] = true
 	}
+	entries, err := inventoryEntriesFromServers(servers, managed)
+	if err != nil {
+		return nil, err
+	}
+	return validateInventory(entries)
+}
+
+// ReadDesktopMCPInventory reads the Desktop user MCP config (mcpServers object,
+// same shape as Claude Code) plus every .mcp.json under pluginRoots.
+// plugin .mcp.json files are {"mcpServers": {...}} and their entries are Managed.
+// A missing config file with no plugin files is an empty non-nil snapshot.
+// Invalid JSON in configPath or in a discovered .mcp.json is an error, not an empty snapshot.
+// pluginRoots entries that do not exist are ignored.
+func ReadDesktopMCPInventory(configPath string, pluginRoots []string) ([]runtimecontract.MCPInventoryEntry, error) {
+	if configPath == "" && len(pluginRoots) == 0 {
+		return []runtimecontract.MCPInventoryEntry{}, nil
+	}
+	entries := make([]runtimecontract.MCPInventoryEntry, 0)
+	if configPath != "" {
+		userEntries, err := ReadClaudeMCPInventory(configPath)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, userEntries...)
+	}
+	for _, root := range pluginRoots {
+		pluginEntries, err := readPluginRootMCPInventory(root)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, pluginEntries...)
+	}
+	return validateInventory(entries)
+}
+
+func readPluginRootMCPInventory(root string) ([]runtimecontract.MCPInventoryEntry, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("could not read plugin MCP configuration")
+	}
+	if !info.IsDir() {
+		return nil, nil
+	}
+	root = filepath.Clean(root)
+	entries := make([]runtimecontract.MCPInventoryEntry, 0)
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.Name() != ".mcp.json" || d.IsDir() {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(path)
+			if err != nil || !pathWithinRoot(root, target) {
+				return nil
+			}
+		} else if !pathWithinRoot(root, path) {
+			return nil
+		}
+		doc, err := readJSONObject(path)
+		if err != nil {
+			return fmt.Errorf("could not read plugin MCP configuration")
+		}
+		servers, ok := doc["mcpServers"].(map[string]any)
+		if !ok && doc["mcpServers"] != nil {
+			return fmt.Errorf("invalid plugin MCP configuration")
+		}
+		managed := map[string]bool{}
+		for name := range servers {
+			managed[name] = true
+		}
+		fileEntries, err := inventoryEntriesFromServers(servers, managed)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, fileEntries...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func pathWithinRoot(root, path string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func inventoryEntriesFromServers(servers map[string]any, managed map[string]bool) ([]runtimecontract.MCPInventoryEntry, error) {
 	entries := make([]runtimecontract.MCPInventoryEntry, 0, len(servers))
 	for name, raw := range servers {
 		config, ok := raw.(map[string]any)
@@ -52,7 +148,7 @@ func ReadClaudeMCPInventory(path string) ([]runtimecontract.MCPInventoryEntry, e
 		}
 		entries = append(entries, entry)
 	}
-	return validateInventory(entries)
+	return entries, nil
 }
 
 // ReadCodexMCPInventory reuses the existing TOML document reader, reading only

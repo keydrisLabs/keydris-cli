@@ -6,12 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/keydrisLabs/keydris-cli/internal/config"
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
 
 func TestResolveHookSessionIDKeepsClaudeAndCodexNamespacesSeparate(t *testing.T) {
 	t.Setenv("KEYDRIS_SESSION", "run-wrapper")
 	t.Setenv(sessionOwnerEnv, "")
+	t.Setenv(desktopSessionEnv, "")
 
 	if got := resolveHookSessionID("codex-thread", hookHarnessCodex); got != "run-wrapper" {
 		t.Fatalf("Codex session = %q, want wrapper session", got)
@@ -23,6 +25,45 @@ func TestResolveHookSessionIDKeepsClaudeAndCodexNamespacesSeparate(t *testing.T)
 	t.Setenv(sessionOwnerEnv, sessionOwnerRun)
 	if got := resolveHookSessionID("claude-native", hookHarnessClaude); got != "run-wrapper" {
 		t.Fatalf("wrapped Claude session = %q, want wrapper session", got)
+	}
+}
+
+func TestResolveHookSessionIDUsesDesktopLaunchSession(t *testing.T) {
+	t.Setenv("KEYDRIS_SESSION", "")
+	t.Setenv(sessionOwnerEnv, "")
+	t.Setenv(desktopSessionEnv, "desktop-launch")
+
+	// The payload carries the embedded engine's own session id.
+	if got := resolveHookSessionID("engine-session", hookHarnessClaude); got != "desktop-launch" {
+		t.Fatalf("Desktop Claude session = %q, want the launch session", got)
+	}
+
+	// A keydris run nested inside Desktop owns a narrower session.
+	t.Setenv("KEYDRIS_SESSION", "run-wrapper")
+	t.Setenv(sessionOwnerEnv, sessionOwnerRun)
+	if got := resolveHookSessionID("engine-session", hookHarnessClaude); got != "run-wrapper" {
+		t.Fatalf("nested run session = %q, want the wrapper session", got)
+	}
+}
+
+func TestDesktopPreToolUseReachesAuthorizationWithLaunchSession(t *testing.T) {
+	dir := t.TempDir()
+	const sid = "desktop-launch"
+	if err := saveState(&config.Config{DataDir: dir}, sessionState{SessionID: sid, Handle: "desktop-handle", KIT: "desktop-kit"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEYDRIS_DATA_DIR", dir)
+	t.Setenv("KEYDRIS_CONTROL_MTLS_URL", "https://127.0.0.1:1")
+	t.Setenv("KEYDRIS_SESSION", "")
+	t.Setenv(sessionOwnerEnv, "")
+	t.Setenv(desktopSessionEnv, sid)
+
+	// Only the launch session has state. With no identity in dir, the
+	// verdict comes from the authorization step, after the session resolved.
+	payload := `{"session_id":"engine-session","tool_name":"Bash","tool_input":{"command":"ls"}}`
+	verdict, reason := decidePreToolUse(strings.NewReader(payload), hookHarnessClaude)
+	if verdict != "deny" || !strings.Contains(reason, "command authorization unavailable") {
+		t.Fatalf("verdict = %q, %q; want the launch session to reach authorization", verdict, reason)
 	}
 }
 
