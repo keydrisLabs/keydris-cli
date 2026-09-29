@@ -56,6 +56,7 @@ func runSessionRenewalLoop(
 	client *http.Client,
 	registry *attest.SessionRegistry,
 	logf func(string, ...any),
+	onUnregister ...func(attest.Session),
 ) {
 	ticker := time.NewTicker(sessionRenewPollInterval)
 	defer ticker.Stop()
@@ -101,7 +102,7 @@ func runSessionRenewalLoop(
 							continue
 						}
 						retireCtx, cancel := context.WithTimeout(ctx, sessionRenewTimeout)
-						err := retireExitedSession(retireCtx, cfg, registry, session, api)
+						err := retireExitedSession(retireCtx, cfg, registry, session, api, onUnregister...)
 						cancel()
 						if err != nil {
 							logf(
@@ -151,10 +152,16 @@ func retireExitedSession(
 	registry *attest.SessionRegistry,
 	snapshot attest.Session,
 	api sessionRenewalAPI,
+	onUnregister ...func(attest.Session),
 ) error {
 	current, ok := registry.Take(snapshot.Handle)
 	if !ok {
 		return nil
+	}
+	for _, flush := range onUnregister {
+		if flush != nil {
+			flush(current)
+		}
 	}
 	if err := api.revoke(ctx, current.ULID); err != nil {
 		return fmt.Errorf("revoke current KIT: %w", err)

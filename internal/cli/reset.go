@@ -116,6 +116,7 @@ func planReset(cfg *config.Config, all bool) ([]resetTarget, error) {
 		filepath.Join(cfg.DataDir, "policy-id"), filepath.Join(cfg.DataDir, "managed-destinations.json"),
 		filepath.Join(cfg.IdentityDir, login.KeyFile), filepath.Join(cfg.IdentityDir, login.CertFile),
 		filepath.Join(cfg.IdentityDir, login.CAFile), filepath.Join(cfg.IdentityDir, login.WhoamiFile),
+		filepath.Join(cfg.IdentityDir, login.DeviceIDFile),
 	} {
 		if err := add(path, false); err != nil {
 			return nil, err

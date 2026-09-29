@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 )
 
 // Credential is the secret to inject. Only Type == "header" is supported.
@@ -106,6 +107,103 @@ func forwardOneResponse(client net.Conn, upstream net.Conn, req *http.Request) e
 	}
 	return nil
 }
+
+// ForwardTLSOneTapped forwards exactly one HTTPS request unchanged (no
+// credential injection), optionally teeing the response body into the writer
+// tap returns for that response. The usage meter (ENG-261) reads token counts
+// off the tee; the returned writer must never fail (its Write cannot error),
+// so tapping can never break the forwarded stream.
+func ForwardTLSOneTapped(
+	client net.Conn,
+	req *http.Request,
+	dst, sni string,
+	tap func(*http.Response) io.Writer,
+	clientReaders ...io.Reader,
+) error {
+	prepareOriginRequest(req)
+
+	upstream, err := tls.Dial("tcp", dst, &tls.Config{
+		ServerName: sni,
+		MinVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		WriteReject(client, "upstream unreachable")
+		return fmt.Errorf("dial upstream (tls) %s: %w", dst, err)
+	}
+	defer upstream.Close()
+
+	return forwardOneTapped(client, req, upstream, tap, clientReaders...)
+}
+
+func forwardOneTapped(client net.Conn, req *http.Request, upstream net.Conn, tap func(*http.Response) io.Writer, clientReaders ...io.Reader) error {
+	req.RequestURI = ""
+	upgrade := strings.EqualFold(req.Header.Get("Upgrade"), "websocket") && headerToken(req.Header.Get("Connection"), "upgrade")
+	if !upgrade {
+		req.Close = true
+		req.Header.Set("Connection", "close")
+	}
+	if err := req.Write(upstream); err != nil {
+		return fmt.Errorf("write upstream request: %w", err)
+	}
+
+	upstreamReader := bufio.NewReader(upstream)
+	resp, err := http.ReadResponse(upstreamReader, req)
+	if err != nil {
+		return fmt.Errorf("read upstream response: %w", err)
+	}
+	defer resp.Body.Close()
+	if upgrade && resp.StatusCode == http.StatusSwitchingProtocols {
+		// A WebSocket is bidirectional and may contain buffered frames on both
+		// sides already. Preserve its handshake and forward all subsequent bytes.
+		if err := resp.Write(client); err != nil {
+			return err
+		}
+		var clientReader io.Reader = client
+		if len(clientReaders) > 0 && clientReaders[0] != nil {
+			clientReader = clientReaders[0]
+		}
+		done := make(chan struct{}, 2)
+		go func() { _, _ = io.Copy(upstream, clientReader); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(client, upstreamReader); done <- struct{}{} }()
+		<-done
+		_ = upstream.Close()
+		_ = client.Close()
+		<-done
+		return nil
+	}
+	if tap != nil {
+		if sink := tap(resp); sink != nil {
+			resp.Body = teedBody{
+				Reader: io.TeeReader(resp.Body, sink),
+				closer: resp.Body,
+			}
+		}
+	}
+
+	resp.Header.Del("Connection")
+	resp.Header.Del("Keep-Alive")
+	resp.Close = true
+	if err := resp.Write(client); err != nil {
+		return fmt.Errorf("copy upstream response: %w", err)
+	}
+	return nil
+}
+
+func headerToken(value, token string) bool {
+	for _, part := range strings.Split(value, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), token) {
+			return true
+		}
+	}
+	return false
+}
+
+type teedBody struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (b teedBody) Close() error { return b.closer.Close() }
 
 // TunnelCONNECT establishes an opaque HTTP CONNECT tunnel. Keydris does not
 // terminate TLS, inspect request bodies, authorize, or mutate headers on it.

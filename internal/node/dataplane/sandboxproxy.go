@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/node/meter"
 	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
 	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
@@ -81,17 +82,25 @@ type SandboxOptions struct {
 	PeerVerify PeerVerifyMode
 	// Scope selects destinations that Keydris should MITM and authorize.
 	Scope *proxyscope.Scope
+	// Meter, when set, records LLM usage counters for attributed sessions on
+	// MeteredOrigins (ENG-261). Metered origins are never policy-enforced and
+	// every metering failure degrades to plain forwarding.
+	Meter *meter.Meter
+	// MeteredOrigins matches CONNECT targets that should be usage-metered.
+	MeteredOrigins *meter.Origins
 }
 
 type sandboxPlane struct {
-	ln         net.Listener
-	flows      chan Flow
-	logf       func(string, ...any)
-	ca         *proxy.CA
-	reg        *attest.SessionRegistry
-	allowSole  bool
-	peerVerify PeerVerifyMode
-	scope      *proxyscope.Scope
+	ln           net.Listener
+	flows        chan Flow
+	logf         func(string, ...any)
+	ca           *proxy.CA
+	reg          *attest.SessionRegistry
+	allowSole    bool
+	peerVerify   PeerVerifyMode
+	scope        *proxyscope.Scope
+	meter        *meter.Meter
+	meterOrigins *meter.Origins
 
 	leafMu sync.Mutex
 	leaves map[string]*tls.Certificate
@@ -109,15 +118,17 @@ func NewSandboxProxy(addr string, ca *proxy.CA, reg *attest.SessionRegistry, opt
 		return nil, err
 	}
 	p := &sandboxPlane{
-		ln:         ln,
-		flows:      make(chan Flow),
-		logf:       log.Printf,
-		ca:         ca,
-		reg:        reg,
-		allowSole:  opts.AllowSoleFallback,
-		peerVerify: opts.PeerVerify,
-		scope:      opts.Scope,
-		leaves:     map[string]*tls.Certificate{},
+		ln:           ln,
+		flows:        make(chan Flow),
+		logf:         log.Printf,
+		ca:           ca,
+		reg:          reg,
+		allowSole:    opts.AllowSoleFallback,
+		peerVerify:   opts.PeerVerify,
+		scope:        opts.Scope,
+		meter:        opts.Meter,
+		meterOrigins: opts.MeteredOrigins,
+		leaves:       map[string]*tls.Certificate{},
 	}
 	p.logf("dataplane(sandbox): listening on %s (set Claude Code sandbox.network.httpProxyPort=%s)", addr, portOf(addr))
 	go p.serve()
@@ -182,36 +193,24 @@ func (p *sandboxPlane) buildConnect(conn net.Conn, connectReq *http.Request, br 
 
 	sess := p.resolveSession(conn, connectReq)
 	if !p.managesSessionOrigin(sess, "https", host, portForTarget(target, 443)) {
+		// Unmanaged origins are metered when they are a known LLM provider API
+		// and the request is attributed to a session; anything else stays an
+		// opaque tunnel. Managed origins win over metering by construction.
+		if provider, metered := p.meterOrigins.Provider(host, portForTarget(target, 443)); metered &&
+			p.meter != nil && sess != nil {
+			p.logf("METER %s provider=%s session=%s", target, provider, sess.SPIFFEID)
+			p.meterConnect(conn, br, target, host, provider, sess)
+			_ = conn.Close()
+			return Flow{}, false
+		}
 		p.logf("PASSTHROUGH %s (opaque CONNECT)", target)
 		_ = tunnelCONNECT(conn, br, target)
 		_ = conn.Close()
 		return Flow{}, false
 	}
 
-	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		_ = conn.Close()
-		return Flow{}, false
-	}
-
-	// Mint the leaf for the CONNECT target host. Clients dialing an IP literal
-	// send no SNI, so we cannot rely on ClientHelloInfo.ServerName alone; fall
-	// back to the target host the CONNECT line gave us.
-	tlsConf := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if hello.ServerName != "" {
-				sni, err := proxyscope.Normalize(hello.ServerName)
-				if err != nil || hostOnly(sni) != host {
-					return nil, fmt.Errorf("TLS SNI %q does not match CONNECT target %q", hello.ServerName, host)
-				}
-			}
-			return p.leafFor(host)
-		},
-	}
-	tconn := tls.Server(&bufferedConn{Conn: conn, reader: br}, tlsConf)
-	if err := tconn.Handshake(); err != nil {
-		p.logf("dataplane(sandbox): TLS handshake for %s: %v", target, err)
-		_ = tconn.Close()
+	tconn, ok := p.terminateTLS(conn, br, target, host)
+	if !ok {
 		return Flow{}, false
 	}
 
@@ -328,6 +327,42 @@ func requestDestination(req *http.Request, scheme string) (string, error) {
 		return "", fmt.Errorf("request has no authority")
 	}
 	return proxyscope.Normalize(scheme + "://" + authority)
+}
+
+// terminateTLS answers a CONNECT with 200 and completes the Keydris-CA TLS
+// handshake for the target. ok is false when the connection was already closed.
+func (p *sandboxPlane) terminateTLS(
+	conn net.Conn,
+	br *bufio.Reader,
+	target, host string,
+) (*tls.Conn, bool) {
+	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		_ = conn.Close()
+		return nil, false
+	}
+
+	// Mint the leaf for the CONNECT target host. Clients dialing an IP literal
+	// send no SNI, so we cannot rely on ClientHelloInfo.ServerName alone; fall
+	// back to the target host the CONNECT line gave us.
+	tlsConf := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.ServerName != "" {
+				sni, err := proxyscope.Normalize(hello.ServerName)
+				if err != nil || hostOnly(sni) != host {
+					return nil, fmt.Errorf("TLS SNI %q does not match CONNECT target %q", hello.ServerName, host)
+				}
+			}
+			return p.leafFor(host)
+		},
+	}
+	tconn := tls.Server(&bufferedConn{Conn: conn, reader: br}, tlsConf)
+	if err := tconn.Handshake(); err != nil {
+		p.logf("dataplane(sandbox): TLS handshake for %s: %v", target, err)
+		_ = tconn.Close()
+		return nil, false
+	}
+	return tconn, true
 }
 
 // leafFor returns a cached leaf certificate for host, minting one via the CA on

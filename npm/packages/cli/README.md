@@ -4,8 +4,28 @@ Authority before action. npm distribution for the native Keydris CLI.
 
 ```bash
 npm install --global @keydris/cli --foreground-scripts
-keydris init
 ```
+
+## Quick setup
+
+An operator must first create an agent and give you its UUID. Then choose the
+agent you are running:
+
+```bash
+# Claude Code
+keydris init claude-code <agent-id>
+keydris run -- claude
+
+# OpenAI Codex
+keydris init codex <agent-id>
+keydris codex
+```
+
+`init` signs in when needed, configures the integration, discovers governed
+origins, and starts the local proxy. Run `/hooks` once inside Codex to trust its
+new hook entries. For governed Claude work, use `keydris run -- claude`, not
+bare `claude`: the wrapper also routes Claude's own remote-MCP and WebFetch
+traffic through Keydris. Use `keydris status` to verify either setup.
 
 The JavaScript package is a launcher. npm installs the matching native Keydris
 binary for the current operating system and architecture as an optional

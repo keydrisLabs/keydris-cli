@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -178,5 +179,87 @@ func TestInjectAndForwardOneOverridesUpstreamKeepAlive(t *testing.T) {
 	}
 	if string(body) != "ok" {
 		t.Fatalf("body = %q, want %q", body, "ok")
+	}
+}
+
+// TestForwardOneTappedTeesBodyWithoutAlteringIt covers the non-upgrade
+// metering path: the tap must see the whole response body while the client
+// receives byte-identical content and the single-request close headers.
+func TestForwardOneTappedTeesBodyWithoutAlteringIt(t *testing.T) {
+	client, proxyClient := net.Pipe()
+	proxyUpstream, upstream := net.Pipe()
+	defer client.Close()
+	defer proxyClient.Close()
+	defer proxyUpstream.Close()
+	defer upstream.Close()
+	for _, c := range []net.Conn{client, proxyClient, proxyUpstream, upstream} {
+		c.SetDeadline(time.Now().Add(3 * time.Second))
+	}
+
+	const body = `{"usage":{"input_tokens":7,"output_tokens":3}}`
+	upstreamDone := make(chan error, 1)
+	go func() {
+		defer upstream.Close()
+		if _, err := http.ReadRequest(bufio.NewReader(upstream)); err != nil {
+			upstreamDone <- err
+			return
+		}
+		_, err := io.WriteString(upstream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"+
+			"Content-Length: "+strconv.Itoa(len(body))+"\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\n\r\n"+body)
+		upstreamDone <- err
+	}()
+
+	req, err := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/chat/completions", strings.NewReader(`{"model":"gpt"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tapped strings.Builder
+	tapCalled := false
+	forwardDone := make(chan error, 1)
+	go func() {
+		err := forwardOneTapped(proxyClient, req, proxyUpstream, func(resp *http.Response) io.Writer {
+			tapCalled = true
+			if got := resp.Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("tap saw Content-Type %q", got)
+			}
+			return &tapped
+		})
+		_ = proxyClient.Close()
+		forwardDone <- err
+	}()
+
+	raw, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-upstreamDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-forwardDone; err != nil {
+		t.Fatal(err)
+	}
+	if !tapCalled || tapped.String() != body {
+		t.Fatalf("tap called=%v body=%q, want %q", tapCalled, tapped.String(), body)
+	}
+	if n := strings.Count(string(raw), "Connection:"); n != 1 {
+		t.Fatalf("want exactly one Connection header, got %d in %q", n, raw)
+	}
+	if strings.Contains(string(raw), "Keep-Alive:") {
+		t.Fatalf("Keep-Alive header survived: %q", raw)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(string(raw))), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if !resp.Close {
+		t.Fatal("response did not announce close to the client")
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != body {
+		t.Fatalf("client body = %q, want %q", got, body)
 	}
 }

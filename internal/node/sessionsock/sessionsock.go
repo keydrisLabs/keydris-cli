@@ -99,6 +99,28 @@ type Server struct {
 	logf     func(string, ...any)
 	healthMu sync.RWMutex
 	health   Health
+
+	unregisterMu sync.RWMutex
+	onUnregister func(attest.Session)
+}
+
+// SetOnUnregister installs a callback that runs synchronously when a session
+// unregisters, BEFORE the ack that lets the hook revoke the KIT. The usage
+// meter uses it to ship a departing session's buffered events while the
+// credential is still valid.
+func (s *Server) SetOnUnregister(fn func(attest.Session)) {
+	s.unregisterMu.Lock()
+	defer s.unregisterMu.Unlock()
+	s.onUnregister = fn
+}
+
+func (s *Server) notifyUnregister(session attest.Session) {
+	s.unregisterMu.RLock()
+	fn := s.onUnregister
+	s.unregisterMu.RUnlock()
+	if fn != nil {
+		fn(session)
+	}
 }
 
 // MarkReady is called only after the data plane has bound its listener and
@@ -199,6 +221,7 @@ func (s *Server) handle(conn net.Conn) {
 			if current, ok := s.reg.Take(m.Handle); ok {
 				value := snapshotSession(current)
 				snapshot = &value
+				s.notifyUnregister(current)
 			}
 			s.logf("session unregistered: handle=%s", handlePrefix(m.Handle))
 		case ActionLookup:
@@ -310,7 +333,11 @@ func exchange(path string, m Message) (*response, error) {
 		return nil, fmt.Errorf("dial daemon socket %s: %w", path, err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	timeout := 2 * time.Second
+	if m.Action == ActionUnregister {
+		timeout = 30 * time.Second
+	}
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	body, err := json.Marshal(m)
 	if err != nil {
@@ -320,7 +347,7 @@ func exchange(path string, m Message) (*response, error) {
 		return nil, err
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 4096), (3<<20)+8192)
 	if !sc.Scan() {

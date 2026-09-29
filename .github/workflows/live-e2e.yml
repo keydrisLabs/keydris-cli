@@ -286,6 +286,20 @@ jobs:
           . /tmp/keydris-live-e2e/ids.env
 
           export KEYDRIS_AGENT_ID="$AGENT_ID"
+          export CODEX_HOME=/tmp/keydris-live-e2e/codex-home
+          install -d -m 0700 "$CODEX_HOME"
+          cat > "$CODEX_HOME/config.toml" <<'TOML'
+          model_provider = "keydris_openai_https"
+
+          [model_providers.keydris_openai_https]
+          name = "OpenAI HTTPS only"
+          base_url = "https://api.openai.com/v1"
+          wire_api = "responses"
+          env_key = "OPENAI_API_KEY"
+          supports_websockets = false
+          TOML
+          chmod 0600 "$CODEX_HOME/config.toml"
+
           keydris init codex "$AGENT_ID"
           keydris status --json | tee /tmp/status-codex.json
           jq -e '.ready == true' /tmp/status-codex.json

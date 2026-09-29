@@ -1,13 +1,22 @@
 package dataplane
 
 import (
+	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
+	"github.com/keydrisLabs/keydris-cli/internal/node/meter"
+	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
 	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
@@ -137,5 +146,92 @@ func TestRequestDestinationCanonicalizesOriginForm(t *testing.T) {
 	}
 	if got != "managed.example:443" {
 		t.Fatalf("destination = %q", got)
+	}
+}
+
+// TestMeterConnectUnreachableUpstreamRejectsWithoutBookingUsage covers the
+// metered CONNECT path end to end without a provider: the request is answered
+// with the same 403 the plain path sends when the upstream cannot be dialed,
+// and no usage event is booked for a model call that never happened.
+func TestMeterConnectUnreachableUpstreamRejectsWithoutBookingUsage(t *testing.T) {
+	ca, err := proxy.GenerateCA("meter test", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	booked := make(chan struct{}, 1)
+	usage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		booked <- struct{}{}
+		_ = json.NewEncoder(w).Encode(runtimecontract.SessionUsageReportResponse{
+			SchemaVersion: runtimecontract.SchemaVersion,
+		})
+	}))
+	defer usage.Close()
+	reg := attest.NewSessionRegistry()
+	reg.Register(attest.Session{Handle: "meter-handle", SVID: "meter-kit"})
+	m := meter.New(usage.Client(), usage.URL, reg, t.Logf)
+	defer m.Close()
+	p := &sandboxPlane{ca: ca, meter: m, logf: t.Logf, leaves: map[string]*tls.Certificate{}}
+
+	// Reserve then release a loopback port so the upstream dial fails fast.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := ln.Addr().String()
+	_ = ln.Close()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	client.SetDeadline(deadline)
+	server.SetDeadline(deadline)
+	session := &attest.Session{Handle: "meter-handle", SVID: "meter-kit"}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.meterConnect(server, bufio.NewReader(server), target, "127.0.0.1", "openai", session)
+	}()
+
+	// meterConnect answers the CONNECT before terminating TLS.
+	reader := bufio.NewReader(client)
+	line, err := reader.ReadString('\n')
+	if err != nil || line != "HTTP/1.1 200 Connection Established\r\n" {
+		t.Fatalf("CONNECT response = %q, err=%v", line, err)
+	}
+	if _, err := reader.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(ca.CertPEM())
+	secured := tls.Client(client, &tls.Config{ServerName: "127.0.0.1", RootCAs: roots, MinVersion: tls.VersionTLS12})
+	if err := secured.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(secured, "POST /v1/responses HTTP/1.1\r\nHost: %s\r\nContent-Length: 2\r\n\r\n{}", target); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(secured), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("unreachable metered upstream status = %d, want 403", response.StatusCode)
+	}
+	// Close the raw pipe rather than the TLS conn: the server side is already
+	// closing, and a simultaneous close_notify would stall on the unbuffered pipe.
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("meterConnect did not return")
+	}
+	m.Close()
+	select {
+	case <-booked:
+		t.Fatal("usage was booked although the upstream was unreachable")
+	default:
 	}
 }

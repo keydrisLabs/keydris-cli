@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,7 @@ func TestEnrollmentStoresMatchingDeviceIdentity(t *testing.T) {
 			const token = "test-cognito-access-token"
 			const agentID = "11111111-1111-4111-8111-111111111111"
 			signs := 0
+			deviceID := ""
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/oauth/token" {
 					_ = json.NewEncoder(w).Encode(map[string]string{"access_token": token, "id_token": "unused-id-token"})
@@ -63,9 +65,10 @@ func TestEnrollmentStoresMatchingDeviceIdentity(t *testing.T) {
 				if body["agent_id"] != agentID || body["device_name"] != "ci-run" || body["cli_version"] == "" {
 					t.Error("missing agent binding or client metadata")
 				}
-				if signs > 0 && body["device_id"] != "device-123" {
+				if signs > 0 && body["device_id"] != deviceID {
 					t.Error("re-enrollment did not retain the device ID")
 				}
+				deviceID = body["device_id"]
 				signs++
 				block, _ := pem.Decode([]byte(body["csr"]))
 				if block == nil {
@@ -94,7 +97,7 @@ func TestEnrollmentStoresMatchingDeviceIdentity(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(signResponse{
 					Certificate: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 					CACert:      string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})),
-					Email:       "ci@example.com", DeviceID: "device-123", AgentID: agentID,
+					Email:       "ci@example.com", DeviceID: deviceID, AgentID: agentID,
 					NotAfter: cert.NotAfter.Format(time.RFC3339), SPIFFEID: "spiffe://test/user/ci",
 				})
 			}))
@@ -115,6 +118,11 @@ func TestEnrollmentStoresMatchingDeviceIdentity(t *testing.T) {
 				return err
 			}
 			for attempt := 0; attempt < 2; attempt++ {
+				if attempt > 0 {
+					if err := Logout(dir); err != nil {
+						t.Fatal(err)
+					}
+				}
 				var id *Identity
 				if browser {
 					id, err = Run(opt)
@@ -132,7 +140,7 @@ func TestEnrollmentStoresMatchingDeviceIdentity(t *testing.T) {
 				}
 			}
 			info, err := os.Stat(filepath.Join(dir, KeyFile))
-			if err != nil || info.Mode().Perm() != 0o600 {
+			if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 				t.Fatal("private key must be stored with mode 0600")
 			}
 			for _, file := range []string{KeyFile, CertFile, CAFile, WhoamiFile} {

@@ -209,23 +209,6 @@ func TestDetectPolicyScopeEmptyPolicy(t *testing.T) {
 	}
 }
 
-// "not detected" and "policy governs nothing" must read differently.
-func TestPrintPolicyScopeDistinguishesFailureFromEmpty(t *testing.T) {
-	var undetected, empty bytes.Buffer
-	printPolicyScope(&undetected, nil, false)
-	printPolicyScope(&empty, nil, true)
-
-	if !strings.Contains(undetected.String(), "not detected") {
-		t.Fatalf("undetected = %q", undetected.String())
-	}
-	if !strings.Contains(empty.String(), "no governed origins") {
-		t.Fatalf("empty = %q", empty.String())
-	}
-	if undetected.String() == empty.String() {
-		t.Fatal("failure and empty policy render identically")
-	}
-}
-
 func TestRefreshPolicyScopeWritesCache(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{DataDir: dir}

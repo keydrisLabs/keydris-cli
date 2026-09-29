@@ -136,6 +136,41 @@ go build -o bin\keydris.exe .\cmd\keydris
 
 ---
 
+## Quick setup
+
+You need an **agent ID** — the UUID an operator created in the Keydris console
+for the policy you want this installation to use. `init` signs in when needed,
+configures the selected agent, discovers its governed origins, and starts the
+local proxy. There is no proxy scope to configure by hand.
+
+### Claude Code
+
+```bash
+keydris init claude-code <agent-id>
+keydris status
+keydris run -- claude
+```
+
+Always use `keydris run -- claude` for governed work. It routes Claude's own
+HTTP traffic — including remote MCP and WebFetch — through Keydris, as well as
+the commands Claude starts. See the [full Claude Code setup](#quickstart--claude-code)
+for sandbox, WSL2, and trust-store options.
+
+### OpenAI Codex
+
+```bash
+keydris init codex <agent-id>
+keydris status
+keydris codex
+```
+
+Run `/hooks` once inside Codex to trust the new entries. Start governed sessions
+with `keydris codex`, not `codex` directly. See the [full Codex setup](#quickstart--openai-codex).
+
+For a non-agent command, use `keydris run -- <command>`.
+
+---
+
 ## Getting Started
 
 ### Windows with WSL2
@@ -257,13 +292,10 @@ See [Codex skills](https://learn.chatgpt.com/docs/build-skills),
 #    is no scope to configure by hand.
 keydris init claude-code <agent-id>   # add --trust-store to install the CA system-wide
 
-# 2. Start again later if needed; init already started it (no `&` needed).
-keydris proxy up
-
-# 3. Confirm enforcement state and the detected proxy scope.
+# 2. Confirm enforcement state and the detected proxy scope.
 keydris status
 
-# 4. Run a real session. The wrapper mints the runtime session before Claude
+# 3. Run a real session. The wrapper mints the runtime session before Claude
 #    starts and points the claude process itself at the proxy, so its own
 #    remote-HTTP MCP and WebFetch calls are governed alongside its Bash
 #    children; every Bash command is checked against the policy's command
@@ -285,11 +317,12 @@ Keydris wraps the Codex process so its session is revoked when that terminal pro
 
 ```bash
 keydris init codex <agent-id>        # `init openai` is also accepted
-keydris proxy up
 keydris codex                        # normal Codex arguments follow
 ```
 
-Run `/hooks` once inside Codex to trust the new entries, and pair the integration with `approval_policy = "untrusted"` (see [`examples/codex/config.toml`](examples/codex/config.toml)). Launch through `keydris codex`, never `codex` directly, when governance is required.
+Run `/hooks` once inside Codex to trust the new entries (see [`examples/codex/config.toml`](examples/codex/config.toml)). Launch through `keydris codex`, never `codex` directly, when governance is required. After upgrading, rerun `keydris init codex <agent-id>` to migrate old hook commands and review their updated trust entries in `/hooks`.
+
+Before opening a session, the wrapper executes both command hooks with a sessionless probe and requires explicit denials. On native Windows it uses PowerShell-compatible hook commands and selects Codex's `elevated` sandbox for managed networking. Complete Codex's administrator-approved sandbox setup first; the wrapper does not disable the sandbox or change your saved Codex configuration.
 
 ### Without a harness
 
@@ -408,22 +441,23 @@ The response is the frozen decision envelope: `allow`, `deny`, or `approval_requ
 
 | # | Situation | Control plane called | Result |
 | --- | --- | --- | --- |
-| 1 | Origin outside the session's governed set | No | Opaque CONNECT tunnel: no TLS termination, no body read, no header touched |
-| 2 | Governed origin, no route covers the path | No | Rejected — *runtime routes have no route for this path* |
-| 3 | Two routes match one request | No | Rejected — *runtime route is ambiguous* |
-| 4 | Matched route's `availability` is not `ready` | No | Rejected — *runtime route unavailable*, with the status reason when present |
-| 5 | MCP lifecycle or discovery (`initialize`, `tools/list`, `ping`, …) | No | Forwarded unchanged; discovery never costs a decision |
-| 6 | Body is not valid JSON, has duplicate keys, or exceeds 1 MiB | No | Rejected before any call — ambiguous input fails closed |
-| 7 | Request names a resource the session did not select | No | Rejected — *… resource is not selected for this session* |
-| 8 | `provider_executor` route, resource selected and ready | Yes | Control plane executes upstream; its status, headers, and body are relayed back |
-| 9 | `mcp_gateway` route, `tools/call` / `resources/read` | Yes | Gateway executes; the JSON-RPC response is relayed, bound to the original id |
-| 10 | `mcp_kit_reader` route, `tools/call` / `resources/read` | Yes | Action token minted, injected at `params._meta`, request forwarded to the MCP server |
-| 11 | Control plane returns a denial | Yes | Rejected, carrying the decision's `reason_code` |
-| 12 | Control plane requires approval | Yes | Action pauses while the CLI polls the console status; after approval the identical request and `request_id` are retried once |
-| 13 | Control plane unreachable, or slower than 15 s | Attempted | Rejected — *… unavailable*. Never allowed |
-| 14 | Origin governed by no route at all | Yes (`/agent/authorize`) | Broker decides; on allow the real credential is injected on the wire |
+| 1 | Origin outside the session's governed set, and not metered | No | Opaque CONNECT tunnel: no TLS termination, no body read, no header touched |
+| 2 | Metered LLM origin, request attributed to an active session | No (usage batched separately) | TLS terminated for counters only; forwarded unchanged apart from `Accept-Encoding: identity`. Never evaluated, never blocked |
+| 3 | Governed origin, no route covers the path | No | Rejected — *runtime routes have no route for this path* |
+| 4 | Two routes match one request | No | Rejected — *runtime route is ambiguous* |
+| 5 | Matched route's `availability` is not `ready` | No | Rejected — *runtime route unavailable*, with the status reason when present |
+| 6 | MCP lifecycle or discovery (`initialize`, `tools/list`, `ping`, …) | No | Forwarded unchanged; discovery never costs a decision |
+| 7 | Body is not valid JSON, has duplicate keys, or exceeds 1 MiB | No | Rejected before any call — ambiguous input fails closed |
+| 8 | Request names a resource the session did not select | No | Rejected — *… resource is not selected for this session* |
+| 9 | `provider_executor` route, resource selected and ready | Yes | Control plane executes upstream; its status, headers, and body are relayed back |
+| 10 | `mcp_gateway` route, `tools/call` / `resources/read` | Yes | Gateway executes; the JSON-RPC response is relayed, bound to the original id |
+| 11 | `mcp_kit_reader` route, `tools/call` / `resources/read` | Yes | Action token minted, injected at `params._meta`, request forwarded to the MCP server |
+| 12 | Control plane returns a denial | Yes | Rejected, carrying the decision's `reason_code` |
+| 13 | Control plane requires approval | Yes | Action pauses while the CLI polls the console status; after approval the identical request and `request_id` are retried once |
+| 14 | Control plane unreachable, or slower than 15 s | Attempted | Rejected — *… unavailable*. Never allowed |
+| 15 | Origin governed by no route at all | Yes (`/agent/authorize`) | Broker decides; on allow the real credential is injected on the wire |
 
-Rows 1 through 7 are the reason this lives in the CLI: seven distinct ways a request is answered without spending a decision, each resolved locally, each with a sentence the agent can read. Rows 12 and 13 are the ones that matter most — neither a pending approval nor an enforcement failure has a fail-open branch.
+Rows 1 through 8 are the reason this lives in the CLI: eight distinct ways a request is answered without spending a decision, each resolved locally, each with a sentence the agent can read. Rows 13 and 14 are the ones that matter most — neither a pending approval nor an enforcement failure has a fail-open branch.
 
 ---
 
@@ -448,6 +482,31 @@ Scope is deliberately **origin-only**, even though a policy route can also narro
 If scope was never detected (a fresh install, or an `init` that could not reach the control plane), Keydris falls back to `all` mode and manages every ungoverned destination — the backward-compatible default. Hostname scopes require the `sandbox` or `proxyenv` planes; the Linux transparent plane can safely scope only exact IP literals.
 
 This is separate from Claude Code's `sandbox.network.allowedDomains`: that list controls where Claude *may connect*, while proxy scope controls where Keydris *governs and injects*.
+
+---
+
+## Cost metering
+
+Alongside policy scope, the proxy meters the agent's **LLM API usage** so the dashboard's Cost page can show estimated spend per session. Known LLM provider origins (`api.anthropic.com`, `api.openai.com`) are TLS-terminated for **metering only** — never policy-enforced, never blocked — and only when the request is attributed to an active session.
+
+**Meter-only guarantee.** What leaves the machine per model call: the model id, token counts (input / output / cache), the stop reason, and latency — batched to `POST /v1/runtime/sessions/usage` under the session's KIT. Prompt and completion content is spliced through to the provider and discarded; the wire contract has no field that could carry it. A response whose usage cannot be read (for example an OpenAI stream without `stream_options.include_usage`) is recorded with an unknown output count — never estimated.
+
+Usage parsing and reporting errors do not fail the forwarded model response. Events carry idempotent request ids, including across KIT renewal.
+
+OpenAI events use the response's actual model and service tier. Anthropic events report fast mode (`usage.speed`) under the priority tier, and a Priority Tier commitment as unknown because its pricing is contractual. Cached reads and cache writes are split out of inclusive input counts. Response metadata is scanned incrementally, including large Responses API payloads, without retaining generated content. Missing tiers remain unknown; incomplete or invalid token counts remain unpriced.
+
+HTTP inference streaming and non-streaming responses are metered. WebSocket upgrades and their buffered frames are forwarded bidirectionally without metering. Background polling, Batch, audio/image endpoints, tool fees and regional surcharges are outside this token estimate. The client does not add `stream_options.include_usage`; callers must opt in for Chat Completions stream totals.
+
+Buffers are bounded and best effort. Session unregister joins in-flight reports and retries their unsent events with the departing KIT before revocation, within a 15-second reporting budget. The unregister socket allows 30 seconds for that cleanup. Final network failure is logged and may leave usage gaps; there is no durable spool.
+
+Deploy the platform's contracts 1.4.0 and pricing migrations before this CLI version. Administrators manage supplied rates, organization overrides and historical recalculation in Settings → Model pricing.
+
+```bash
+KEYDRIS_COST_METERING=off      # disable metering entirely
+KEYDRIS_METERED_ORIGINS=api.openai.com=off   # or adjust the origin list (host=provider, host=off)
+```
+
+`keydris status` reports whether metering is active. Metering works on the `sandbox` and `proxyenv` planes; the Linux transparent plane does not meter.
 
 ---
 
@@ -487,7 +546,8 @@ Three planes ship in this binary behind one interface. **`sandbox` is the defaul
 ### Guaranteed
 
 - **The real credential never reaches the agent.** On governed origins it is either applied by the control plane's own executor or injected by the proxy on the wire. The agent presents only its per-session handle.
-- **Only governed origins are inspected.** Everything else is an opaque tunnel — no TLS termination, no body read, no header mutation, and certificate pinning outside the scope is unaffected.
+- **Only governed origins are enforced.** Policy evaluation, credential injection, and blocking happen only on origins the session's routes govern. Metered LLM origins are terminated for counters alone — never evaluated against policy, never blocked. Everything else is an opaque tunnel: no TLS termination, no body read, no header mutation, and certificate pinning outside those two sets is unaffected.
+- **Metering carries no content.** On a metered origin only the model id, token counts, stop reason, and latency leave the machine; prompt and completion bytes are spliced through and discarded, and the usage wire contract has no field that could carry them. The single mutation is `Accept-Encoding: identity` on inference requests, which keeps the usage tail parseable. Every metering failure degrades to plain forwarding.
 - **Discovery is free.** MCP `initialize`, `tools/list`, `ping`, and the rest pass through untouched and never consume a decision.
 - **One session, one identity.** Concurrent sessions never borrow each other's identity, and a repeated SessionStart revokes the previous instance before replacing it.
 - **Ambiguous input fails closed.** Duplicate JSON keys, oversized bodies, unknown response fields, and decision/reason-code mismatches are refused at the boundary rather than interpreted.
@@ -668,6 +728,7 @@ keydris-cli/
 │   │   ├── provider.go                 POST /v1/runtime/providers/<provider>/execute
 │   │   ├── mcp_gateway.go              POST /v1/runtime/mcp/gateway
 │   │   ├── kit_action_token.go         POST /v1/runtime/mcp/kit-action-tokens (RFC 8785 hash)
+│   │   ├── usage.go                    POST /v1/runtime/sessions/usage: counters only, no content field
 │   │   └── decision.go                 the frozen decision + reason-code enum
 │   ├── node/
 │   │   ├── daemon/                     the long-running service
@@ -677,7 +738,9 @@ keydris-cli/
 │   │   ├── dataplane/                  interception, behind one interface
 │   │   │   ├── sandboxproxy.go         the default plane: TLS-terminating forward proxy
 │   │   │   ├── transparent_linux.go    iptables REDIRECT + SO_ORIGINAL_DST
-│   │   │   └── toolmeta.go             request metadata + MCP `_meta` token injection
+│   │   │   ├── toolmeta.go             request metadata + MCP `_meta` token injection
+│   │   │   └── meterconnect.go         metered-origin TLS termination, counters only
+│   │   ├── meter/                      LLM usage metering: origin set, extraction, batched reporting
 │   │   ├── proxy/                      the Keydris CA and per-host leaf minting
 │   │   ├── sandbox/                    writes ~/.claude/settings.json and ~/.codex/hooks.json
 │   │   ├── sessionsock/                the daemon's authenticated, owner-only local socket
@@ -720,6 +783,8 @@ Both install channels write a `~/.keydris.toml` pointing at that channel's endpo
 | `KEYDRIS_DATAPLANE` | `dataplane` | `sandbox` | `sandbox`, `transparent` (Linux + root), or `proxyenv` |
 | `KEYDRIS_PROXY_PORT` | `proxy_port` | `15001` | Proxy listen port |
 | `KEYDRIS_HTTP_PROXY_PORT` | `http_proxy_port` | `KEYDRIS_PROXY_PORT` | The port the sandbox is told to route to |
+| `KEYDRIS_COST_METERING` | `cost_metering` | on | `off` (also `0`, `false`, `no`) disables LLM usage metering entirely |
+| `KEYDRIS_METERED_ORIGINS` | `metered_origins` | the built-in provider list | Comma-separated `host=provider` entries that adjust the metered set; `host=off` drops a built-in origin |
 | `KEYDRIS_DATA_DIR` | — | `~/.keydris-data` | Everything in the table below |
 | `KEYDRIS_AGENT_ID` | — | read from the data dir | Normally set by `keydris init`, not by hand |
 | `KEYDRIS_PEER_VERIFY` | — | `warn` | `off`, `warn`, or `enforce` — reject connections from outside the session's process tree |
@@ -1025,6 +1090,13 @@ Available modes are `all`, `review`, `dead-code`, and `e2e`. An optional `task`
 override is literal text and remains subject to the selected task's patch
 restrictions. Reports are `dsh-report-<mode>` artifacts and proposals are
 `dsh-changes-<mode>`. The catalog validated for WSL2 is also retained separately.
+Each PR uses a specific title describing the final change, plus a description
+covering the problem, rationale, changes, limitations, and validation. DeepSeek
+writes `pr-description.json` alongside its report, outside the checkout; this
+also applies to custom tasks. The publisher validates that metadata as data and
+adds the actual changed-file list and task-specific validation results. Only E2E
+proposals claim real WSL2 validation. Missing or invalid metadata prevents
+publication instead of falling back to a generic maintenance title.
 The daily schedule takes effect when this workflow reaches the default branch.
 Manual branch runs target their source branch when opening PRs, so unmerged
 workflow changes are not displayed as agent-generated changes. Scheduled runs

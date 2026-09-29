@@ -1,0 +1,2 @@
+# Vendored usage contract checksums are over the canonical LF bytes.
+internal/runtimecontract/bundle/usage-v1/*.json text eol=lf

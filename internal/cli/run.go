@@ -169,6 +169,10 @@ func runCodex(args []string) int {
 		fmt.Fprintln(os.Stderr, "keydris codex: command or session-briefing hooks need updating; run `keydris init codex <agent-id>` and review /hooks")
 		return 1
 	}
+	if err := verifyCodexHookExecution(hookOptions); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris codex: %v; repair the hooks with `keydris init codex <agent-id>` before retrying\n", err)
+		return 1
+	}
 	// Enable Codex's own sandboxed-network proxy and let it honor the Keydris
 	// upstream proxy inherited below. The public wildcard is constrained again
 	// by Keydris; explicit loopback entries permit the local upstream endpoint.
@@ -182,6 +186,11 @@ func codexCommandArgs(args []string) []string {
 		"-c", "sandbox_workspace_write.network_access=true",
 		"-c", "features.network_proxy.enabled=true",
 		"-c", `features.network_proxy.domains={"*"="allow","127.0.0.1"="allow","localhost"="allow"}`,
+	}
+	if runtime.GOOS == "windows" {
+		// Managed networking cannot run in Codex's unelevated backend. Scope
+		// the required backend to this launch rather than rewriting user config.
+		codexArgs = append(codexArgs, "-c", `windows.sandbox="elevated"`)
 	}
 	return append(codexArgs, args...)
 }
@@ -200,19 +209,19 @@ func validateCodexHookArgs(args []string) error {
 			return fmt.Errorf("hooks cannot be disabled in a governed session")
 		}
 		if argument == "-c" || argument == "--config" {
-			if index+1 < len(args) && overridesCodexHooks(args[index+1]) {
-				return fmt.Errorf("features.hooks is reserved by `keydris codex`")
+			if index+1 < len(args) && overridesCodexEnforcement(args[index+1]) {
+				return fmt.Errorf("hook and Windows sandbox settings are reserved by `keydris codex`")
 			}
 			index++
 			continue
 		}
 		if strings.HasPrefix(argument, "-c") && argument != "-c" &&
-			overridesCodexHooks(strings.TrimPrefix(argument, "-c")) {
-			return fmt.Errorf("features.hooks is reserved by `keydris codex`")
+			overridesCodexEnforcement(strings.TrimPrefix(argument, "-c")) {
+			return fmt.Errorf("hook and Windows sandbox settings are reserved by `keydris codex`")
 		}
 		if strings.HasPrefix(argument, "--config=") &&
-			overridesCodexHooks(strings.TrimPrefix(argument, "--config=")) {
-			return fmt.Errorf("features.hooks is reserved by `keydris codex`")
+			overridesCodexEnforcement(strings.TrimPrefix(argument, "--config=")) {
+			return fmt.Errorf("hook and Windows sandbox settings are reserved by `keydris codex`")
 		}
 	}
 	return nil
@@ -228,10 +237,13 @@ func disablesCodexHooks(value string) bool {
 	return false
 }
 
-func overridesCodexHooks(value string) bool {
+func overridesCodexEnforcement(value string) bool {
 	assignment := strings.ToLower(value)
 	for _, character := range []string{" ", "\t", "\r", "\n", `"`, `'`} {
 		assignment = strings.ReplaceAll(assignment, character, "")
+	}
+	if runtime.GOOS == "windows" && (strings.HasPrefix(assignment, "windows.sandbox=") || strings.HasPrefix(assignment, "windows=")) {
+		return true
 	}
 	if strings.HasPrefix(assignment, "features.hooks=") ||
 		strings.HasPrefix(assignment, "features.codex_hooks=") {

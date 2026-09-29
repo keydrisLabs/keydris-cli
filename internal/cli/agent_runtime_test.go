@@ -10,6 +10,9 @@ func TestAgentRuntimeForCommand(t *testing.T) {
 		"codex":                           agentRuntimeCodex,
 		"./node_modules/.bin/codex":       agentRuntimeCodex,
 		"codex.exe":                       agentRuntimeCodex,
+		"claude.exe":                      agentRuntimeClaudeCode,
+		"claude.cmd":                      agentRuntimeClaudeCode,
+		"claude.bat":                      agentRuntimeClaudeCode,
 		"python":                          "",
 		"":                                "",
 

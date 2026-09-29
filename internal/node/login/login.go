@@ -186,9 +186,9 @@ func enroll(opt Options, bearer, email string) (*Identity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build CSR: %w", err)
 	}
-	deviceID := ""
-	if existing, loadErr := Load(opt.IdentityDir); loadErr == nil {
-		deviceID = existing.DeviceID
+	deviceID, err := enrollmentDeviceID(opt.IdentityDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve device identity: %w", err)
 	}
 	signed, err := signCSR(opt.ControlURL, bearer, csrPEM, deviceID, opt.DeviceName, opt.AgentID)
 	if err != nil {

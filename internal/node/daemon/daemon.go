@@ -23,6 +23,7 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 	"github.com/keydrisLabs/keydris-cli/internal/node/dataplane"
 	"github.com/keydrisLabs/keydris-cli/internal/node/login"
+	"github.com/keydrisLabs/keydris-cli/internal/node/meter"
 	"github.com/keydrisLabs/keydris-cli/internal/node/netfilter"
 	"github.com/keydrisLabs/keydris-cli/internal/node/proxy"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
@@ -96,13 +97,24 @@ func Run(cfg *config.Config) error {
 	defer sock.Close()
 	log.Printf("session registration socket: %s", cfg.SessionSocket)
 
-	dp, usesNetfilter, err := buildDataPlane(cfg, sessions, scope)
+	// LLM usage metering (ENG-261): counters only — model id, tokens, stop
+	// reason, latency — shipped under each session's KIT. Sandbox/proxyenv
+	// planes only; a final flush runs on session unregister, before the hook
+	// revokes the credential.
+	var usageMeter *meter.Meter
+	if cfg.CostMetering {
+		usageMeter = meter.New(authClient, cfg.ControlMTLSURL, sessions, log.Printf)
+		defer usageMeter.Close()
+		sock.SetOnUnregister(usageMeter.FlushSessionFinal)
+	}
+
+	dp, usesNetfilter, err := buildDataPlane(cfg, sessions, scope, usageMeter)
 	if err != nil {
 		return err
 	}
 	defer dp.Close()
 	router := newRuntimeRouter(authClient, cfg.ControlMTLSURL)
-	go runSessionRenewalLoop(ctx, cfg, authClient, sessions, log.Printf)
+	go runSessionRenewalLoop(ctx, cfg, authClient, sessions, log.Printf, usageMeter.FlushSessionFinal)
 
 	if usesNetfilter {
 		if err := netfilter.Up(cfg.ProxyPort, cfg.BackendPort, cfg.ProxyUID); err != nil {
@@ -140,7 +152,11 @@ func Run(cfg *config.Config) error {
 
 // buildDataPlane selects the interception mode. The bool reports whether the
 // daemon must manage iptables rules for this plane.
-func buildDataPlane(cfg *config.Config, sessions *attest.SessionRegistry, scope *proxyscope.Scope) (dataplane.DataPlane, bool, error) {
+func buildDataPlane(cfg *config.Config, sessions *attest.SessionRegistry, scope *proxyscope.Scope, usageMeter *meter.Meter) (dataplane.DataPlane, bool, error) {
+	var meteredOrigins *meter.Origins
+	if usageMeter != nil {
+		meteredOrigins = meter.NewOrigins(cfg.MeteredOriginOverrides)
+	}
 	switch cfg.DataPlane {
 	case "sandbox", "claude-code":
 		ca, err := proxy.LoadOrCreateCA(cfg.CAPath, cfg.CAKeyPath, "Keydris CA", 825*24*time.Hour)
@@ -153,6 +169,8 @@ func buildDataPlane(cfg *config.Config, sessions *attest.SessionRegistry, scope 
 				AllowSoleFallback: cfg.AllowSoleFallback,
 				PeerVerify:        dataplane.ParsePeerVerify(cfg.PeerVerify),
 				Scope:             scope,
+				Meter:             usageMeter,
+				MeteredOrigins:    meteredOrigins,
 			})
 		return dp, false, err
 	case "", "transparent", "linux":
@@ -182,6 +200,8 @@ func buildDataPlane(cfg *config.Config, sessions *attest.SessionRegistry, scope 
 				AllowSoleFallback: cfg.AllowSoleFallback,
 				PeerVerify:        dataplane.PeerVerifyOff,
 				Scope:             scope,
+				Meter:             usageMeter,
+				MeteredOrigins:    meteredOrigins,
 			})
 		return dp, false, err
 	default:

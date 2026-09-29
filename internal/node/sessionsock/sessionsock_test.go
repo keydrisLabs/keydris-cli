@@ -3,6 +3,7 @@ package sessionsock
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/keydrisLabs/keydris-cli/internal/node/attest"
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
@@ -85,6 +86,83 @@ func TestServerRequiresAuthentication(t *testing.T) {
 	}
 	if _, ok := registry.Lookup(message.Handle); ok {
 		t.Fatal("unregister did not remove the session")
+	}
+}
+
+// TestServerNotifiesUnregisterBeforeAck pins the callback contract the usage
+// meter depends on: the notification runs synchronously during unregister, so
+// the KIT is only revoked after the departing session's counters were shipped.
+func TestServerNotifiesUnregisterBeforeAck(t *testing.T) {
+	dir := t.TempDir()
+	secret, err := LoadOrCreateSecret(filepath.Join(dir, "session.auth"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := attest.NewSessionRegistry()
+	socketPath := filepath.Join(dir, "registry.sock")
+	server, err := Serve(socketPath, secret, registry, func(string, ...any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	entered := make(chan attest.Session, 1)
+	release := make(chan struct{})
+	server.SetOnUnregister(func(session attest.Session) {
+		entered <- session
+		<-release
+	})
+
+	message := Message{
+		Auth: secret, Action: ActionRegister, Handle: "session-token",
+		SPIFFEID: "spiffe://keydris.test/agent/policy/id", SVID: "signed-svid",
+		ULID: "01K1X4Y5Z6A7B8C9D0E1F2G3H5", SessionID: "claude-session",
+		Routes: testRuntimeRoutes(),
+	}
+	if err := Send(socketPath, message); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Exchange(socketPath, Message{Auth: secret, Action: ActionLookup, Handle: message.Handle}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case session := <-entered:
+		t.Fatalf("lookup notified an unregister: %+v", session)
+	default:
+	}
+
+	ackDone := make(chan error, 1)
+	go func() {
+		_, err := Exchange(socketPath, Message{Auth: secret, Action: ActionUnregister, Handle: message.Handle})
+		ackDone <- err
+	}()
+	var notified attest.Session
+	select {
+	case notified = <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unregister did not notify the callback")
+	}
+	if notified.ULID != message.ULID || notified.SVID != message.SVID {
+		t.Fatalf("callback saw the wrong session: %+v", notified)
+	}
+	select {
+	case err := <-ackDone:
+		t.Fatalf("unregister was acked before the callback returned (err=%v)", err)
+	default:
+	}
+	close(release)
+	if err := <-ackDone; err != nil {
+		t.Fatal(err)
+	}
+
+	// Taking an unknown handle must not notify.
+	if _, err := Exchange(socketPath, Message{Auth: secret, Action: ActionUnregister, Handle: message.Handle}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case session := <-entered:
+		t.Fatalf("callback ran for a session that was already gone: %+v", session)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

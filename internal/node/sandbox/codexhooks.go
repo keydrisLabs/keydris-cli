@@ -143,6 +143,13 @@ func eventHasMatcherCommand(value any, matcher, command string) bool {
 		for _, handler := range handlers {
 			hook, _ := handler.(map[string]any)
 			configuredCommand, _ := hook["command"].(string)
+			// A Windows override must not replace the command that was verified.
+			if override, exists := hook["commandWindows"]; exists && override != command {
+				continue
+			}
+			if override, exists := hook["command_windows"]; exists && override != command {
+				continue
+			}
 			hookType, _ := hook["type"].(string)
 			async, _ := hook["async"].(bool)
 			if configuredCommand == command && hookType == "command" && !async &&

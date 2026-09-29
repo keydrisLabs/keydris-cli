@@ -19,6 +19,14 @@ The example keeps Codex in `workspace-write`, retains interactive approvals,
 and permits sandboxed commands to reach the local Keydris proxy. A project
 configuration is loaded only after Codex trusts that project.
 
+On native Windows, the wrapper selects Codex's `elevated` sandbox because its
+managed networking requires that backend. Complete Codex's administrator-approved
+sandbox setup first. The selection applies to the wrapped process only.
+
+Command rules that require approval are blocked with an explanation: Codex cannot
+reliably force a policy approval prompt from `PreToolUse`. Policy-denied commands
+and authorization errors also block, regardless of Codex's approval settings.
+
 The config file controls Codex's sandbox behavior, but it cannot own the full
 Keydris identity lifecycle. Continue launching Codex through `keydris codex` so
 the session is revoked on exit.
@@ -38,12 +46,17 @@ keydris proxy up
 keydris codex
 ```
 
-Normal Codex arguments are passed through unchanged:
+Normal Codex arguments are passed through; hook enablement and the native Windows
+sandbox selection are reserved by the wrapper:
 
 ```bash
 keydris codex --help
 keydris codex --model <model-name>
 ```
+
+After upgrading, rerun `keydris init codex <agent-id>` and review the updated hooks
+in `/hooks`. The wrapper verifies that both command hooks execute and return an
+explicit denial without a session before opening a governed session.
 
 `openai` is also accepted as an alias:
 
