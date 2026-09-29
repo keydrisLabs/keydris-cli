@@ -130,9 +130,9 @@ def invocation(harness, prompt):
         return ["keydris", "run", "--", "claude", "-p", prompt, "--tools", "Bash",
                 "--permission-mode", "dontAsk", "--max-turns", "3",
                 "--output-format", "stream-json", "--verbose", "--include-hook-events"]
-    # The runner's hooks were freshly generated and verified by keydris init.
-    # This opts those hooks into execution for this invocation; sandboxing stays on.
-    return ["keydris", "codex", "exec", "--dangerously-bypass-hook-trust",
+    # keydris codex passes the Keydris hooks with their trust and checks that
+    # Codex will run them, so no hook-trust bypass is used; sandboxing stays on.
+    return ["keydris", "codex", "exec",
             "--sandbox", "workspace-write", "-c", 'approval_policy="never"',
             "--skip-git-repo-check", "--json", prompt]
 

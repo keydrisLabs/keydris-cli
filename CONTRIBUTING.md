@@ -66,7 +66,7 @@ If you are only fixing a typo in a comment or a document, none of this applies.
 | [`internal/runtimecontract`](internal/runtimecontract/) | The control-plane wire contract and its strict decoders |
 | [`internal/node/daemon`](internal/node/daemon/) | The long-running service: flow loop, route enforcement, renewal, audit |
 | [`internal/node/dataplane`](internal/node/dataplane/) | Interception, behind one interface |
-| [`internal/node/sandbox`](internal/node/sandbox/) | What `init` writes into `~/.claude/settings.json` and `~/.codex/hooks.json` |
+| [`internal/node/sandbox`](internal/node/sandbox/) | What `init` writes into `~/.claude/settings.json`, and the Codex hook options |
 | [`internal/config`](internal/config/) | Layered configuration and the managed-scope file |
 | [`internal/proxyscope`](internal/proxyscope/) | Origin canonicalization and matching |
 | [`internal/evidence`](internal/evidence/) | The hash-chained ledger behind `keydris logs` |

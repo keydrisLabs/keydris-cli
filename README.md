@@ -164,8 +164,29 @@ keydris status
 keydris codex
 ```
 
-Run `/hooks` once inside Codex to trust the new entries. Start governed sessions
-with `keydris codex`, not `codex` directly. See the [full Codex setup](#quickstart--openai-codex).
+Start governed sessions with `keydris codex`, not `codex` directly. It passes the
+Keydris hooks and their trust at each launch, so there is no `/hooks` step. See the
+[full Codex setup](#quickstart--openai-codex).
+
+### Claude Desktop
+
+```bash
+keydris init claude-desktop <agent-id>
+keydris status
+keydris claude-desktop
+```
+
+Quit Claude first. `keydris claude-desktop` opens one governed session and stays running until you quit Claude. A Dock launch does not create a session. Remote MCP from plugins is governed with the rest of the session; a plugin that runs its own local program is not.
+
+### Codex Desktop
+
+```bash
+keydris init codex-desktop <agent-id>
+keydris status
+keydris codex-desktop
+```
+
+Quit the Codex app first. `keydris codex-desktop` opens one governed session and stays running until you quit the app. It runs the app's own codex with the Keydris hooks already trusted, so there is no `/hooks` step, and keydris writes nothing to `~/.codex`. A Dock launch does not create a session. See [Codex Desktop governance](docs/codex-desktop.md).
 
 For a non-agent command, use `keydris run -- <command>`.
 
@@ -252,8 +273,8 @@ The skill explains delegated authority, CLI diagnostics, approvals, denials,
 and authorized administration. The `SessionStart` hooks add a short, secret-free
 briefing for startup, resume, clear and compaction. Claude uses its existing
 session hook. Codex uses a context-only hook: the `keydris codex` wrapper still
-owns identity and cleanup. Use a Codex release supporting these hooks, and review
-the updated commands in `/hooks` after rerunning `keydris init codex`.
+owns identity and cleanup, and passes that hook with the others at each launch.
+Use a Codex release supporting these hooks.
 
 ```bash
 keydris skill                        # read the bundled skill offline
@@ -320,7 +341,7 @@ keydris init codex <agent-id>        # `init openai` is also accepted
 keydris codex                        # normal Codex arguments follow
 ```
 
-Run `/hooks` once inside Codex to trust the new entries (see [`examples/codex/config.toml`](examples/codex/config.toml)). Launch through `keydris codex`, never `codex` directly, when governance is required. After upgrading, rerun `keydris init codex <agent-id>` to migrate old hook commands and review their updated trust entries in `/hooks`.
+`keydris codex` passes the Keydris hooks as `-c` options at each launch, together with their trust, so there is no `/hooks` step and nothing is written to `~/.codex/hooks.json`. Codex skips a hook it does not trust without an error, so before opening a session the wrapper has the codex it is about to run list its hooks, and refuses to launch unless every Keydris hook is trusted and enabled. Your own `-c` options keep working: Codex keeps only the last group of `-c` options, so the wrapper adds its options right after your last one. Launch through `keydris codex`, never `codex` directly, when governance is required. After upgrading from a release that wrote the hooks to `~/.codex/hooks.json`, rerun `keydris init codex <agent-id>` once to remove those entries. See [`examples/codex/config.toml`](examples/codex/config.toml) for recommended Codex settings.
 
 Before opening a session, the wrapper executes both command hooks with a sessionless probe and requires explicit denials. On native Windows it uses PowerShell-compatible hook commands and selects Codex's `elevated` sandbox for managed networking. Complete Codex's administrator-approved sandbox setup first; the wrapper does not disable the sandbox or change your saved Codex configuration.
 
@@ -514,10 +535,10 @@ KEYDRIS_METERED_ORIGINS=api.openai.com=off   # or adjust the origin list (host=p
 
 A policy can also carry **command rules** — glob patterns over the full shell command line (`git push*` also matches `git push --force`) — with `allow`, `require_approval`, or `reject` effects. Each shell command is sent to `POST /v1/runtime/commands/authorize` with the session's KIT, and the decision maps to the harness's own permission verdict.
 
-| Harness | Hooks wired by `keydris init` | Where |
+| Harness | Keydris hooks | Where |
 | --- | --- | --- |
 | **Claude Code** | `PreToolUse` → `keydris __pretool-use`, matcher `Bash` (`Bash\|PowerShell` on Windows), alongside SessionStart/SessionEnd | `~/.claude/settings.json` |
-| **Codex** | `PreToolUse` → `keydris __pretool-use --codex` and `PermissionRequest` → `keydris __permission-request`; both use the same console-approval wait and fail-closed result | `$CODEX_HOME/hooks.json`, default `~/.codex/hooks.json` |
+| **Codex** | `PreToolUse` → `keydris __pretool-use --codex` and `PermissionRequest` → `keydris __permission-request`; both use the same console-approval wait and fail-closed result | Trusted `-c` options passed by `keydris codex` at each launch |
 
 When a command needs approval, the hook remains blocked while the user approves or rejects it in the Keydris console. Approval triggers one retry of the exact authorization body and `request_id`; the command proceeds only when that retry returns `allow`. No harness-specific `ask` verdict or terminal approval substitutes for the console decision.
 
@@ -559,7 +580,7 @@ Three planes ship in this binary behind one interface. **`sandbox` is the defaul
 
 - **Un-bypassability comes from the sandbox, not from Keydris.** It holds only while Claude Code's sandbox is enabled and routed here. `keydris init` locks it (`failIfUnavailable`, `allowUnsandboxedCommands: false`), and `keydris status` surfaces drift — but a user who disables the sandbox loses enforcement.
 - **Launch through the wrapper.** `keydris codex`, never `codex`: starting Codex directly creates no Keydris session at all. For Claude Code, `keydris run -- claude` rather than `claude` — bare `claude` still mints a session through its hook, but only its Bash subprocesses are proxied, so the agent's own MCP and WebFetch egress goes ungoverned.
-- **Trust the Codex hooks once.** Codex will not run hooks from a new file until you confirm them with `/hooks`. For managed fleets, deploy the same absolute hook paths through Codex `requirements.toml` — user-level hook trust is not an administrator boundary.
+- **Codex hooks are per launch.** `keydris codex` passes the Keydris hooks and their trust at each launch, and refuses to start unless Codex reports every one trusted and enabled. Codex started without the wrapper runs no Keydris hooks. For managed fleets where users must not run ungoverned Codex, deploy the same absolute hook paths through Codex `requirements.toml`.
 - **Treat `~/.keydris-data` as sensitive.** `evidence.jsonl` and `proxy.log` record full JSON tool parameters and request bodies for managed authorization calls, which may contain application secrets. They are created `0600` under a `0700` directory; handle them accordingly.
 - **The per-session proxy token is a bearer credential.** A co-resident process that reads it from the environment or `$CLAUDE_ENV_FILE` can impersonate the session until `session-end`.
 - **Keep configuration trusted.** Project-local `.env` and `.keydris.toml` are ignored by default because letting a repository redirect OAuth, identity, and control-plane endpoints crosses a trust boundary. Opt in with `KEYDRIS_TRUST_PROJECT_CONFIG=1` only when you mean it.
@@ -742,7 +763,7 @@ keydris-cli/
 │   │   │   └── meterconnect.go         metered-origin TLS termination, counters only
 │   │   ├── meter/                      LLM usage metering: origin set, extraction, batched reporting
 │   │   ├── proxy/                      the Keydris CA and per-host leaf minting
-│   │   ├── sandbox/                    writes ~/.claude/settings.json and ~/.codex/hooks.json
+│   │   ├── sandbox/                    writes ~/.claude/settings.json; builds the Codex hook flags
 │   │   ├── sessionsock/                the daemon's authenticated, owner-only local socket
 │   │   ├── sessionstate/               durable per-session state, replaced atomically
 │   │   ├── attest/                     session registry + peer verification
@@ -792,7 +813,7 @@ Both install channels write a `~/.keydris.toml` pointing at that channel's endpo
 | `KEYDRIS_TRUST_PROJECT_CONFIG` | — | unset | `1` opts into project-local `.env` / `.keydris.toml` |
 | `KEYDRIS_MANAGED_MODE` / `_DESTINATIONS` | `managed_mode` / `managed_destinations` | derived from policy | **Escape hatch.** Setting these overrides scope detection; prefer leaving them unset |
 | `KEYDRIS_CLAUDE_SETTINGS` | — | `~/.claude/settings.json` | Where the sandbox block and hooks are written |
-| `KEYDRIS_CODEX_HOOKS` | — | `$CODEX_HOME/hooks.json` | Defaults to `~/.codex/hooks.json` |
+| `KEYDRIS_CODEX_HOOKS` | — | `$CODEX_HOME/hooks.json` | Where earlier releases wrote the Codex hooks; `init` and `deinit` remove those entries |
 | `KEYDRIS_OIDC_ISSUER` + `KEYDRIS_OAUTH_*` | `oidc_issuer`, `cognito_domain`, `oauth_*` | built-in mock IdP | Run `keydris login` against a real OIDC provider — see [.env.example](.env.example) |
 
 ### Where state lives
@@ -906,10 +927,9 @@ basic command execution and policy rejection, not all policy features or bypasse
 Shell authorization goes directly to the backend; the proxy evidence ledger is
 not used as shell-decision evidence.
 
-Claude runs inside `keydris run` with only its Bash tool enabled. Codex uses the
-freshly generated and verified Keydris hooks with `--dangerously-bypass-hook-trust`
-for that CI invocation, while keeping the workspace-write sandbox enabled. The
-runner is disposable; this does not persist hook trust on developer machines.
+Claude runs inside `keydris run` with only its Bash tool enabled. Codex runs
+inside `keydris codex exec`, which passes the Keydris hooks and their trust, with
+the workspace-write sandbox enabled and no hook-trust bypass.
 Approval-required behavior is outside these noninteractive allow/deny probes.
 
 The assertion runner and verifier use Python's standard library. Run their

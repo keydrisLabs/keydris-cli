@@ -21,7 +21,7 @@ import (
 var agentUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 func runInit(args []string) int {
-	const usage = "Usage: keydris init [claude-code|codex] [agent-id] [--strict=false] [--trust-store] [--no-start] [--no-browser]"
+	const usage = "Usage: keydris init [claude-code|codex|claude-desktop|codex-desktop] [agent-id] [--strict=false] [--trust-store] [--no-start] [--no-browser]"
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		fmt.Fprintln(os.Stdout, usage)
 		return 0
@@ -39,7 +39,7 @@ func runInit(args []string) int {
 	if target == "openai" {
 		target = "codex"
 	}
-	if target != "claude-code" && target != "codex" {
+	if !knownIntegration(target) {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
@@ -80,15 +80,21 @@ func runInit(args []string) int {
 		ui.row("error", "Environment", err.Error())
 		return 1
 	}
-	if hostenv.Current().WSL != "" {
-		command := "claude"
-		if target == "codex" {
-			command = "codex"
-		}
-		if _, err := hostenv.ResolveCommand(command); err != nil {
+	if hostenv.Current().WSL != "" && target == "claude-code" {
+		if _, err := hostenv.ResolveCommand("claude"); err != nil {
 			ui.row("error", "Agent runtime", err.Error())
 			return 1
 		}
+	}
+	// The Codex hook check runs the codex this device launches.
+	var codexExecutable string
+	if target == "codex" {
+		resolved, err := hostenv.ResolveCommand("codex")
+		if err != nil {
+			ui.row("error", "Agent runtime", err.Error())
+			return 1
+		}
+		codexExecutable = resolved
 	}
 	// Resolve the executable before writing any configuration.
 	claudeOptions, err := claudeHookOptions(cfg, *strict)
@@ -140,14 +146,23 @@ func runInit(args []string) int {
 		return 1
 	}
 	finish = ui.progress("Configuring " + target)
-	if target == "claude-code" {
+	var removedLegacyHooks bool
+	switch target {
+	case "claude-code":
 		err = sandbox.Configure(cfg.ClaudeSettingsPath, claudeOptions)
-	} else {
-		err = sandbox.ConfigureCodexHooks(cfg.CodexHooksPath, codexOptions)
+	case "codex":
+		removedLegacyHooks, err = configureCodex(cfg)
+	case "claude-desktop":
+		err = configureClaudeDesktop(cfg, claudeOptions)
+	default:
+		err = configureCodexDesktop(cfg)
 	}
 	finish(err)
 	if err != nil {
 		return 1
+	}
+	if removedLegacyHooks {
+		ui.row("ok", "Codex hooks", "Removed the entries an earlier release wrote to "+cfg.CodexHooksPath+"; keydris codex now passes them at launch")
 	}
 	if path, pathErr := agentSkillPath(cfg, target); pathErr != nil {
 		ui.row("warning", "Agent skill", pathErr.Error())
@@ -170,6 +185,16 @@ func runInit(args []string) int {
 	if scopeOutput.Len() > 0 {
 		ui.row("warning", "Policy scope", scopeOutput.String())
 	}
+	if target == "claude-desktop" {
+		ui.row("working", "System trust", "Enter your administrator password to update the System keychain")
+		err = sandbox.InstallSystemTrustStore(cfg.CAPath)
+		if err != nil {
+			ui.row("error", "System trust", err.Error())
+			ui.row("warning", "Setup incomplete", "System keychain trust is required for Claude Desktop")
+			return 1
+		}
+		ui.row("ok", "System trust", "CA installed in the System keychain")
+	}
 	if *trust {
 		finish = ui.progress("Installing OS trust")
 		err = sandbox.InstallTrustStore(cfg.CAPath)
@@ -185,7 +210,8 @@ func runInit(args []string) int {
 			return code
 		}
 	}
-	if target == "claude-code" {
+	switch target {
+	case "claude-code":
 		verified, err := sandbox.Verify(cfg.ClaudeSettingsPath, cfg.HTTPProxyPort, claudeOptions)
 		if err != nil || (!verified.OK() && *strict) {
 			ui.row("error", "Verification", "Claude configuration needs attention")
@@ -194,10 +220,26 @@ func runInit(args []string) int {
 		if !*strict {
 			ui.row("warning", "Sandbox", "Non-strict mode permits unsandboxed commands")
 		}
-	} else {
-		verified, err := sandbox.VerifyCodexHooks(cfg.CodexHooksPath, codexOptions)
-		if err != nil || !verified {
-			ui.row("error", "Verification", "Codex hooks need attention")
+	case "codex":
+		finish = ui.progress("Checking the Keydris hooks in Codex")
+		_, err := governedCodexOverrides(codexExecutable, codexOptions)
+		finish(err)
+		if err != nil {
+			ui.row("error", "Verification", "Codex hooks need attention: "+err.Error())
+			return 1
+		}
+	case "claude-desktop":
+		present, err := sandbox.HasKeydrisHooks(desktopSettingsPath(cfg))
+		if err != nil || !present {
+			ui.row("error", "Verification", "Claude Desktop hooks need attention")
+			return 1
+		}
+	default:
+		finish = ui.progress("Checking the Keydris hooks in the Codex app")
+		err := verifyCodexDesktop(codexOptions)
+		finish(err)
+		if err != nil {
+			ui.row("error", "Verification", "Codex Desktop hooks need attention: "+err.Error())
 			return 1
 		}
 	}
@@ -206,11 +248,12 @@ func runInit(args []string) int {
 		ui.next("keydris proxy up")
 	} else if target == "claude-code" {
 		ui.next("keydris run -- claude")
+	} else if target == "claude-desktop" {
+		ui.next("keydris claude-desktop")
+	} else if target == "codex-desktop" {
+		ui.next("keydris codex-desktop")
 	} else {
 		ui.next("keydris codex")
-	}
-	if target == "codex" {
-		ui.row("inactive", "Codex", "Use /hooks once inside Codex to trust the Keydris hooks")
 	}
 	return 0
 }
@@ -221,10 +264,10 @@ func promptInit() ([]string, bool) {
 	}
 	printInitBanner(os.Stdout)
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Fprintln(os.Stdout, "Choose an integration:\n  1) Claude Code\n  2) OpenAI Codex")
+	fmt.Fprintln(os.Stdout, "Choose an integration:\n  1) Claude Code\n  2) OpenAI Codex\n  3) Claude Desktop\n  4) Codex Desktop")
 	target := ""
 	for target == "" {
-		fmt.Fprint(os.Stdout, "Selection [1-2]: ")
+		fmt.Fprint(os.Stdout, "Selection [1-4]: ")
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			return nil, false
@@ -234,8 +277,12 @@ func promptInit() ([]string, bool) {
 			target = "claude-code"
 		case "2", "codex", "openai":
 			target = "codex"
+		case "3", "claude-desktop", "desktop":
+			target = "claude-desktop"
+		case "4", "codex-desktop":
+			target = "codex-desktop"
 		default:
-			newUI(os.Stdout).row("warning", "Selection", "Enter 1 or 2 (Ctrl+C to cancel)")
+			newUI(os.Stdout).row("warning", "Selection", "Enter 1, 2, 3, or 4 (Ctrl+C to cancel)")
 		}
 	}
 	existing := config.Load().AgentID

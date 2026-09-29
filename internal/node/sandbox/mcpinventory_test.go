@@ -131,3 +131,70 @@ func TestInventoryBoundsAndEndpointRedaction(t *testing.T) {
 		t.Fatalf("overlong endpoint = %+v, want redacted", entry)
 	}
 }
+
+func TestDesktopInventoryIncludesUserAndPluginEntriesAndRedactsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "desktop.json")
+	user := `{"mcpServers":{"user":{"type":"http","url":"https://user:password@example.com/mcp?token=secret#fragment","headers":{"Authorization":"secret"}}}}`
+	if err := os.WriteFile(configPath, []byte(user), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pluginRoot := filepath.Join(dir, "plugins")
+	pluginDir := filepath.Join(pluginRoot, "vendor", "tool")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plugin := `{"mcpServers":{"local":{"command":"secret-command","args":["secret-argument"],"env":{"TOKEN":"secret"}},"remote":{"type":"http","url":"https://plugin.example.com/mcp","headers":{"Authorization":"secret"}}}}`
+	if err := os.WriteFile(filepath.Join(pluginDir, ".mcp.json"), []byte(plugin), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ReadDesktopMCPInventory(configPath, []string{pluginRoot})
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("inventory: %v, %v", entries, err)
+	}
+	encoded, _ := json.Marshal(entries)
+	for _, secret := range []string{"password", "secret", "Authorization", "fragment", "TOKEN", "secret-command"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("leaked %s", secret)
+		}
+	}
+	if entries[0].Transport != "stdio" || !entries[0].Managed || !entries[1].Managed || !entries[2].EndpointRedacted {
+		t.Fatalf("incorrect metadata: %+v", entries)
+	}
+}
+
+func TestDesktopInventoryRejectsInvalidUserConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken.json")
+	if err := os.WriteFile(path, []byte(`{broken`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadDesktopMCPInventory(path, nil); err == nil {
+		t.Fatal("invalid JSON accepted")
+	}
+}
+
+func TestDesktopInventoryMissingPathsAreEmptySnapshot(t *testing.T) {
+	dir := t.TempDir()
+	entries, err := ReadDesktopMCPInventory(filepath.Join(dir, "missing.json"), []string{filepath.Join(dir, "missing-plugins")})
+	if err != nil || entries == nil || len(entries) != 0 {
+		t.Fatal("missing config must be a complete empty snapshot")
+	}
+	entries, err = ReadDesktopMCPInventory("", nil)
+	if err != nil || entries == nil || len(entries) != 0 {
+		t.Fatal("empty inputs must be a complete empty snapshot")
+	}
+}
+
+func TestDesktopInventoryRejectsInvalidPluginConfig(t *testing.T) {
+	dir := t.TempDir()
+	pluginRoot := filepath.Join(dir, "plugins")
+	if err := os.MkdirAll(pluginRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, ".mcp.json"), []byte(`{broken`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadDesktopMCPInventory(filepath.Join(dir, "missing.json"), []string{pluginRoot}); err == nil {
+		t.Fatal("invalid plugin JSON accepted")
+	}
+}

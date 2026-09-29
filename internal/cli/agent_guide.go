@@ -13,7 +13,6 @@ import (
 
 	"github.com/keydrisLabs/keydris-cli/internal/agentguide"
 	"github.com/keydrisLabs/keydris-cli/internal/config"
-	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 	hostenv "github.com/keydrisLabs/keydris-cli/internal/platform"
 )
 
@@ -24,12 +23,15 @@ func agentSkillPath(cfg *config.Config, target string) (string, error) {
 	switch target {
 	case "claude-code":
 		root = filepath.Join(filepath.Dir(cfg.ClaudeSettingsPath), "skills")
-	case "codex":
+	case "claude-desktop":
+		root = filepath.Join(desktopSettingsDir(cfg), "skills")
+	case "codex", "codex-desktop":
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		// Codex's user skill discovery is independent of CODEX_HOME.
+		// Codex's user skill discovery is independent of CODEX_HOME. The
+		// desktop app reads the same directory as the CLI.
 		root = filepath.Join(home, ".agents", "skills")
 	default:
 		return "", fmt.Errorf("unknown skill target %q", target)
@@ -155,15 +157,15 @@ func removeAgentSkill(path string) error {
 
 func cleanupAgentSkill(cfg *config.Config, target string) {
 	path, err := agentSkillPath(cfg, target)
-	// Custom Claude configuration can share Codex's user skill directory.
-	// Keep a shared copy while the other integration still uses Keydris.
-	other, settings := "codex", cfg.CodexHooksPath
-	if target == "codex" {
-		other, settings = "claude-code", cfg.ClaudeSettingsPath
-	}
-	if otherPath, pathErr := agentSkillPath(cfg, other); err == nil && pathErr == nil && pathEqual(path, otherPath) {
-		active, inspectErr := sandbox.HasKeydrisHooks(settings)
-		if active || inspectErr != nil {
+	// Codex and Codex Desktop always share one skill directory, and custom
+	// Claude configuration can share it too. Keep a shared copy while another
+	// integration still uses Keydris.
+	for _, other := range integrationNames {
+		otherPath, pathErr := agentSkillPath(cfg, other)
+		if other == target || err != nil || pathErr != nil || !pathEqual(path, otherPath) {
+			continue
+		}
+		if active, inspectErr := integrationConfigured(cfg, other); active || inspectErr != nil {
 			return
 		}
 	}
@@ -192,6 +194,9 @@ func runAgentContext(args []string) int {
 		return 2
 	}
 	note := "Codex terminal sessions must launch with keydris codex. VS Code sidebar integration is separate."
+	if os.Getenv(codexDesktopEnv) != "" {
+		note = "This Codex desktop app was launched with keydris codex-desktop; its Keydris session ends when the app quits."
+	}
 	if os.Getenv(sessionOwnerEnv) != sessionOwnerRun || os.Getenv("KEYDRIS_SESSION") == "" {
 		note += " This process has no Keydris wrapper session. Tell the user to open a terminal and launch keydris codex before doing governed work."
 	}

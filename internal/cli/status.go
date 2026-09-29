@@ -20,6 +20,7 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/node/login"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sandbox"
 	"github.com/keydrisLabs/keydris-cli/internal/node/sessionsock"
+	"github.com/keydrisLabs/keydris-cli/internal/node/sessionstate"
 	hostenv "github.com/keydrisLabs/keydris-cli/internal/platform"
 	"github.com/keydrisLabs/keydris-cli/internal/proxyscope"
 )
@@ -148,73 +149,24 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 	}
 	add("Proxy", state, health.detail, next)
 	configured := 0
-	for _, integration := range []struct{ name, path, command string }{{"claude-code", cfg.ClaudeSettingsPath, "claude"}, {"codex", cfg.CodexHooksPath, "codex"}} {
-		if target != "" && target != integration.name {
-			continue
+	if target == "" || target == "claude-code" {
+		if addClaudeCodeStatus(cfg, target, add) {
+			configured++
 		}
-		present, err := sandbox.HasKeydrisHooks(integration.path)
-		if err != nil {
-			add(integration.name, "error", "Cannot read integration settings", "keydris init "+integration.name)
-			continue
+	}
+	if target == "" || target == "codex" {
+		if addCodexStatus(cfg, target, add) {
+			configured++
 		}
-		if !present && target == "" {
-			add(integration.name, "inactive", "Not configured", "")
-			continue
+	}
+	if target == "" || target == "claude-desktop" {
+		if addDesktopStatus(cfg, target, add) {
+			configured++
 		}
-		configured++
-		valid := false
-		detail := "Configuration needs attention"
-		if integration.name == "claude-code" {
-			opt, optErr := claudeHookOptions(cfg, true)
-			st, verifyErr := sandbox.Verify(integration.path, cfg.HTTPProxyPort, opt)
-			if optErr != nil {
-				verifyErr = optErr
-			}
-			valid = verifyErr == nil && st.OK()
-			if !valid && len(st.Warnings) > 0 {
-				detail = strings.Join(st.Warnings, "; ")
-			}
-		} else {
-			opt, optErr := codexHookOptions()
-			if optErr == nil {
-				valid, err = sandbox.VerifyCodexHooks(integration.path, opt)
-				valid = valid && err == nil
-			}
-		}
-		if !valid {
-			add(integration.name, "error", detail, "keydris init "+integration.name)
-			continue
-		}
-		if _, err := hostenv.ResolveCommand(integration.command); err != nil {
-			add(integration.name, "warning", "Hooks configured; "+err.Error(), "Install "+integration.command+" for this runtime or correct PATH")
-			continue
-		}
-		detail = "Sandbox and command hooks configured"
-		if integration.name == "codex" {
-			detail = "Command hooks configured; launch with keydris codex (trust via /hooks once)"
-		}
-		add(integration.name, "ok", detail, "")
-		path, pathErr := agentSkillPath(cfg, integration.name)
-		if pathErr != nil {
-			add("Agent skill", "warning", pathErr.Error(), "keydris init "+integration.name)
-		} else if raw, err := readAgentSkill(path); err != nil {
-			add("Agent skill", "warning", "Cannot read "+path+"; bundled guidance is available via keydris skill", "keydris init "+integration.name)
-		} else if !bytes.Equal(raw, bundledSkill()) {
-			add("Agent skill", "warning", "Older or user-edited skill at "+path+"; local edits are preserved", "Review the skill, then run keydris init "+integration.name)
-		} else {
-			add("Agent skill", "ok", integration.name+": bundled skill installed", "")
-		}
-		if integration.name == "claude-code" {
-			for _, check := range environmentChecks("claude-code") {
-				if check.Name == "Sandbox" {
-					add(check.Name, check.State, check.Detail, check.Next)
-				}
-			}
-			for _, path := range claudeProjectSettings() {
-				if !sameAbsolutePath(path, cfg.ClaudeSettingsPath) {
-					add("Project settings", "warning", "May override global sandbox: "+path, "Review "+path)
-				}
-			}
+	}
+	if target == "" || target == "codex-desktop" {
+		if addCodexDesktopStatus(cfg, target, add) {
+			configured++
 		}
 	}
 	if configured == 0 {
@@ -249,8 +201,8 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 		}
 	}
 	if verbose {
-		report.Paths = map[string]string{"data": cfg.DataDir, "identity": cfg.IdentityDir, "ca": cfg.CAPath, "bundle": cfg.CABundlePath, "claude": cfg.ClaudeSettingsPath, "codex": cfg.CodexHooksPath, "proxy_log": filepath.Join(cfg.DataDir, "proxy.log")}
-		for _, integration := range []string{"claude-code", "codex"} {
+		report.Paths = map[string]string{"data": cfg.DataDir, "identity": cfg.IdentityDir, "ca": cfg.CAPath, "bundle": cfg.CABundlePath, "claude": cfg.ClaudeSettingsPath, "codex": cfg.CodexHooksPath, "claude_desktop": desktopSettingsPath(cfg), "codex_desktop": codexDesktopDir(cfg), "proxy_log": filepath.Join(cfg.DataDir, "proxy.log")}
+		for _, integration := range integrationNames {
 			if path, err := agentSkillPath(cfg, integration); err == nil {
 				report.Paths[integration+"_skill"] = path
 			}
@@ -259,20 +211,146 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 	return report
 }
 
+func addDesktopStatus(cfg *config.Config, target string, add func(string, string, string, string)) bool {
+	path := desktopSettingsPath(cfg)
+	present, err := sandbox.HasKeydrisHooks(path)
+	if err != nil {
+		add("claude-desktop", "error", "Cannot read Claude Desktop settings", "keydris init claude-desktop")
+		return false
+	}
+	if !present {
+		if target == "" {
+			add("claude-desktop", "inactive", "Not configured", "")
+			return false
+		}
+		add("claude-desktop", "error", "Not configured", "keydris init claude-desktop")
+		return false
+	}
+	detail := "Hooks configured; launch with keydris claude-desktop"
+	if rec, err := readDesktopLaunch(cfg); err == nil {
+		if desktopSessionLive(rec) {
+			detail = "Session active"
+		} else {
+			add("claude-desktop", "warning", "A previous session left the egress proxy pinned", "keydris claude-desktop")
+			return true
+		}
+	}
+	add("claude-desktop", "ok", detail, "")
+	addSkillStatus(cfg, "claude-desktop", add)
+	return true
+}
+
+// addClaudeCodeStatus reports the Claude Code integration and whether it
+// counts as configured.
+func addClaudeCodeStatus(cfg *config.Config, target string, add func(string, string, string, string)) bool {
+	present, err := sandbox.HasKeydrisHooks(cfg.ClaudeSettingsPath)
+	if err != nil {
+		add("claude-code", "error", "Cannot read integration settings", "keydris init claude-code")
+		return false
+	}
+	if !present && target == "" {
+		add("claude-code", "inactive", "Not configured", "")
+		return false
+	}
+	opt, optErr := claudeHookOptions(cfg, true)
+	st, verifyErr := sandbox.Verify(cfg.ClaudeSettingsPath, cfg.HTTPProxyPort, opt)
+	if optErr != nil {
+		verifyErr = optErr
+	}
+	if verifyErr != nil || !st.OK() {
+		detail := "Configuration needs attention"
+		if len(st.Warnings) > 0 {
+			detail = strings.Join(st.Warnings, "; ")
+		}
+		add("claude-code", "error", detail, "keydris init claude-code")
+		return true
+	}
+	if _, err := hostenv.ResolveCommand("claude"); err != nil {
+		add("claude-code", "warning", "Hooks configured; "+err.Error(), "Install claude for this runtime or correct PATH")
+		return true
+	}
+	add("claude-code", "ok", "Sandbox and command hooks configured", "")
+	addSkillStatus(cfg, "claude-code", add)
+	for _, check := range environmentChecks("claude-code") {
+		if check.Name == "Sandbox" {
+			add(check.Name, check.State, check.Detail, check.Next)
+		}
+	}
+	for _, path := range claudeProjectSettings() {
+		if !sameAbsolutePath(path, cfg.ClaudeSettingsPath) {
+			add("Project settings", "warning", "May override global sandbox: "+path, "Review "+path)
+		}
+	}
+	return true
+}
+
+func addCodexDesktopStatus(cfg *config.Config, target string, add func(string, string, string, string)) bool {
+	if !codexDesktopConfigured(cfg) {
+		if target == "" {
+			add("codex-desktop", "inactive", "Not configured", "")
+		} else {
+			add("codex-desktop", "error", "Not configured", "keydris init codex-desktop")
+		}
+		return false
+	}
+	app, err := findCodexDesktopApp()
+	if err != nil {
+		add("codex-desktop", "warning", err.Error(), "Install the Codex app, then run keydris init codex-desktop")
+		return true
+	}
+	detail := "Launch with keydris codex-desktop (" + app.Path + ")"
+	if codexDesktopSessionActive(cfg) {
+		detail = "Session active"
+	}
+	add("codex-desktop", "ok", detail, "")
+	addSkillStatus(cfg, "codex-desktop", add)
+	return true
+}
+
+// codexDesktopSessionActive reports whether a `keydris codex-desktop` session
+// is recorded and the app that owns it is still running.
+func codexDesktopSessionActive(cfg *config.Config) bool {
+	paths, _ := filepath.Glob(filepath.Join(sessionstate.Dir(cfg.DataDir), "codex-desktop-*.json"))
+	for _, path := range paths {
+		st, err := loadState(cfg, strings.TrimSuffix(filepath.Base(path), ".json"))
+		if err == nil && processAlive(st.OwnerPID) {
+			return true
+		}
+	}
+	return false
+}
+
+func addSkillStatus(cfg *config.Config, integration string, add func(string, string, string, string)) {
+	path, pathErr := agentSkillPath(cfg, integration)
+	if pathErr != nil {
+		add("Agent skill", "warning", pathErr.Error(), "keydris init "+integration)
+	} else if raw, err := readAgentSkill(path); err != nil {
+		add("Agent skill", "warning", "Cannot read "+path+"; bundled guidance is available via keydris skill", "keydris init "+integration)
+	} else if !bytes.Equal(raw, bundledSkill()) {
+		add("Agent skill", "warning", "Older or user-edited skill at "+path+"; local edits are preserved", "Review the skill, then run keydris init "+integration)
+	} else {
+		add("Agent skill", "ok", integration+": bundled skill installed", "")
+	}
+}
+
 func runStatus(args ...string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
 	verbose := fs.Bool("verbose", false, "include resolved configuration paths")
 	offline := fs.Bool("offline", false, "skip the control-plane connectivity check")
-	target := fs.String("target", "", "check claude-code or codex only")
+	target := fs.String("target", "", "check claude-code, codex, claude-desktop, or codex-desktop only")
 	if code := parseFlags(fs, args); code >= 0 {
 		return code
 	}
-	if *target != "" && *target != "claude-code" && *target != "codex" {
-		fmt.Fprintln(os.Stderr, "status: --target must be claude-code or codex")
+	if *target != "" && !knownIntegration(*target) {
+		fmt.Fprintln(os.Stderr, "status: --target must be claude-code, codex, claude-desktop, or codex-desktop")
 		return 2
 	}
-	report := collectStatus(config.Load(), *target, *offline, *verbose)
+	cfg := config.Load()
+	if err := sweepDesktopLaunch(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "keydris status: desktop session cleanup: %v\n", err)
+	}
+	report := collectStatus(cfg, *target, *offline, *verbose)
 	if *jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")

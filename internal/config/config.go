@@ -115,9 +115,10 @@ type Config struct {
 	// ClaudeMcpConfigPath is where Claude Code reads MCP servers — a different
 	// file from ClaudeSettingsPath, which holds the sandbox and hooks.
 	ClaudeMcpConfigPath string
-	// CodexHooksPath is the Codex hooks file `keydris init codex` writes the
-	// command-gating hooks into (default $CODEX_HOME/hooks.json, with
-	// CODEX_HOME defaulting to ~/.codex).
+	// CodexHooksPath is the Codex hooks file where earlier releases of
+	// `keydris init codex` wrote the command-gating hooks; init and deinit
+	// remove those entries (default $CODEX_HOME/hooks.json, with CODEX_HOME
+	// defaulting to ~/.codex).
 	CodexHooksPath string
 	// CodexConfigPath is where Codex reads MCP servers — a different file from
 	// CodexHooksPath, and one the user owns, so Keydris edits only the table

@@ -54,9 +54,12 @@ keydris codex --help
 keydris codex --model <model-name>
 ```
 
-After upgrading, rerun `keydris init codex <agent-id>` and review the updated hooks
-in `/hooks`. The wrapper verifies that both command hooks execute and return an
-explicit denial without a session before opening a governed session.
+The wrapper passes the Keydris hooks and their trust as `-c` options at each
+launch, so there is no `/hooks` step. Before opening a governed session it checks
+that both command hooks execute and return an explicit denial without a session,
+and that the codex it launches reports every Keydris hook trusted and enabled.
+After upgrading from a release that wrote the hooks to `~/.codex/hooks.json`,
+rerun `keydris init codex <agent-id>` once to remove those entries.
 
 `openai` is also accepted as an alias:
 
