@@ -18,24 +18,25 @@ type CodexHookOptions struct {
 
 const codexShellMatcher = "^Bash$"
 const codexHookTimeoutSeconds = 30
+const codexApprovalHookTimeoutSeconds = 660
 
 // CodexHookOverrides returns the Keydris hooks as Codex -c values. Codex loads
 // them with source "sessionFlags" for one launch. Each value is a TOML array
 // of matcher groups.
 func CodexHookOverrides(opt CodexHookOptions) []string {
-	group := func(matcher, command string) string {
-		handler := fmt.Sprintf(`{type="command",command=%q,timeout=%d}`, command, codexHookTimeoutSeconds)
+	group := func(matcher, command string, timeout int) string {
+		handler := fmt.Sprintf(`{type="command",command=%q,timeout=%d}`, command, timeout)
 		if matcher == "" {
 			return fmt.Sprintf(`[{hooks=[%s]}]`, handler)
 		}
 		return fmt.Sprintf(`[{matcher=%q,hooks=[%s]}]`, matcher, handler)
 	}
 	overrides := []string{
-		"hooks.PreToolUse=" + group(codexShellMatcher, opt.PreToolUseHook),
-		"hooks.PermissionRequest=" + group(codexShellMatcher, opt.PermissionRequestHook),
+		"hooks.PreToolUse=" + group(codexShellMatcher, opt.PreToolUseHook, codexApprovalHookTimeoutSeconds),
+		"hooks.PermissionRequest=" + group(codexShellMatcher, opt.PermissionRequestHook, codexApprovalHookTimeoutSeconds),
 	}
 	if opt.SessionStartHook != "" {
-		overrides = append(overrides, "hooks.SessionStart="+group("", opt.SessionStartHook))
+		overrides = append(overrides, "hooks.SessionStart="+group("", opt.SessionStartHook, codexHookTimeoutSeconds))
 	}
 	return overrides
 }

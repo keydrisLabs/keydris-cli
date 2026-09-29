@@ -18,7 +18,10 @@ import (
 	"github.com/keydrisLabs/keydris-cli/internal/runtimecontract"
 )
 
-const runtimeCallTimeout = 15 * time.Second
+const (
+	runtimeCallTimeout         = 15 * time.Second
+	runtimeApprovalWaitTimeout = 10 * time.Minute
+)
 
 var slackChannelIDPattern = regexp.MustCompile(`^C[A-Z0-9]{8,}$`)
 
@@ -308,33 +311,46 @@ func (router *runtimeRouter) handleProviderExecutor(
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(parent, runtimeCallTimeout)
-	defer cancel()
 	requestID := newRuntimeRequestID()
-	result, err := runtimecontract.ExecuteProvider(
-		ctx,
-		router.client,
-		router.baseURL,
-		flow.SVID,
-		route.RuntimeEndpointPath,
-		runtimecontract.ProviderExecutionRequest{
-			SchemaVersion: runtimecontract.SchemaVersion,
-			RequestID:     requestID,
-			ConnectionID:  route.ConnectionID,
-			ResourceID:    resource.ResourceID,
-			Request: runtimecontract.ProviderHTTPRequest{
-				Method:  flow.RequestMethod(),
-				Path:    flow.RequestPath(),
-				Query:   flow.RequestQuery(),
-				Headers: flow.ProviderRequestHeaders(),
-				Body:    body,
-			},
+	request := runtimecontract.ProviderExecutionRequest{
+		SchemaVersion: runtimecontract.SchemaVersion,
+		RequestID:     requestID,
+		ConnectionID:  route.ConnectionID,
+		ResourceID:    resource.ResourceID,
+		Request: runtimecontract.ProviderHTTPRequest{
+			Method:  flow.RequestMethod(),
+			Path:    flow.RequestPath(),
+			Query:   flow.RequestQuery(),
+			Headers: flow.ProviderRequestHeaders(),
+			Body:    body,
 		},
-	)
+	}
+	execute := func() (*runtimecontract.ProviderExecutionResponse, error) {
+		ctx, cancel := context.WithTimeout(parent, runtimeCallTimeout)
+		defer cancel()
+		return runtimecontract.ExecuteProvider(
+			ctx, router.client, router.baseURL, flow.SVID,
+			route.RuntimeEndpointPath, request,
+		)
+	}
+	result, err := execute()
 	if err != nil {
 		log.Printf("runtime provider execution route=%s: %v", route.RouteID, err)
 		rejectRuntime(dp, flow, target.providerLabel+" execution unavailable")
 		return
+	}
+	if result.Decision.Decision == string(runtimecontract.DecisionApprovalRequired) {
+		if err := router.waitForApproval(parent, flow.SVID, requestID); err != nil {
+			log.Printf("runtime provider approval route=%s: %v", route.RouteID, err)
+			rejectRuntime(dp, flow, target.providerLabel+" approval was not granted")
+			return
+		}
+		result, err = execute()
+		if err != nil {
+			log.Printf("runtime provider retry route=%s: %v", route.RouteID, err)
+			rejectRuntime(dp, flow, target.providerLabel+" execution unavailable after approval")
+			return
+		}
 	}
 	if result.ExecutionStatus == "denied" {
 		rejectRuntime(
@@ -635,26 +651,40 @@ func (router *runtimeRouter) handleMCPGateway(
 		rejectRuntime(dp, flow, "invalid MCP gateway request metadata")
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, runtimeCallTimeout)
-	defer cancel()
-	result, err := runtimecontract.ExecuteMCPGateway(
-		ctx,
-		router.client,
-		router.baseURL,
-		flow.SVID,
-		route.RuntimeEndpointPath,
-		runtimecontract.MCPGatewayRequest{
-			SchemaVersion: runtimecontract.SchemaVersion,
-			RequestID:     newRuntimeRequestID(),
-			ConnectionID:  route.ConnectionID,
-			ResourceID:    resource.ResourceID,
-			Message:       message,
-		},
-	)
+	requestID := newRuntimeRequestID()
+	request := runtimecontract.MCPGatewayRequest{
+		SchemaVersion: runtimecontract.SchemaVersion,
+		RequestID:     requestID,
+		ConnectionID:  route.ConnectionID,
+		ResourceID:    resource.ResourceID,
+		Message:       message,
+	}
+	execute := func() (*runtimecontract.MCPGatewayResponse, error) {
+		ctx, cancel := context.WithTimeout(parent, runtimeCallTimeout)
+		defer cancel()
+		return runtimecontract.ExecuteMCPGateway(
+			ctx, router.client, router.baseURL, flow.SVID,
+			route.RuntimeEndpointPath, request,
+		)
+	}
+	result, err := execute()
 	if err != nil {
 		log.Printf("runtime MCP gateway route=%s: %v", route.RouteID, err)
 		rejectRuntime(dp, flow, "MCP gateway unavailable")
 		return
+	}
+	if result.Decision.Decision == string(runtimecontract.DecisionApprovalRequired) {
+		if err := router.waitForApproval(parent, flow.SVID, requestID); err != nil {
+			log.Printf("runtime MCP gateway approval route=%s: %v", route.RouteID, err)
+			rejectRuntime(dp, flow, "MCP approval was not granted")
+			return
+		}
+		result, err = execute()
+		if err != nil {
+			log.Printf("runtime MCP gateway retry route=%s: %v", route.RouteID, err)
+			rejectRuntime(dp, flow, "MCP gateway unavailable after approval")
+			return
+		}
 	}
 	if result.ExecutionStatus == "denied" {
 		rejectRuntime(
@@ -685,6 +715,17 @@ func (router *runtimeRouter) handleMCPGateway(
 	}); err != nil {
 		log.Printf("relay MCP gateway response route=%s: %v", route.RouteID, err)
 	}
+}
+
+func (router *runtimeRouter) waitForApproval(
+	parent context.Context,
+	runtimeToken, requestID string,
+) error {
+	ctx, cancel := context.WithTimeout(parent, runtimeApprovalWaitTimeout)
+	defer cancel()
+	return runtimecontract.WaitForApproval(
+		ctx, router.client, router.baseURL, runtimeToken, requestID,
+	)
 }
 
 func mcpGatewayMessage(flow dataplane.Flow) (runtimecontract.MCPGatewayMessage, error) {

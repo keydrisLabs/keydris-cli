@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +65,49 @@ func TestRuntimeRouterExecutesSlackAgainstAnExactlySelectedChannel(t *testing.T)
 	if captured.ResourceID != "88888888-8888-4888-8888-888888888888" ||
 		captured.Request.Body["channel"] != "C12345678" {
 		t.Fatalf("captured Slack request = %+v", captured)
+	}
+}
+
+func TestRuntimeRouterWaitsAndRetriesIdenticalProviderRequestAfterApproval(t *testing.T) {
+	routes := testProviderRoutes(t, "slack", testRouteResource(
+		"slack.channel", "C12345678", "releases", "slack.channel_id", "C12345678",
+	))
+	var requests []runtimecontract.ProviderExecutionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/runtime/providers/slack/execute":
+			var request runtimecontract.ProviderExecutionRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			requests = append(requests, request)
+			if len(requests) == 1 {
+				fmt.Fprintf(w, `{"schema_version":1,"request_id":%q,"decision":{"schema_version":1,"decision_id":"Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H4","request_id":%q,"attempt_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H5","correlation_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H6","decided_at":"2026-07-30T12:00:00Z","decision":"approval_required","reason_code":"keydris_approval_required","obligations":[]},"execution_status":"denied","replayed":false,"error_code":null,"provider_response":null}`, request.RequestID, request.RequestID)
+				return
+			}
+			fmt.Fprintf(w, `{"schema_version":1,"request_id":%q,"decision":{"schema_version":1,"decision_id":"Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H4","request_id":%q,"attempt_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H5","correlation_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H6","decided_at":"2026-07-30T12:00:00Z","decision":"allow","reason_code":"keydris_approval_granted","obligations":[]},"execution_status":"succeeded","replayed":false,"error_code":null,"provider_response":{"status":200,"headers":{},"body":{"ok":true}}}`, request.RequestID, request.RequestID)
+		case runtimecontract.ApprovalStatusEndpointPath:
+			if got := r.URL.Query().Get("request_id"); len(requests) != 1 || got != requests[0].RequestID {
+				t.Fatalf("approval lookup request_id = %q, requests = %+v", got, requests)
+			}
+			fmt.Fprintf(w, `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":%q,"status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":"2029-12-31T23:59:00Z"}`, requests[0].RequestID)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dp := &fakeDataPlane{}
+	flow := testRoutesFlow(routes)
+	flow.MCPMethod = ""
+	flow.MCPAction = nil
+	flow.ToolParams = json.RawMessage(`{"channel":"C12345678","text":"ship"}`)
+	newRuntimeRouter(server.Client(), server.URL).handle(context.Background(), dp, flow)
+	if dp.rejected || dp.providerResponse == nil || len(requests) != 2 {
+		t.Fatalf("rejected=%v response=%+v requests=%d reason=%q", dp.rejected, dp.providerResponse, len(requests), dp.rejectReason)
+	}
+	if !reflect.DeepEqual(requests[0], requests[1]) {
+		t.Fatalf("provider retry changed request:\nfirst=%+v\nsecond=%+v", requests[0], requests[1])
 	}
 }
 
@@ -131,6 +175,45 @@ func TestRuntimeRouterRelaysModernMCPGatewayResponse(t *testing.T) {
 		string(captured.Message.ID) != `"rpc-11"` ||
 		captured.ResourceID != "88888888-8888-4888-8888-888888888888" {
 		t.Fatalf("captured MCP gateway request = %+v", captured)
+	}
+}
+
+func TestRuntimeRouterWaitsAndRetriesIdenticalMCPRequestAfterApproval(t *testing.T) {
+	routes := testMCPGatewayRoutes(t)
+	var requests []runtimecontract.MCPGatewayRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/runtime/mcp/gateway":
+			var request runtimecontract.MCPGatewayRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			requests = append(requests, request)
+			if len(requests) == 1 {
+				fmt.Fprintf(w, `{"schema_version":1,"request_id":%q,"decision":{"schema_version":1,"decision_id":"Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H4","request_id":%q,"attempt_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H5","correlation_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H6","decided_at":"2026-07-30T12:00:00Z","decision":"approval_required","reason_code":"keydris_approval_required","obligations":[]},"execution_status":"denied","replayed":false,"error_code":null,"mcp_response":null}`, request.RequestID, request.RequestID)
+				return
+			}
+			fmt.Fprintf(w, `{"schema_version":1,"request_id":%q,"decision":{"schema_version":1,"decision_id":"Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H4","request_id":%q,"attempt_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H5","correlation_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H6","decided_at":"2026-07-30T12:00:00Z","decision":"allow","reason_code":"keydris_approval_granted","obligations":[]},"execution_status":"succeeded","replayed":false,"error_code":null,"mcp_response":{"jsonrpc":"2.0","id":"rpc-11","result":{"ok":true}}}`, request.RequestID, request.RequestID)
+		case runtimecontract.ApprovalStatusEndpointPath:
+			if got := r.URL.Query().Get("request_id"); len(requests) != 1 || got != requests[0].RequestID {
+				t.Fatalf("approval lookup request_id = %q, requests = %+v", got, requests)
+			}
+			fmt.Fprintf(w, `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":%q,"status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":"2029-12-31T23:59:00Z"}`, requests[0].RequestID)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dp := &fakeDataPlane{}
+	flow := testRoutesFlow(routes)
+	flow.MCPRequestID = json.RawMessage(`"rpc-11"`)
+	newRuntimeRouter(server.Client(), server.URL).handle(context.Background(), dp, flow)
+	if dp.rejected || dp.providerResponse == nil || len(requests) != 2 {
+		t.Fatalf("rejected=%v response=%+v requests=%d reason=%q", dp.rejected, dp.providerResponse, len(requests), dp.rejectReason)
+	}
+	if !reflect.DeepEqual(requests[0], requests[1]) {
+		t.Fatalf("MCP retry changed request:\nfirst=%+v\nsecond=%+v", requests[0], requests[1])
 	}
 }
 

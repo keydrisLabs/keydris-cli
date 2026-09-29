@@ -73,7 +73,7 @@ agent egress  ──► keydris proxy :15001
                        ├─ mcp_kit_reader    ─► POST /v1/runtime/mcp/kit-action-tokens        ─► token injected, request forwarded
                        └─ no route          ─► POST /agent/authorize (legacy broker)         ─► credential injected on the wire
 
-shell command ──► PreToolUse hook ──► POST /v1/runtime/commands/authorize (KIT) ──► allow | ask | deny
+shell command ──► PreToolUse hook ──► POST /v1/runtime/commands/authorize (KIT) ──► allow | wait for console approval | deny
 ```
 
 The CLI owns exactly four moments.
@@ -448,7 +448,7 @@ POST /v1/runtime/commands/authorize      Authorization: Bearer <KIT>
   "cwd": "/home/you/repo", "tool_name": "Bash" }
 ```
 
-The response is the frozen decision envelope: `allow`, `deny`, or `approval_required`, each valid only with its own `reason_code` set. A response whose decision and reason code disagree is rejected rather than interpreted — that is what stops backend/CLI enum drift from silently becoming a permission ([`decision.go`](internal/runtimecontract/decision.go)).
+The response is the frozen decision envelope: `allow`, `deny`, or `approval_required`, each valid only with its own `reason_code` set. A response whose decision and reason code disagree is rejected rather than interpreted — that is what stops backend/CLI enum drift from silently becoming a permission ([`decision.go`](internal/runtimecontract/decision.go)). On `approval_required`, the CLI pauses the action, polls `GET /v1/runtime/approvals/status?request_id=…`, and retries the byte-identical authorization request with the same `request_id` only after the Keydris console reports `approved`. Rejection, expiry, cancellation, malformed status, an unavailable control plane, or a wait timeout all fail closed. The console may grant that retry once or allow the exact normalized action for the rest of the current agent session; the latter is enforced by the backend and requires no client-side cache.
 
 | Decision | Valid reason codes |
 | --- | --- |
@@ -474,10 +474,11 @@ The response is the frozen decision envelope: `allow`, `deny`, or `approval_requ
 | 10 | `mcp_gateway` route, `tools/call` / `resources/read` | Yes | Gateway executes; the JSON-RPC response is relayed, bound to the original id |
 | 11 | `mcp_kit_reader` route, `tools/call` / `resources/read` | Yes | Action token minted, injected at `params._meta`, request forwarded to the MCP server |
 | 12 | Control plane returns a denial | Yes | Rejected, carrying the decision's `reason_code` |
-| 13 | Control plane unreachable, or slower than 15 s | Attempted | Rejected — *… unavailable*. Never allowed |
-| 14 | Origin governed by no route at all | Yes (`/agent/authorize`) | Broker decides; on allow the real credential is injected on the wire |
+| 13 | Control plane requires approval | Yes | Action pauses while the CLI polls the console status; after approval the identical request and `request_id` are retried once |
+| 14 | Control plane unreachable, or slower than 15 s | Attempted | Rejected — *… unavailable*. Never allowed |
+| 15 | Origin governed by no route at all | Yes (`/agent/authorize`) | Broker decides; on allow the real credential is injected on the wire |
 
-Rows 1 through 8 are the reason this lives in the CLI: eight distinct ways a request is answered without spending a decision, each resolved locally, each with a sentence the agent can read. Row 13 is the one that matters most — the enforcement path has no fail-open branch.
+Rows 1 through 8 are the reason this lives in the CLI: eight distinct ways a request is answered without spending a decision, each resolved locally, each with a sentence the agent can read. Rows 13 and 14 are the ones that matter most — neither a pending approval nor an enforcement failure has a fail-open branch.
 
 ---
 
@@ -537,11 +538,11 @@ A policy can also carry **command rules** — glob patterns over the full shell 
 | Harness | Keydris hooks | Where |
 | --- | --- | --- |
 | **Claude Code** | `PreToolUse` → `keydris __pretool-use`, matcher `Bash` (`Bash\|PowerShell` on Windows), alongside SessionStart/SessionEnd | `~/.claude/settings.json` |
-| **Codex** | `PreToolUse` → `keydris __pretool-use --codex` (blocks every non-allow decision) and `PermissionRequest` → `keydris __permission-request` (allows policy-allowed commands, denies everything else) | `-c` options `keydris codex` passes at each launch, with their trust |
+| **Codex** | `PreToolUse` → `keydris __pretool-use --codex` and `PermissionRequest` → `keydris __permission-request`; both use the same console-approval wait and fail-closed result | Trusted `-c` options passed by `keydris codex` at each launch |
 
-Codex's `PreToolUse` cannot force an approval prompt, and `PermissionRequest` only runs when Codex independently needs approval. Consequently, `require_approval` commands are explicitly blocked in Codex with an explanation; changing native approval settings cannot grant policy authority. Claude Code retains its native `ask` workflow.
+When a command needs approval, the hook remains blocked while the user approves or rejects it in the Keydris console. Approval triggers one retry of the exact authorization body and `request_id`; the command proceeds only when that retry returns `allow`. No harness-specific `ask` verdict or terminal approval substitutes for the console decision.
 
-**Fail-closed by construction.** Both harnesses fail open when a hook crashes, times out, or prints invalid JSON, so every error path here — no active session, control plane unreachable, oversized payload, ambiguous JSON, a daemon session that does not match the hook session — emits an explicit deny and exits 0. Keep the configured hook timeout well above the 5-second authorization deadline.
+**Fail-closed by construction.** Both harnesses fail open when a hook crashes, times out, or prints invalid JSON, so every error path here — no active session, control plane unreachable, oversized payload, ambiguous JSON, a daemon session that does not match the hook session — emits an explicit deny and exits 0. Approval-aware hooks are configured with an 11-minute harness timeout around the 10-minute approval window; each authorization call still has a 5-second deadline.
 
 Command-policy wildcards stop at shell operators and dynamic syntax, so `git status*` cannot authorize `git status && rm -rf /`. Compound syntax must be written explicitly in a matching rule. `keydris status` reports whether the hooks are wired; `keydris deinit claude-code|codex` removes them.
 
