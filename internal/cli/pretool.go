@@ -146,11 +146,15 @@ func commandVerdict(decision runtimecontract.NormalizedDecision, reason, command
 // Codex always supplies its own thread session_id, which is unrelated to the
 // Keydris wrapper session. The wrapper's environment is therefore authoritative
 // for Codex. Claude keeps its native payload ID, except when it is itself
-// running inside `keydris run` and must reuse the wrapper-owned session.
+// running inside `keydris run` and must reuse the wrapper-owned session, or
+// inside `keydris claude-desktop`, whose launch session covers every Code tab.
 func resolveHookSessionID(payloadSessionID string, harness hookHarness) string {
 	wrapperSessionID := os.Getenv("KEYDRIS_SESSION")
 	if harness == hookHarnessCodex || os.Getenv(sessionOwnerEnv) == sessionOwnerRun {
 		return wrapperSessionID
+	}
+	if desktopSID := desktopSessionID(); desktopSID != "" {
+		return desktopSID
 	}
 	if payloadSessionID != "" {
 		return payloadSessionID

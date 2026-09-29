@@ -83,7 +83,7 @@ The app proxy is not `CLAUDE_CONFIG_DIR`. `egressProxyUrl` is Desktop's own sett
 4. Wait until Claude exits. On interrupt, quit Claude, then revoke.
 5. Revoke the session, stop the forwarder, and restore every setting this command wrote.
 
-`__session-start` inside this launch must not mint a second session. The Claude process receives `KEYDRIS_DESKTOP_SESSION=<id>`. When that variable is set, the hook loads the existing session, refreshes the subprocess proxy env, and returns. `__session-end` from the embedded engine does not revoke it. Only the launcher revokes. A terminal Claude Code session does not have this variable and keeps today's mint and revoke behavior.
+`__session-start` inside this launch must not mint a second session. The Claude process receives `KEYDRIS_DESKTOP_SESSION=<id>`. When that variable is set, the hook loads the existing session, refreshes the subprocess proxy env, and returns. `__pretool-use` authorizes commands against the same session: the `session_id` in its payload belongs to the embedded engine and has no Keydris state. `__session-end` from the embedded engine does not revoke it. Only the launcher revokes. A `keydris run` nested inside Desktop keeps its own session in every hook. A terminal Claude Code session does not have this variable and keeps today's mint and revoke behavior.
 
 A crash that skips the restore leaves `egressProxyUrl` set. Anthropic does not fall back to a direct connection when that proxy is down, so Claude would fail closed until the pin is removed. Every `keydris` command that loads config checks the Desktop session file. If the forwarder pid is dead, it restores the pin and the engine settings. `keydris status` reports a leftover pin as attention needed.
 
@@ -161,7 +161,7 @@ These are manual checks on a Mac with Claude Desktop installed. Each one blocks 
 
 - Forwarder: a CONNECT to the forwarder arrives at a test proxy with the expected `Proxy-Authorization`. A non-loopback client is refused. The upstream request is otherwise unchanged.
 - Settings writer: apply and restore round-trip, including a file that already has user keys. A failed launch restores the previous pin.
-- Hook: with `KEYDRIS_DESKTOP_SESSION` set, `__session-start` does not call mint, and `__session-end` does not revoke.
+- Hook: with `KEYDRIS_DESKTOP_SESSION` set, `__session-start` does not call mint, `__pretool-use` authorizes against the launch session instead of the payload's, and `__session-end` does not revoke. A nested `keydris run` keeps its own session.
 - Stale pin: a session file whose pid is dead causes the sweep to restore.
 - Inventory: a fixture `.mcp.json` and a fixture Desktop MCP config produce `claude_desktop` entries, including a stdio server marked local.
 - `init` and `deinit` accept `claude-desktop` and leave `claude-code` settings untouched.

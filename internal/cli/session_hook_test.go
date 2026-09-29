@@ -132,6 +132,7 @@ func TestDesktopSessionStartAttachesWithoutMint(t *testing.T) {
 	t.Setenv("KEYDRIS_DATA_DIR", dir)
 	t.Setenv("KEYDRIS_DATAPLANE", "sandbox")
 	t.Setenv("KEYDRIS_HTTP_PROXY_PORT", "15001")
+	t.Setenv(sessionOwnerEnv, "")
 	t.Setenv(desktopSessionEnv, sid)
 	t.Setenv("CLAUDE_ENV_FILE", envFile)
 	// No control-plane identity: mint would fail if start tried to create a session.
@@ -166,6 +167,7 @@ func TestDesktopSessionEndLeavesState(t *testing.T) {
 
 	t.Setenv("KEYDRIS_DATA_DIR", dir)
 	t.Setenv("KEYDRIS_DATAPLANE", "sandbox")
+	t.Setenv(sessionOwnerEnv, "")
 	t.Setenv(desktopSessionEnv, sid)
 
 	if code := runInternalSessionHook("end", nil); code != 0 {
@@ -173,6 +175,42 @@ func TestDesktopSessionEndLeavesState(t *testing.T) {
 	}
 	if _, err := loadState(cfg, sid); err != nil {
 		t.Fatalf("desktop end removed state: %v", err)
+	}
+}
+
+func TestNestedRunInsideDesktopKeepsItsOwnSession(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{DataDir: dir, HTTPProxyPort: 15001, DataPlane: "sandbox"}
+	for _, st := range []sessionState{
+		{SessionID: "desktop-outer", Handle: "desktop-handle", ULID: "desktop-ulid"},
+		{SessionID: "run-inner", Handle: "run-handle", ULID: "run-ulid"},
+	} {
+		if err := saveState(cfg, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	envFile := filepath.Join(dir, "claude.env")
+	t.Setenv("KEYDRIS_DATA_DIR", dir)
+	t.Setenv("KEYDRIS_DATAPLANE", "sandbox")
+	t.Setenv("KEYDRIS_HTTP_PROXY_PORT", "15001")
+	t.Setenv(desktopSessionEnv, "desktop-outer")
+	t.Setenv("KEYDRIS_SESSION", "run-inner")
+	t.Setenv(sessionOwnerEnv, sessionOwnerRun)
+	t.Setenv("CLAUDE_ENV_FILE", envFile)
+
+	if code := runInternalSessionHook("start", nil); code != 0 {
+		t.Fatalf("start code = %d", code)
+	}
+	body, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "run-handle") || strings.Contains(string(body), "desktop-handle") {
+		t.Fatalf("nested run exported the wrong session:\n%s", body)
 	}
 }
 

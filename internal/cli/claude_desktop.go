@@ -66,6 +66,17 @@ type desktopLaunchRecord struct {
 	Egress           sandbox.EgressSnapshot `json:"egress"`
 }
 
+// desktopSessionID returns the session `keydris claude-desktop` minted for this
+// Desktop launch, or "" outside one. Every Code-tab session in the launch
+// shares it; hook payloads carry the embedded engine's own session id instead.
+// A `keydris run` nested inside Desktop owns a narrower session, which wins.
+func desktopSessionID() string {
+	if os.Getenv(sessionOwnerEnv) == sessionOwnerRun {
+		return ""
+	}
+	return os.Getenv(desktopSessionEnv)
+}
+
 // desktopSessionLive reports whether the keydris process that owns the pin is
 // still running. Claude's own pid is stored on the session, not in this record.
 func desktopSessionLive(rec *desktopLaunchRecord) bool {

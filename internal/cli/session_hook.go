@@ -95,7 +95,7 @@ func runInternalSessionHook(phase string, args []string) int {
 	case "start":
 		// Desktop launcher already minted and owns the session. Attach only:
 		// reuse KEYDRIS_DESKTOP_SESSION, never mint/revoke, never rewrite owner.
-		if desktopSID := os.Getenv(desktopSessionEnv); desktopSID != "" {
+		if desktopSID := desktopSessionID(); desktopSID != "" {
 			if err := validateSessionID(desktopSID); err != nil {
 				fmt.Fprintf(os.Stderr, "keydris session: %v\n", err)
 				return 1
@@ -140,7 +140,7 @@ func runInternalSessionHook(phase string, args []string) int {
 			return 0
 		}
 		// Desktop launcher owns revoke; embedded Claude must leave state alone.
-		if os.Getenv(desktopSessionEnv) != "" {
+		if desktopSessionID() != "" {
 			return 0
 		}
 		return hookSessionEnd(cfg, sessionID(*session, false))
