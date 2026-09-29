@@ -113,7 +113,7 @@ func TestCodexHookVerificationRejectsInertHandlers(t *testing.T) {
 		}}
 	}
 	valid := map[string]any{
-		"type": "command", "command": command, "timeout": 30,
+		"type": "command", "command": command, "timeout": 660,
 	}
 	if !eventHasMatcherCommand(entry(valid), codexShellMatcher, command) {
 		t.Fatal("valid synchronous command hook was rejected")
@@ -121,7 +121,8 @@ func TestCodexHookVerificationRejectsInertHandlers(t *testing.T) {
 	for _, handler := range []map[string]any{
 		{"type": "prompt", "command": command, "timeout": 30},
 		{"type": "command", "command": command, "timeout": 1},
-		{"type": "command", "command": command, "timeout": 30, "async": true},
+		{"type": "command", "command": command, "timeout": 30},
+		{"type": "command", "command": command, "timeout": 660, "async": true},
 	} {
 		if eventHasMatcherCommand(entry(handler), codexShellMatcher, command) {
 			t.Fatalf("inert hook handler passed verification: %v", handler)

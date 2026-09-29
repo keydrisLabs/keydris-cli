@@ -3,6 +3,10 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -54,13 +58,13 @@ func TestPermissionRequestAllowUsesCodexHookSchema(t *testing.T) {
 	}
 }
 
-func TestClaudeApprovalDecisionRemainsAsk(t *testing.T) {
+func TestUnresolvedApprovalDecisionFailsClosed(t *testing.T) {
 	verdict, reason := commandVerdict(
 		runtimecontract.DecisionApprovalRequired,
 		"keydris_approval_required",
 		"npm publish",
 	)
-	if verdict != "ask" || !strings.Contains(reason, "requires approval") {
+	if verdict != "deny" || !strings.Contains(reason, "not resolved") {
 		t.Fatalf("approval verdict = %q, reason = %q", verdict, reason)
 	}
 
@@ -76,8 +80,51 @@ func TestClaudeApprovalDecisionRemainsAsk(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decoded.HookSpecificOutput.HookEventName != "PreToolUse" ||
-		decoded.HookSpecificOutput.Decision != "ask" {
-		t.Fatalf("Claude hook output changed: %s", output.String())
+		decoded.HookSpecificOutput.Decision != "deny" {
+		t.Fatalf("unresolved approval did not fail closed: %s", output.String())
+	}
+}
+
+func TestCommandApprovalRetriesIdenticalRequestAfterConsoleApproval(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case commandsAuthorizeP:
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			requests = append(requests, body)
+			requestID := body["request_id"].(string)
+			decision, reason := "approval_required", "keydris_approval_required"
+			if len(requests) == 2 {
+				decision, reason = "allow", "keydris_approval_granted"
+			}
+			fmt.Fprintf(writer, `{"schema_version":1,"decision_id":"Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H4","request_id":%q,"attempt_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H5","correlation_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H6","decided_at":"2026-07-30T12:00:00Z","obligations":[],"decision":%q,"reason_code":%q}`, requestID, decision, reason)
+		case runtimecontract.ApprovalStatusEndpointPath:
+			if len(requests) != 1 || request.URL.Query().Get("request_id") != requests[0]["request_id"] {
+				t.Fatalf("approval status query did not use original request id")
+			}
+			fmt.Fprintf(writer, `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":%q,"status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":"2029-12-31T23:59:00Z"}`, requests[0]["request_id"])
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	input := preToolInput{ToolName: "Bash", CWD: "/workspace"}
+	input.ToolInput.Command = "npm publish"
+	decision, reason, err := authorizeCommandWithClient(
+		server.Client(), server.URL, "kit-token", input,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != runtimecontract.DecisionAllow || reason != "keydris_approval_granted" {
+		t.Fatalf("decision=%q reason=%q", decision, reason)
+	}
+	if len(requests) != 2 || !reflect.DeepEqual(requests[0], requests[1]) {
+		t.Fatalf("authorization retry changed request: %+v", requests)
 	}
 }
 

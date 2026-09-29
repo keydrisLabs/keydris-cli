@@ -104,8 +104,8 @@ func mergeHooks(settings map[string]any, startCmd, endCmd string) {
 
 // mergePreToolUseHook gates shell tools through the command-authorize hook.
 // The hook fails closed internally, and its harness timeout stays well above
-// the hook's own 5s control-plane budget so the harness never kills it first
-// (a killed hook fails OPEN in Claude Code).
+// the approval window so the harness never kills it first (a killed hook fails
+// OPEN in Claude Code).
 func mergePreToolUseHook(settings map[string]any, command string) {
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
@@ -126,7 +126,7 @@ func mergePreToolUseHook(settings map[string]any, command string) {
 	hooks["PreToolUse"] = append(kept, map[string]any{
 		"matcher": matcher,
 		"hooks": []any{map[string]any{
-			"type": "command", "command": command, "timeout": 30,
+			"type": "command", "command": command, "timeout": 660,
 		}},
 	})
 	settings["hooks"] = hooks

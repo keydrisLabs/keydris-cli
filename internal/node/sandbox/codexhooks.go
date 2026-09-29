@@ -1,11 +1,12 @@
 package sandbox
 
+import "strings"
+
 // Codex command gating lives in $CODEX_HOME/hooks.json rather than the Claude
-// settings file. Two events cooperate because Codex's PreToolUse cannot answer
-// "ask" (see internal/cli/pretool.go): PreToolUse carries explicit denials,
-// PermissionRequest resolves policy-allowed commands, and everything else
-// falls through to the interactive prompt. Codex requires a one-time `/hooks`
-// trust confirmation before it runs commands from this file.
+// settings file. PreToolUse waits for Keydris console approvals and returns an
+// explicit allow or deny. PermissionRequest uses the same fail-closed path when
+// Codex invokes it independently. Codex requires a one-time `/hooks` trust
+// confirmation before it runs commands from this file.
 
 // CodexHookOptions names the hook commands `keydris init codex` wires.
 type CodexHookOptions struct {
@@ -14,8 +15,11 @@ type CodexHookOptions struct {
 	SessionStartHook      string
 }
 
-const codexShellMatcher = "^Bash$"
-const minCodexHookTimeoutSeconds = 10
+const (
+	codexShellMatcher             = "^Bash$"
+	minCodexHookTimeoutSeconds    = 10
+	minApprovalHookTimeoutSeconds = 600
+)
 
 // ConfigureCodexHooks merges the Keydris command-gating hooks into the Codex
 // hooks file, replacing stale Keydris entries and preserving user hooks.
@@ -37,10 +41,14 @@ func ConfigureCodexHooks(path string, opt CodexHookOptions) error {
 				kept = append(kept, filtered)
 			}
 		}
+		timeout := 30
+		if event == "PreToolUse" || event == "PermissionRequest" {
+			timeout = 660
+		}
 		hooks[event] = append(kept, map[string]any{
 			"matcher": matcher,
 			"hooks": []any{map[string]any{
-				"type": "command", "command": command, "timeout": 30,
+				"type": "command", "command": command, "timeout": timeout,
 			}},
 		})
 	}
@@ -120,6 +128,11 @@ func VerifyCodexHooks(path string, opt CodexHookOptions) (bool, error) {
 }
 
 func eventHasMatcherCommand(value any, matcher, command string) bool {
+	minimumTimeout := float64(minCodexHookTimeoutSeconds)
+	if strings.Contains(command, "__pretool-use") ||
+		strings.Contains(command, "__permission-request") {
+		minimumTimeout = minApprovalHookTimeoutSeconds
+	}
 	entries, _ := value.([]any)
 	for _, entry := range entries {
 		group, _ := entry.(map[string]any)
@@ -133,7 +146,7 @@ func eventHasMatcherCommand(value any, matcher, command string) bool {
 			hookType, _ := hook["type"].(string)
 			async, _ := hook["async"].(bool)
 			if configuredCommand == command && hookType == "command" && !async &&
-				hookTimeoutSeconds(hook["timeout"]) >= minCodexHookTimeoutSeconds {
+				hookTimeoutSeconds(hook["timeout"]) >= minimumTimeout {
 				return true
 			}
 		}
