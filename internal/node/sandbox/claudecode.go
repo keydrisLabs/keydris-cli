@@ -127,6 +127,7 @@ func mergePreToolUseHook(settings map[string]any, command string) {
 		"matcher": matcher,
 		"hooks": []any{map[string]any{
 			"type": "command", "command": command, "timeout": 660,
+			"statusMessage": keydrisApprovalStatusMessage,
 		}},
 	})
 	settings["hooks"] = hooks
