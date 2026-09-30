@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 env:
-  DSH_VERSION: 0.1.5-rc.1
+  DSH_VERSION: 0.1.7-rc.2
   LOOKBACK_DAYS: '1'
   DSH_MODE: ${{ inputs.mode }}
 
