@@ -193,6 +193,54 @@ func TestCommandApprovalRetriesIdenticalRequestAfterConsoleApproval(t *testing.T
 	}
 }
 
+func TestCommandAuthorizationRejectsMismatchedRequestID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		// The request id binds a decision to the paused command; a response for
+		// a different request must never be trusted.
+		fmt.Fprint(writer, `{"schema_version":1,"decision_id":"Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H4","request_id":"cli-other","attempt_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H5","correlation_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H6","decided_at":"2026-07-30T12:00:00Z","obligations":[],"decision":"allow","reason_code":"keydris_policy_allowed"}`)
+	}))
+	defer server.Close()
+
+	input := preToolInput{ToolName: "Bash", CWD: "/workspace"}
+	input.ToolInput.Command = "npm publish"
+	_, _, err := authorizeCommandWithClient(server.Client(), server.URL, "kit-token", input, nil)
+	if err == nil || !strings.Contains(err.Error(), "request id does not match") {
+		t.Fatalf("mismatched request id error = %v", err)
+	}
+}
+
+func TestCommandApprovalRejectionIsReported(t *testing.T) {
+	var notices bytes.Buffer
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case commandsAuthorizeP:
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			requestID := body["request_id"].(string)
+			fmt.Fprintf(writer, `{"schema_version":1,"decision_id":"Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H4","request_id":%q,"attempt_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H5","correlation_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H6","decided_at":"2026-07-30T12:00:00Z","obligations":[],"decision":"approval_required","reason_code":"keydris_approval_required"}`, requestID)
+		case runtimecontract.ApprovalStatusEndpointPath:
+			fmt.Fprintf(writer, `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":%q,"status":"rejected","expires_at":"2030-01-01T00:00:00Z","resolved_at":"2029-12-31T23:59:00Z"}`, request.URL.Query().Get("request_id"))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	input := preToolInput{ToolName: "Bash", CWD: "/workspace"}
+	input.ToolInput.Command = "npm publish"
+	_, _, err := authorizeCommandWithClient(server.Client(), server.URL, "kit-token", input, &notices)
+	if err == nil || !strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("rejected approval error = %v", err)
+	}
+	for _, want := range []string{"approval required", "approval was not granted"} {
+		if !strings.Contains(notices.String(), want) {
+			t.Fatalf("rejection notice %q missing %q", notices.String(), want)
+		}
+	}
+}
+
 func TestCommandVerdictFormatsPolicyDenialAsBox(t *testing.T) {
 	verdict, reason := commandVerdict(
 		runtimecontract.DecisionDeny,
