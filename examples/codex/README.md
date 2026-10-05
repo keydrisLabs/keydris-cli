@@ -21,7 +21,10 @@ configuration is loaded only after Codex trusts that project.
 
 On native Windows, the wrapper selects Codex's `elevated` sandbox because its
 managed networking requires that backend. Complete Codex's administrator-approved
-sandbox setup first. The selection applies to the wrapped process only.
+sandbox setup first. The selection applies to the wrapped process only. The
+wrapper also sets `CODEX_CA_CERTIFICATE` to the Keydris CA bundle, which Codex
+adds to the Windows root store, so governed MCP servers connect without
+`keydris init --trust-store`.
 
 Command rules that require approval are blocked with an explanation: Codex cannot
 reliably force a policy approval prompt from `PreToolUse`. Policy-denied commands
