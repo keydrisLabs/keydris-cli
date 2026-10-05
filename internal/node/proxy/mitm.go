@@ -23,9 +23,9 @@ func pemBlock(typ string, der []byte) []byte {
 // trusts. Inside Claude Code's sandbox that trust is established by installing
 // this CA (see internal/node/sandbox), so there is no certificate-pinning problem.
 //
-// GenerateCA + LeafFor are the primitives; ca.go persists the CA and exposes
-// ServerTLSConfig, which the CONNECT handler in internal/node/dataplane/sandboxproxy.go
-// uses to serve a per-SNI leaf on demand.
+// GenerateCA + LeafFor are the primitives; ca.go persists the CA, and the
+// CONNECT handler in internal/node/dataplane/sandboxproxy.go mints a per-SNI
+// leaf on demand.
 type CA struct {
 	cert *x509.Certificate
 	der  []byte
