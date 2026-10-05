@@ -280,9 +280,13 @@ func overridesCodexEnforcement(value string) bool {
 }
 
 func appendProxyEnvironment(env []string, proxyURL, caPath string) []string {
+	// NODE_EXTRA_CA_CERTS and CODEX_CA_CERTIFICATE add the CA to the platform
+	// roots instead of replacing them, so both are safe on every OS. Without
+	// the Codex variable, Codex on Windows trusts only the certificate store
+	// and rejects the Keydris leaf for governed origins such as MCP servers.
 	env = append(env,
 		"HTTP_PROXY="+proxyURL, "HTTPS_PROXY="+proxyURL, "http_proxy="+proxyURL, "https_proxy="+proxyURL,
-		"NODE_EXTRA_CA_CERTS="+caPath)
+		"NODE_EXTRA_CA_CERTS="+caPath, "CODEX_CA_CERTIFICATE="+caPath)
 	if runtime.GOOS == "windows" {
 		// Windows-native curl/git use the certificate store. Pointing their
 		// replacement-style variables at a Keydris-only PEM would discard the
