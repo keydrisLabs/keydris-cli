@@ -14,6 +14,9 @@ import (
 // overrides must be absolute so a hook launched in another project sees the
 // same identity, CA and socket.
 func (c *Config) ValidatePaths() error {
+	if c.ManagedConfigError != nil {
+		return c.ManagedConfigError
+	}
 	environment := platform.Current()
 	if err := environment.Validate(); err != nil {
 		return err

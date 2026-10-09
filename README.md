@@ -785,7 +785,7 @@ keydris-cli/
 
 ## Pointing at a control plane
 
-Configure the control plane through the process environment or a trusted user-level `~/.keydris.toml` (see [.keydris.toml.example](.keydris.toml.example)). Precedence is **process environment > user config > opted-in project files > defaults**. Each TOML key maps to `KEYDRIS_<UPPER(KEY)>`.
+Configure the control plane through managed system configuration, the process environment, or a trusted user-level `~/.keydris.toml` (see [.keydris.toml.example](.keydris.toml.example)). Precedence is **managed system config > process environment > user config > opted-in project files > defaults**. Each TOML key maps to `KEYDRIS_<UPPER(KEY)>`.
 
 ```bash
 export KEYDRIS_CONTROL_URL=https://api.keydris.com            # /identity/sign, /agent/jwks (:443)
@@ -794,7 +794,25 @@ export KEYDRIS_CONTROL_MTLS_URL=https://api.keydris.com:8443  # runtime + author
 
 Both install channels write a `~/.keydris.toml` pointing at that channel's endpoints, so in the normal case there is nothing to set.
 
-### Configuration
+### Managed configuration
+
+Managed macOS installations may place administrator-controlled settings at
+`/Library/Application Support/Keydris/config.toml`. The file uses the same flat
+`[keydris]` TOML format as the user file. Settings present there are authoritative
+and cannot be replaced by the user's environment or configuration.
+
+The file and its `Keydris` directory must be owned by root and must not be
+writable by group or other users. Links, malformed files, unsafe permissions,
+and non-root ownership are rejected; the proxy and command hooks then fail
+closed. A typical installation uses directory mode `0755` and file mode `0644`.
+Linux uses `/etc/keydris/config.toml`. Windows managed-file ACL validation is not
+yet supported.
+
+`keydris status` reports whether managed configuration is active or invalid.
+`keydris status --verbose` also lists each explicitly configured `KEYDRIS_*`
+setting and its source without printing the setting's value.
+
+### Configuration reference
 
 | Variable | TOML key | Default | Meaning |
 | --- | --- | --- | --- |

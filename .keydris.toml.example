@@ -1,5 +1,7 @@
-# Keydris layered config (normally copy to ~/.keydris.toml).
-# Precedence: process env > ~/.keydris.toml > opted-in project files > defaults.
+# Keydris layered config (normally copy to ~/.keydris.toml). Administrators may
+# install the same format at /Library/Application Support/Keydris/config.toml.
+# Precedence: managed system file > process env > ~/.keydris.toml > opted-in
+# project files > defaults.
 # Project .env/.keydris.toml files are ignored unless the process environment
 # explicitly contains KEYDRIS_TRUST_PROJECT_CONFIG=1.
 # Each key maps to KEYDRIS_<UPPER(KEY)>.

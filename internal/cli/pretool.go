@@ -119,6 +119,9 @@ func decidePreToolUse(stdin io.Reader, harness hookHarness) (string, string) {
 		return "deny", "keydris: no session in the hook payload"
 	}
 	cfg := config.Load()
+	if cfg.ManagedConfigError != nil {
+		return "deny", "keydris: managed configuration is invalid"
+	}
 	if err := validateSessionID(sid); err != nil {
 		return "deny", "keydris: invalid session id"
 	}

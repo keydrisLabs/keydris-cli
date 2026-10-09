@@ -1,12 +1,20 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/keydrisLabs/keydris-cli/internal/platform"
 )
+
+func TestValidatePathsRejectsInvalidManagedConfiguration(t *testing.T) {
+	cfg := &Config{ManagedConfigError: errors.New("unsafe managed config")}
+	if err := cfg.ValidatePaths(); err == nil || err.Error() != "unsafe managed config" {
+		t.Fatalf("ValidatePaths error = %v", err)
+	}
+}
 
 func TestConfigPathsResolveAgainstFileInsteadOfWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()

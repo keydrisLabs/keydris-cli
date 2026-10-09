@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,9 +33,10 @@ type healthCheck struct {
 	Next   string `json:"next,omitempty"`
 }
 type statusReport struct {
-	Ready  bool              `json:"ready"`
-	Checks []healthCheck     `json:"checks"`
-	Paths  map[string]string `json:"paths,omitempty"`
+	Ready         bool              `json:"ready"`
+	Checks        []healthCheck     `json:"checks"`
+	Paths         map[string]string `json:"paths,omitempty"`
+	Configuration map[string]string `json:"configuration,omitempty"`
 }
 type proxyHealth struct {
 	state, detail string
@@ -115,6 +117,15 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 	}
 	for _, check := range environmentChecks("") {
 		add(check.Name, check.State, check.Detail, check.Next)
+	}
+	if cfg.ManagedConfigError != nil {
+		add("Managed config", "error", cfg.ManagedConfigError.Error(), "Ask the administrator to repair "+cfg.ManagedConfigPath)
+		return report
+	}
+	if cfg.ManagedConfigLoaded {
+		add("Managed config", "ok", fmt.Sprintf("%d settings from %s", cfg.ManagedConfigSettingCount, cfg.ManagedConfigPath), "")
+	} else {
+		add("Managed config", "inactive", "Not installed ("+cfg.ManagedConfigPath+")", "")
 	}
 	if err := cfg.ValidatePaths(); err != nil {
 		add("Paths", "error", err.Error(), "Use absolute paths in KEYDRIS_* path overrides")
@@ -202,6 +213,7 @@ func collectStatus(cfg *config.Config, target string, offline, verbose bool) sta
 	}
 	if verbose {
 		report.Paths = map[string]string{"data": cfg.DataDir, "identity": cfg.IdentityDir, "ca": cfg.CAPath, "bundle": cfg.CABundlePath, "claude": cfg.ClaudeSettingsPath, "codex": cfg.CodexHooksPath, "claude_desktop": desktopSettingsPath(cfg), "codex_desktop": codexDesktopDir(cfg), "proxy_log": filepath.Join(cfg.DataDir, "proxy.log")}
+		report.Configuration = cfg.ConfigSources
 		for _, integration := range integrationNames {
 			if path, err := agentSkillPath(cfg, integration); err == nil {
 				report.Paths[integration+"_skill"] = path
@@ -368,6 +380,14 @@ func runStatus(args ...string) int {
 				if value, ok := report.Paths[key]; ok {
 					ui.row("inactive", key, value)
 				}
+			}
+			keys := make([]string, 0, len(report.Configuration))
+			for key := range report.Configuration {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				ui.row("inactive", strings.TrimPrefix(key, "KEYDRIS_"), report.Configuration[key])
 			}
 		}
 		if report.Ready {
