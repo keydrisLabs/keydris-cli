@@ -57,6 +57,9 @@ func preflight() error {
 // Run builds the data plane, installs netfilter rules (transparent mode only),
 // orchestrates authorize -> inject/reject per flow, and blocks until interrupted.
 func Run(cfg *config.Config) error {
+	if cfg.ManagedConfigError != nil {
+		return cfg.ManagedConfigError
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

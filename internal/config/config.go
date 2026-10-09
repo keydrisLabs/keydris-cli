@@ -18,6 +18,19 @@ import (
 // Config is the full set of knobs the POC needs. Not every field is used by
 // every binary, but sharing one struct keeps the credential and ports in sync.
 type Config struct {
+	// ConfigSources records where explicitly configured KEYDRIS_* settings came
+	// from. Values are source labels only; configuration values and secrets are
+	// never exposed through status output.
+	ConfigSources map[string]string
+	// ManagedConfigPath is the platform system configuration location.
+	ManagedConfigPath string
+	// ManagedConfigLoaded reports that a secure, valid managed file was applied.
+	ManagedConfigLoaded bool
+	// ManagedConfigSettingCount is the number of settings applied from it.
+	ManagedConfigSettingCount int
+	// ManagedConfigError rejects an insecure or malformed managed file.
+	ManagedConfigError error
+
 	// ControlAddr is the listen address for keydris-control (issuer + broker).
 	ControlAddr string
 	// ControlURL is the base URL the proxy uses to reach the control plane.
@@ -209,7 +222,7 @@ type Config struct {
 // Project-local files are loaded only when KEYDRIS_TRUST_PROJECT_CONFIG=1 was
 // explicitly present in the process environment.
 func Load() *Config {
-	loadLayeredFiles()
+	layers := loadLayeredFiles()
 	dataDir := env("KEYDRIS_DATA_DIR", defaultDataDir())
 	authorizeURL, tokenURL := cognitoEndpoints()
 	managed, managedErr := loadManagedScope(dataDir)
@@ -220,6 +233,12 @@ func Load() *Config {
 		managed.Destinations = envList("KEYDRIS_MANAGED_DESTINATIONS")
 	}
 	return &Config{
+		ConfigSources:             layers.Sources,
+		ManagedConfigPath:         layers.ManagedPath,
+		ManagedConfigLoaded:       layers.ManagedLoaded,
+		ManagedConfigSettingCount: layers.ManagedSettingCount,
+		ManagedConfigError:        layers.ManagedErr,
+
 		ControlAddr:     env("KEYDRIS_CONTROL_ADDR", "127.0.0.1:8081"),
 		ControlURL:      env("KEYDRIS_CONTROL_URL", "http://127.0.0.1:8081"),
 		ControlMTLSAddr: env("KEYDRIS_CONTROL_MTLS_ADDR", "127.0.0.1:8443"),
