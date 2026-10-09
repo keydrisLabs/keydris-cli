@@ -54,6 +54,8 @@ func TestValidatePathsRequiresAbsoluteRuntimeOverrides(t *testing.T) {
 			LedgerPath:          absolute("evidence.jsonl"),
 			ClientCAPath:        absolute("client-ca.crt"),
 			ClientCAKeyPath:     absolute("client-ca.key"),
+			DeviceServiceDir:    absolute("device"),
+			DeviceServiceSocket: absolute("device.sock"),
 		}
 	}
 	if err := valid().ValidatePaths(); err != nil {
@@ -70,6 +72,8 @@ func TestValidatePathsRequiresAbsoluteRuntimeOverrides(t *testing.T) {
 		{"claude settings", func(c *Config) { c.ClaudeSettingsPath = "settings.json" }},
 		{"codex hooks", func(c *Config) { c.CodexHooksPath = "hooks.json" }},
 		{"ledger", func(c *Config) { c.LedgerPath = "evidence.jsonl" }},
+		{"device service dir", func(c *Config) { c.DeviceServiceDir = "device" }},
+		{"device service socket", func(c *Config) { c.DeviceServiceSocket = "device.sock" }},
 		{"newline", func(c *Config) { c.LedgerPath = absolute("evidence.jsonl") + "\n" }},
 		{"mtls server ca", func(c *Config) { c.MTLSServerCA = "mtls-ca.crt" }},
 	} {
