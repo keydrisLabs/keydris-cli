@@ -9,6 +9,9 @@
 [keydris]
 trust_domain = "keydris.local"
 control_url  = "http://127.0.0.1:8081"
+# Managed installations normally keep these platform defaults.
+# device_service_dir = "/Library/Application Support/Keydris/device"
+# device_service_socket = "/var/run/keydris/device.sock"
 dataplane    = "sandbox"       # default; "transparent" is Linux/root only
 blueprint    = "repo-tools"
 proxy_port   = "15001"

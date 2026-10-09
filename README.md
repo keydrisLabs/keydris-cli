@@ -812,6 +812,28 @@ yet supported.
 `keydris status --verbose` also lists each explicitly configured `KEYDRIS_*`
 setting and its source without printing the setting's value.
 
+### Privileged device service
+
+`keydris device-service run` starts the machine identity service in the
+foreground. It must run as root and is intended to be supervised by the macOS
+LaunchDaemon added during packaging work. Its defaults are:
+
+- root-only state: `/Library/Application Support/Keydris/device`
+- local IPC: `/var/run/keydris/device.sock`
+
+The service creates the P-256 device key once with mode `0600`. The key never
+crosses IPC: callers can request a purpose-limited signature, and the service
+binds that signature to the caller UID obtained from the Unix socket. Installing
+or renewing the public device identity is restricted to UID 0. Certificate
+replacement is atomic, unsafe state paths are rejected, and stale non-socket
+paths are never removed. `keydris device-service status` reports protocol,
+enrollment and certificate-expiry metadata without exposing key material.
+
+The device-service package also supplies an in-memory fake and a renewal
+interface. Managed enrollment and the agreed backend contract will provide the
+initial certificate and concrete renewal transport in subsequent tasks. Windows
+named-pipe and ACL support remains part of the Windows endpoint work.
+
 ### Configuration reference
 
 | Variable | TOML key | Default | Meaning |
@@ -825,6 +847,8 @@ setting and its source without printing the setting's value.
 | `KEYDRIS_COST_METERING` | `cost_metering` | on | `off` (also `0`, `false`, `no`) disables LLM usage metering entirely |
 | `KEYDRIS_METERED_ORIGINS` | `metered_origins` | the built-in provider list | Comma-separated `host=provider` entries that adjust the metered set; `host=off` drops a built-in origin |
 | `KEYDRIS_DATA_DIR` | — | `~/.keydris-data` | Everything in the table below |
+| `KEYDRIS_DEVICE_SERVICE_DIR` | `device_service_dir` | `/Library/Application Support/Keydris/device` | Root-only device key and certificate state |
+| `KEYDRIS_DEVICE_SERVICE_SOCKET` | `device_service_socket` | `/var/run/keydris/device.sock` | Privileged device-service IPC endpoint |
 | `KEYDRIS_AGENT_ID` | — | read from the data dir | Normally set by `keydris init`, not by hand |
 | `KEYDRIS_PEER_VERIFY` | — | `warn` | `off`, `warn`, or `enforce` — reject connections from outside the session's process tree |
 | `KEYDRIS_ALLOW_SOLE_FALLBACK` | — | unset (off) | Attribute a *tokenless* request to the sole registered session |

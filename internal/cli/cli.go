@@ -62,7 +62,7 @@ func Execute() int {
 	// Anonymous install/upgrade telemetry. Reports before dispatch so
 	// long-running commands (`run`, `codex`) are still counted; after the
 	// first run and outside upgrades this is a no-op.
-	readOnly := args[0] == "skill" || args[0] == "__agent-context" || args[0] == "status" || args[0] == "doctor" || args[0] == "reset" || (args[0] == "proxy" && len(args) > 1 && (args[1] == "status" || args[1] == "logs"))
+	readOnly := args[0] == "skill" || args[0] == "__agent-context" || args[0] == "status" || args[0] == "doctor" || args[0] == "reset" || args[0] == "device-service" || (args[0] == "proxy" && len(args) > 1 && (args[1] == "status" || args[1] == "logs"))
 	if !readOnly {
 		recordTelemetry(args[0])
 	}
@@ -70,6 +70,8 @@ func Execute() int {
 	switch args[0] {
 	case "proxy":
 		return runProxy(args[1:])
+	case "device-service":
+		return runDeviceService(args[1:])
 	case "status":
 		return runStatus(args[1:]...)
 	case "doctor":
@@ -152,6 +154,8 @@ Usage:
   keydris proxy status               Check the local proxy process and health
   keydris proxy logs [--follow]       Read recent proxy output [--lines 50]
   keydris proxy scope list           Show the origins detected from the agent's policy
+  keydris device-service run         Run the privileged device identity service (foreground)
+  keydris device-service status      Inspect the local device identity service
   keydris run -- <cmd...>            Run a command inside a keydris session
   keydris codex [args...]            Run OpenAI Codex inside a keydris session
   keydris claude-desktop             Run Claude Desktop inside a keydris session

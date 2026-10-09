@@ -30,6 +30,10 @@ type Config struct {
 	ManagedConfigSettingCount int
 	// ManagedConfigError rejects an insecure or malformed managed file.
 	ManagedConfigError error
+	// DeviceServiceDir is root-owned state for the device key and certificate.
+	// DeviceServiceSocket is the local IPC endpoint used by per-user proxies.
+	DeviceServiceDir    string
+	DeviceServiceSocket string
 
 	// ControlAddr is the listen address for keydris-control (issuer + broker).
 	ControlAddr string
@@ -238,6 +242,8 @@ func Load() *Config {
 		ManagedConfigLoaded:       layers.ManagedLoaded,
 		ManagedConfigSettingCount: layers.ManagedSettingCount,
 		ManagedConfigError:        layers.ManagedErr,
+		DeviceServiceDir:          env("KEYDRIS_DEVICE_SERVICE_DIR", defaultDeviceServiceDir()),
+		DeviceServiceSocket:       env("KEYDRIS_DEVICE_SERVICE_SOCKET", defaultDeviceServiceSocket()),
 
 		ControlAddr:     env("KEYDRIS_CONTROL_ADDR", "127.0.0.1:8081"),
 		ControlURL:      env("KEYDRIS_CONTROL_URL", "http://127.0.0.1:8081"),
