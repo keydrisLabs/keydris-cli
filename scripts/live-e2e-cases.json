@@ -4,5 +4,11 @@
   {"id": "copy-overwrite-empty", "operation": "copy", "filename": "plain", "content": "empty", "overwrite": true},
   {"id": "deny-delete-spaces-multiline", "operation": "delete", "filename": "spaces", "content": "multiline", "overwrite": false},
   {"id": "copy-nested-multiline-overwrite", "operation": "copy", "filename": "nested", "content": "multiline", "overwrite": true},
-  {"id": "copy-unicode-unicode", "operation": "copy", "filename": "unicode", "content": "unicode", "overwrite": false}
+  {"id": "copy-unicode-unicode", "operation": "copy", "filename": "unicode", "content": "unicode", "overwrite": false},
+  {"id": "copy-spaces-multiline", "operation": "copy", "filename": "spaces", "content": "multiline", "overwrite": false},
+  {"id": "copy-plain-empty-create", "operation": "copy", "filename": "plain", "content": "empty", "overwrite": false},
+  {"id": "copy-plain-unicode-overwrite", "operation": "copy", "filename": "plain", "content": "unicode", "overwrite": true},
+  {"id": "deny-delete-nested-nonce", "operation": "delete", "filename": "nested", "content": "nonce", "overwrite": false},
+  {"id": "deny-delete-unicode-unicode", "operation": "delete", "filename": "unicode", "content": "unicode", "overwrite": false},
+  {"id": "deny-delete-plain-empty", "operation": "delete", "filename": "plain", "content": "empty", "overwrite": false}
 ]
