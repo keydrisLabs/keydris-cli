@@ -111,6 +111,39 @@ func TestRuntimeRouterWaitsAndRetriesIdenticalProviderRequestAfterApproval(t *te
 	}
 }
 
+func TestRuntimeRouterRejectsProviderRequestWhenApprovalDenied(t *testing.T) {
+	routes := testProviderRoutes(t, "slack", testRouteResource(
+		"slack.channel", "C12345678", "releases", "slack.channel_id", "C12345678",
+	))
+	var requests []runtimecontract.ProviderExecutionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/runtime/providers/slack/execute":
+			var request runtimecontract.ProviderExecutionRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			requests = append(requests, request)
+			fmt.Fprintf(w, `{"schema_version":1,"request_id":%q,"decision":{"schema_version":1,"decision_id":"Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H4","request_id":%q,"attempt_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H5","correlation_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H6","decided_at":"2026-07-30T12:00:00Z","decision":"approval_required","reason_code":"keydris_approval_required","obligations":[]},"execution_status":"denied","replayed":false,"error_code":null,"provider_response":null}`, request.RequestID, request.RequestID)
+		case runtimecontract.ApprovalStatusEndpointPath:
+			fmt.Fprintf(w, `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":%q,"status":"rejected","expires_at":"2030-01-01T00:00:00Z","resolved_at":"2029-12-31T23:59:00Z"}`, requests[0].RequestID)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dp := &fakeDataPlane{}
+	flow := testRoutesFlow(routes)
+	flow.MCPMethod = ""
+	flow.MCPAction = nil
+	flow.ToolParams = json.RawMessage(`{"channel":"C12345678","text":"ship"}`)
+	newRuntimeRouter(server.Client(), server.URL).handle(context.Background(), dp, flow)
+	if !dp.rejected || len(requests) != 1 || !strings.Contains(dp.rejectReason, "approval was not granted") {
+		t.Fatalf("rejected=%v requests=%d reason=%q", dp.rejected, len(requests), dp.rejectReason)
+	}
+}
+
 func TestRuntimeRouterRejectsSlackChannelOutsideSelection(t *testing.T) {
 	routes := testProviderRoutes(t, "slack", testRouteResource(
 		"slack.channel", "C12345678", "releases", "slack.channel_id", "C12345678",
@@ -214,6 +247,35 @@ func TestRuntimeRouterWaitsAndRetriesIdenticalMCPRequestAfterApproval(t *testing
 	}
 	if !reflect.DeepEqual(requests[0], requests[1]) {
 		t.Fatalf("MCP retry changed request:\nfirst=%+v\nsecond=%+v", requests[0], requests[1])
+	}
+}
+
+func TestRuntimeRouterRejectsMCPGatewayRequestWhenApprovalDenied(t *testing.T) {
+	routes := testMCPGatewayRoutes(t)
+	var requests []runtimecontract.MCPGatewayRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/runtime/mcp/gateway":
+			var request runtimecontract.MCPGatewayRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			requests = append(requests, request)
+			fmt.Fprintf(w, `{"schema_version":1,"request_id":%q,"decision":{"schema_version":1,"decision_id":"Keydris-01K1X4Y5Z6A7B8C9D0E1F2G3H4","request_id":%q,"attempt_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H5","correlation_id":"01K1X4Y5Z6A7B8C9D0E1F2G3H6","decided_at":"2026-07-30T12:00:00Z","decision":"approval_required","reason_code":"keydris_approval_required","obligations":[]},"execution_status":"denied","replayed":false,"error_code":null,"mcp_response":null}`, request.RequestID, request.RequestID)
+		case runtimecontract.ApprovalStatusEndpointPath:
+			fmt.Fprintf(w, `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":%q,"status":"rejected","expires_at":"2030-01-01T00:00:00Z","resolved_at":"2029-12-31T23:59:00Z"}`, requests[0].RequestID)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dp := &fakeDataPlane{}
+	flow := testRoutesFlow(routes)
+	flow.MCPRequestID = json.RawMessage(`"rpc-11"`)
+	newRuntimeRouter(server.Client(), server.URL).handle(context.Background(), dp, flow)
+	if !dp.rejected || len(requests) != 1 || !strings.Contains(dp.rejectReason, "MCP approval was not granted") {
+		t.Fatalf("rejected=%v requests=%d reason=%q", dp.rejected, len(requests), dp.rejectReason)
 	}
 }
 
