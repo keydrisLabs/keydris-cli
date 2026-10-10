@@ -40,9 +40,14 @@ func TestGetApprovalStatusValidatesIdentityAndAuthentication(t *testing.T) {
 
 func TestGetApprovalStatusRejectsMalformedResponses(t *testing.T) {
 	tests := map[string]string{
-		"wrong request":  `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":"other","status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":null}`,
-		"unknown status": `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":"cli-request","status":"surprise","expires_at":"2030-01-01T00:00:00Z","resolved_at":null}`,
-		"duplicate key":  `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":"cli-request","status":"pending","status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":null}`,
+		"wrong request":           `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":"other","status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":null}`,
+		"unknown status":          `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":"cli-request","status":"surprise","expires_at":"2030-01-01T00:00:00Z","resolved_at":null}`,
+		"duplicate key":           `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":"cli-request","status":"pending","status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":null}`,
+		"invalid approval id":     `{"approval_id":"not-a-uuid","request_id":"cli-request","status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":null}`,
+		"invalid expires_at":      `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":"cli-request","status":"approved","expires_at":"tomorrow","resolved_at":null}`,
+		"invalid resolved_at":     `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":"cli-request","status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":"soon"}`,
+		"pending with resolution": `{"approval_id":"123e4567-e89b-42d3-a456-426614174000","request_id":"cli-request","status":"pending","expires_at":"2030-01-01T00:00:00Z","resolved_at":"2029-12-31T23:59:00Z"}`,
+		"wrong field type":        `{"approval_id":123,"request_id":"cli-request","status":"approved","expires_at":"2030-01-01T00:00:00Z","resolved_at":null}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -88,5 +93,97 @@ func TestWaitForApprovalReturnsOnlyForApproved(t *testing.T) {
 	err := WaitForApproval(context.Background(), rejected.Client(), rejected.URL, "kit-token", "cli-request")
 	if err == nil || !strings.Contains(err.Error(), "rejected") {
 		t.Fatalf("rejected approval error = %v", err)
+	}
+}
+
+func TestGetApprovalStatusRejectsInvalidInputs(t *testing.T) {
+	client := &http.Client{}
+	if _, err := GetApprovalStatus(
+		context.Background(), client, "http://127.0.0.1:1", "", "cli-request",
+	); err == nil {
+		t.Fatal("missing runtime token was accepted")
+	}
+	if _, err := GetApprovalStatus(
+		context.Background(), client, "http://127.0.0.1:1", "kit-token", "bad request id",
+	); err == nil {
+		t.Fatal("invalid request id was accepted")
+	}
+	if _, err := GetApprovalStatus(
+		context.Background(), client, "", "kit-token", "cli-request",
+	); err == nil {
+		t.Fatal("invalid base url was accepted")
+	}
+}
+
+func TestGetApprovalStatusRejectsHTTPFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, "unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+	if _, err := GetApprovalStatus(
+		context.Background(), server.Client(), server.URL, "kit-token", "cli-request",
+	); err == nil {
+		t.Fatal("non-200 approval status was accepted")
+	}
+
+	unreachable := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	client, baseURL := unreachable.Client(), unreachable.URL
+	unreachable.Close()
+	if _, err := GetApprovalStatus(
+		context.Background(), client, baseURL, "kit-token", "cli-request",
+	); err == nil {
+		t.Fatal("unreachable approval status was accepted")
+	}
+}
+
+func TestWaitForApprovalRejectsTerminalStatuses(t *testing.T) {
+	for _, status := range []ApprovalStatus{ApprovalExpired, ApprovalConsumed, ApprovalCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintf(writer, `{"approval_id":%q,"request_id":"cli-request","status":%q,"expires_at":"2030-01-01T00:00:00Z","resolved_at":"2029-12-31T23:59:00Z"}`, approvalTestID, status)
+			}))
+			defer server.Close()
+			err := WaitForApproval(
+				context.Background(), server.Client(), server.URL, "kit-token", "cli-request",
+			)
+			if err == nil || !strings.Contains(err.Error(), string(status)) {
+				t.Fatalf("status %q error = %v", status, err)
+			}
+		})
+	}
+}
+
+func TestWaitForApprovalStopsWhenContextCancelled(t *testing.T) {
+	polled := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		select {
+		case polled <- struct{}{}:
+		default:
+		}
+		fmt.Fprintf(writer, `{"approval_id":%q,"request_id":"cli-request","status":"pending","expires_at":"2030-01-01T00:00:00Z","resolved_at":null}`, approvalTestID)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- WaitForApproval(ctx, server.Client(), server.URL, "kit-token", "cli-request")
+	}()
+	select {
+	case <-polled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("approval status was never polled")
+	}
+	// Let the pending response reach the poll timer, then cancel so the wait
+	// must stop instead of sleeping out the interval.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("cancelled wait error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("WaitForApproval did not stop after cancellation")
 	}
 }
