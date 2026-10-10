@@ -4,5 +4,7 @@
   {"id": "copy-overwrite-empty", "operation": "copy", "filename": "plain", "content": "empty", "overwrite": true},
   {"id": "deny-delete-spaces-multiline", "operation": "delete", "filename": "spaces", "content": "multiline", "overwrite": false},
   {"id": "copy-nested-multiline-overwrite", "operation": "copy", "filename": "nested", "content": "multiline", "overwrite": true},
-  {"id": "copy-unicode-unicode", "operation": "copy", "filename": "unicode", "content": "unicode", "overwrite": false}
+  {"id": "copy-unicode-unicode", "operation": "copy", "filename": "unicode", "content": "unicode", "overwrite": false},
+  {"id": "copy-spaces-nonce", "operation": "copy", "filename": "spaces", "content": "nonce", "overwrite": false},
+  {"id": "delete-nested-nonce", "operation": "delete", "filename": "nested", "content": "nonce", "overwrite": false}
 ]
