@@ -227,7 +227,6 @@ type wireUsage struct {
 	Model            string
 	Status           string
 	IncompleteReason string
-	Type             string         `json:"type"`
 	Usage            *usageBlock    `json:"usage"`
 	Message          *usageEnvelope `json:"message"`
 	Delta            *wireDelta     `json:"delta"`
