@@ -148,8 +148,7 @@ func runProxyDown() int {
 	cfg := config.Load()
 	pidPath := filepath.Join(cfg.DataDir, "proxy.pid")
 
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
+	if _, err := os.ReadFile(pidPath); err != nil {
 		if os.IsNotExist(err) {
 			newUI(os.Stdout).row("inactive", "Proxy", "Already stopped (no PID file)")
 			return 0
@@ -165,7 +164,7 @@ func runProxyDown() int {
 	}
 	defer unlock()
 	// Read again after taking the lifecycle lock.
-	data, err = os.ReadFile(pidPath)
+	data, err := os.ReadFile(pidPath)
 	if os.IsNotExist(err) {
 		newUI(os.Stdout).row("inactive", "Proxy", "Already stopped")
 		return 0
