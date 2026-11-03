@@ -128,12 +128,6 @@ func (r *SessionRegistry) Snapshot() []Session {
 	return out
 }
 
-// Replace swaps a session only if the handle still points at the expected ULID.
-func (r *SessionRegistry) Replace(handle, expectedULID string, next Session) bool {
-	replaced, _ := r.ReplaceWith(handle, expectedULID, next, nil)
-	return replaced
-}
-
 // ReplaceWith atomically verifies and swaps a renewed session. persist runs
 // while the registry lock is held, preventing SessionEnd from unregistering the
 // renewed identity before its durable state has been replaced.
