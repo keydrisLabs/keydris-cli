@@ -2,14 +2,12 @@ package proxy
 
 import (
 	"crypto/ecdsa"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 )
 
@@ -121,39 +119,4 @@ func LoadOrCreateCA(certPath, keyPath, commonName string, ttl time.Duration) (*C
 		return nil, err
 	}
 	return ca, nil
-}
-
-// ServerTLSConfig returns a tls.Config that mints a leaf certificate per SNI
-// host on demand (cached), so a single CONNECT proxy can terminate TLS for any
-// upstream the agent dials.
-func (c *CA) ServerTLSConfig() *tls.Config {
-	cache := &leafCache{ca: c, m: map[string]*tls.Certificate{}}
-	return &tls.Config{
-		GetCertificate: cache.get,
-		MinVersion:     tls.VersionTLS12,
-	}
-}
-
-type leafCache struct {
-	ca *CA
-	mu sync.Mutex
-	m  map[string]*tls.Certificate
-}
-
-func (lc *leafCache) get(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	host := hello.ServerName
-	if host == "" {
-		host = "localhost"
-	}
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-	if cert, ok := lc.m[host]; ok {
-		return cert, nil
-	}
-	leaf, err := lc.ca.LeafFor(host)
-	if err != nil {
-		return nil, err
-	}
-	lc.m[host] = &leaf
-	return &leaf, nil
 }
